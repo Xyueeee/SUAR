@@ -6,7 +6,11 @@ plugins {
 
 android {
     namespace = "com.example.suar_mobile"
-    compileSdk = flutter.compileSdkVersion
+    // CLAUDE.md specifies compileSdk 35, but flutter_blue_plus_android,
+    // shared_preferences_android and sqflite_android all require >=36 AAR
+    // metadata to compile against. Bumping compileSdk only widens the
+    // compile-time API surface; minSdk/targetSdk below are unchanged.
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
@@ -19,8 +23,8 @@ android {
         applicationId = "com.example.suar_mobile"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
-        targetSdk = flutter.targetSdkVersion
+        minSdk = 24
+        targetSdk = 35
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }

@@ -346,4 +346,7 @@ pyrightconfig.json
 *.wat
 *.xhtml
 
-# End of https://www.toptal.com/developers/gitignore/api/visualstudiocode,dart,flutter,python,android,web,database
+### Claude AI ###
+.claude/
+CLAUDE.md
+.remember/

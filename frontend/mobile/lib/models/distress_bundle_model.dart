@@ -1,0 +1,92 @@
+class DistressBundleModel {
+  final String bundleId;
+  final String deviceId;
+  double priorityScore;
+  String priorityTier;
+  double? estimatedLat;
+  double? estimatedLng;
+  int hopCount;
+  bool isSynced;
+  final DateTime createdAt;
+  DateTime updatedAt;
+  List<Map<String, dynamic>> sensorReadings;
+
+  DistressBundleModel({
+    required this.bundleId,
+    required this.deviceId,
+    required this.priorityScore,
+    required this.priorityTier,
+    this.estimatedLat,
+    this.estimatedLng,
+    this.hopCount = 0,
+    this.isSynced = false,
+    required this.createdAt,
+    required this.updatedAt,
+    this.sensorReadings = const [],
+  });
+
+  Map<String, dynamic> toJson() {
+    return {
+      'bundleId': bundleId,
+      'deviceId': deviceId,
+      'priorityScore': priorityScore,
+      'priorityTier': priorityTier,
+      'estimatedLat': estimatedLat,
+      'estimatedLng': estimatedLng,
+      'hopCount': hopCount,
+      'isSynced': isSynced,
+      'createdAt': createdAt.toIso8601String(),
+      'updatedAt': updatedAt.toIso8601String(),
+      'sensorReadings': sensorReadings,
+    };
+  }
+
+  factory DistressBundleModel.fromJson(Map<String, dynamic> json) {
+    return DistressBundleModel(
+      bundleId: json['bundleId'] as String,
+      deviceId: json['deviceId'] as String,
+      priorityScore: (json['priorityScore'] as num).toDouble(),
+      priorityTier: json['priorityTier'] as String,
+      estimatedLat: (json['estimatedLat'] as num?)?.toDouble(),
+      estimatedLng: (json['estimatedLng'] as num?)?.toDouble(),
+      hopCount: json['hopCount'] as int,
+      isSynced: json['isSynced'] as bool,
+      createdAt: DateTime.parse(json['createdAt'] as String),
+      updatedAt: DateTime.parse(json['updatedAt'] as String),
+      sensorReadings:
+          (json['sensorReadings'] as List?)?.cast<Map<String, dynamic>>() ??
+          const [],
+    );
+  }
+
+  /// sqflite DistressBundle table has no SensorReading column in Increment 1.
+  Map<String, dynamic> toMap() {
+    return {
+      'BundleId': bundleId,
+      'DeviceId': deviceId,
+      'PriorityScore': priorityScore,
+      'PriorityTier': priorityTier,
+      'EstimatedLat': estimatedLat,
+      'EstimatedLng': estimatedLng,
+      'HopCount': hopCount,
+      'IsSynced': isSynced ? 1 : 0,
+      'CreatedAt': createdAt.toIso8601String(),
+      'UpdatedAt': updatedAt.toIso8601String(),
+    };
+  }
+
+  factory DistressBundleModel.fromMap(Map<String, dynamic> map) {
+    return DistressBundleModel(
+      bundleId: map['BundleId'] as String,
+      deviceId: map['DeviceId'] as String,
+      priorityScore: (map['PriorityScore'] as num).toDouble(),
+      priorityTier: map['PriorityTier'] as String,
+      estimatedLat: (map['EstimatedLat'] as num?)?.toDouble(),
+      estimatedLng: (map['EstimatedLng'] as num?)?.toDouble(),
+      hopCount: map['HopCount'] as int,
+      isSynced: (map['IsSynced'] as int) == 1,
+      createdAt: DateTime.parse(map['CreatedAt'] as String),
+      updatedAt: DateTime.parse(map['UpdatedAt'] as String),
+    );
+  }
+}

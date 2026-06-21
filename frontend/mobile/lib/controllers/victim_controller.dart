@@ -1,0 +1,565 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
+
+import '../communication/ble_manager.dart';
+import '../communication/wifi_direct_manager.dart';
+import '../constants.dart';
+import '../models/distress_bundle_model.dart';
+
+class VictimController {
+  VictimController()
+    : bleManager = BLEManager(),
+      wifiDirectManager = WiFiDirectManager();
+
+  final BLEManager bleManager;
+  final WiFiDirectManager wifiDirectManager;
+
+  final _statusController = StreamController<String>.broadcast();
+  Stream<String> get statusStream => _statusController.stream;
+
+  // Once a helper has been sent a bundle, don't re-send to it again for a
+  // while — but keep advertising/listening so other (or the same, later)
+  // helpers can still pick it up. A successful delivery used to stop
+  // advertising outright, which meant exactly one helper ever got the
+  // bundle, ever, ending the Victim's participation in the mesh for good.
+  static const Duration _helperCooldown = Duration(minutes: 2);
+  final Map<String, DateTime> _deliveredTo = {};
+
+  // Real-device testing found some chipsets (confirmed: a budget Oppo unit)
+  // can be discovered and connected to over Wi-Fi Direct fine, but can never
+  // successfully *initiate* P2P discovery themselves — discoverPeers()
+  // genuinely completes its full poll and finds nothing, every time,
+  // regardless of permissions/location/AP-association. Rather than retry
+  // forever into a dead end, this device learns that about itself after a
+  // couple of clean failures and flags it to Helpers (via the BLE status
+  // characteristic) so they connect to it instead. TTL'd rather than
+  // permanent — the cause could be transient (radio toggled off, OEM power
+  // saving), not necessarily the hardware itself.
+  //
+  // _loadInitiatorCapability's default below defaults this flag to FALSE
+  // (start in pull mode) rather than true, on a fresh/no-prior-record
+  // state — broadened from "Oppo only" after this session's logs showed
+  // even the OTHER test device's very first Victim-initiated discoverPeers()
+  // also returned 0 peers, every time it was tried fresh. The likely cause
+  // is structural, not per-chipset: the Victim calls discoverPeers() alone,
+  // right after BLE handshake, before the Helper has started its own P2P
+  // discovery (it only starts after finishing the GATT ACK exchange a few
+  // seconds later) — Wi-Fi Direct discovery needs roughly-overlapping
+  // search/listen windows on both ends to find each other at all, and a
+  // lone Victim probing first has nothing to overlap with yet. Skipping
+  // straight to pull mode just stops paying that near-guaranteed-failed
+  // first probe's ~12-18s cost on every fresh app start; the periodic
+  // self-heal probe below still gives push mode a fair retry later.
+  static const String _canInitiateKey = 'suar_wifi_direct_can_initiate';
+  static const String _capabilityTestedAtKey =
+      'suar_wifi_direct_capability_tested_at';
+  static const Duration _capabilityTtl = Duration(hours: 24);
+  // Real-device timing: each failed cycle costs up to ~18s (pollPeers' full
+  // ceiling) plus a wait for the next BLE ack before it can even retry. 2
+  // cycles before flagging meant ~75-80s end-to-end before pull mode ever
+  // kicked in, even though the transfer itself completes in under 2s once it
+  // does. The periodic self-heal probe (see _retryProbeEveryNCycles) already
+  // covers the "was this just a fluke" concern, so 1 is enough here.
+  static const int _maxConsecutiveGenuineFailures = 1;
+  // A flag with no way back is a trap: a transient failure (heavy P2P churn
+  // from back-to-back testing, not an actual hardware limit) gets treated as
+  // permanent for a full day, and if the Helper trying to pull from this
+  // device *also* can't initiate discovery (seen on real hardware), neither
+  // side can ever call connect() — a permanent deadlock with no event to
+  // break it. Re-testing periodically even while flagged bad — a half-open
+  // circuit breaker — means a wrongly-flagged device self-heals within a
+  // few RSSI windows instead of needing the full TTL or a manual data clear.
+  //
+  // Each cycle here is gated by BLE ack arrival (~12-16s apart in testing),
+  // not discoverPeers() timing. Was 2 (re-probe every ~25-30s) until this
+  // session's logs showed that on the confirmed-bad Oppo unit (line 31-34
+  // above) the re-probe fails 100% of the time, every single time, all
+  // session long — there's nothing transient about it on that hardware, so
+  // re-testing this often was pure wasted radio time (another ~12-18s dead
+  // discoverPeers() poll) and log spam, not a real safety net for THAT
+  // device. Bumped 6x so the self-heal (still wanted for hardware that
+  // genuinely was transient — radio toggled off, OEM power saving) doesn't
+  // disappear, it just stops firing every other delivery cycle.
+  static const int _retryProbeEveryNCycles = 12;
+  bool _canInitiateWifiDirect = true;
+  // True once createGroup() succeeds in startVictimMode — this device is then
+  // a discoverable autonomous group owner and must stay passive: it must NOT
+  // call its own discoverPeers()/connect()/disconnect(), since disconnect()
+  // tears down the very group that makes it discoverable. The Helper does all
+  // the active work (discover → join as client → pull). See startVictimMode.
+  bool _isAutonomousGroupOwner = false;
+  int _consecutiveGenuineFailures = 0;
+  int _cyclesSinceCapabilityProbe = 0;
+  // Guards the pull-mode reactive push below against overlapping itself if
+  // connectionFormed fires more than once for the same connection (the OS
+  // broadcast can repeat) — matches the same concern that motivated
+  // HelperController's _pullInFlight.
+  bool _pushInFlight = false;
+
+  String? deviceId;
+  DistressBundleModel? _bundle;
+  final Map<String, int> _helperRssiMap = {};
+  Timer? _rssiWindowTimer;
+  bool _stopped = false;
+  StreamSubscription? _ackSub;
+  StreamSubscription? _bleStatusSub;
+  StreamSubscription? _wifiStatusSub;
+  StreamSubscription? _connectionFormedSub;
+
+  // Android can silently kill BLE advertising or the Wi-Fi Direct
+  // accept-loop thread in the background on some OEMs — no error, no
+  // callback, the radio just stops working. A Victim that looks "active"
+  // but has actually gone silent is the single worst failure mode this app
+  // can have, so this periodically checks both and restarts whichever died.
+  static const Duration _radioWatchdogInterval = Duration(seconds: 30);
+  Timer? _radioWatchdog;
+
+  // The RSSI-window retry loop and BLE ops keep running after stopVictimMode
+  // resolves but before dispose() closes this stream — guard every emit so
+  // that race is a no-op instead of "Bad state: Cannot add new events after
+  // calling close".
+  void _emit(String line) {
+    // Also mirror to logcat (as an I/flutter line) — the in-app activity
+    // card alone meant decision logic (capability flag flips, pull-mode
+    // switches) was invisible to anyone reading a logcat dump instead of
+    // screenshotting the running app.
+    debugPrint('[Victim] $line');
+    if (!_statusController.isClosed) _statusController.add(line);
+  }
+
+  /// One-shot logcat-visible record of whether this device is associated to
+  /// a regular Wi-Fi AP — see the call site's comment in startVictimMode.
+  Future<void> _logStaAssociation() async {
+    final info = await WiFiDirectManager.getStaInfo();
+    final associated = info?['associated'] as bool? ?? false;
+    if (associated) {
+      _emit(
+        'WARNING: this device is connected to Wi-Fi "${info?['ssid']}" — '
+        'Wi-Fi Direct discovery/group formation is unreliable while '
+        'associated to a regular access point on most chipsets.',
+      );
+    } else {
+      _emit('Wi-Fi station not associated to any AP (good for Wi-Fi Direct)');
+    }
+  }
+
+  Future<void> startVictimMode() async {
+    try {
+      // Defensive against a double-start (e.g. a rapid back-then-reopen on
+      // the screen): without cancelling first, a second call leaked the old
+      // subscriptions and left every event handled twice.
+      await _cancelSubs();
+      _stopped = false;
+
+      deviceId = await _loadOrCreateDeviceId();
+      _emit('Victim mode started (deviceId=$deviceId)');
+
+      _bleStatusSub = bleManager.statusStream.listen(_emit);
+      _wifiStatusSub = wifiDirectManager.statusStream.listen(_emit);
+
+      // Stubbed payload — real sensor data arrives in Increment 2.
+      _bundle = DistressBundleModel(
+        bundleId: const Uuid().v4(),
+        deviceId: deviceId!,
+        priorityScore: 0.5,
+        priorityTier: 'None',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+        sensorReadings: const [],
+      );
+
+      await _loadInitiatorCapability();
+      // Always run the server + keep the bundle cached natively, regardless
+      // of capability — costs nothing idle, covers the case where this
+      // device ends up P2P group owner (so a Helper-as-client can dial in
+      // and fetch directly), and means a Helper's pull works immediately if
+      // this device's capability flips mid-session rather than only after
+      // the next startVictimMode() call.
+      await wifiDirectManager.startServer();
+      await wifiDirectManager.setLocalBundle(_bundle!.toJson());
+      // Victim never calls discoverPeers()/connect(), so logWifiState() on
+      // the native side (which only fires from those two calls) never runs
+      // for this role — meaning a Victim stuck associated to a regular AP
+      // (the single biggest real-hardware cause of "Helper finds 0 peers
+      // forever" found this session) left literally zero trace in logcat.
+      // The on-screen RadioStatusBanner already polls and warns for this,
+      // but only if someone's looking at this device's screen at the time.
+      unawaited(_logStaAssociation());
+
+      // THE fix for "Helper finds 0 peers forever": a purely passive Victim
+      // (TCP server + waiting) is INVISIBLE to a Helper's discoverPeers() —
+      // in Wi-Fi P2P a device is only discoverable while itself discovering
+      // OR while it is a group owner. Becoming an autonomous group owner
+      // makes this Victim a reliably-discoverable soft-AP at 192.168.49.1;
+      // the Helper discovers it, joins as client (deterministic role, no
+      // glare), and pulls the bundle from this device's already-running
+      // server. If createGroup fails (Wi-Fi off, P2P busy), the Victim falls
+      // back to the legacy capability-probe path below.
+      _isAutonomousGroupOwner = await wifiDirectManager.createGroup();
+      // The native BLE peripheral (BlePeripheralHelper) is a singleton that
+      // outlives any single mode session — its role field stays whatever it
+      // was last set to. Without resetting it here, a device that was
+      // previously in Helper mode this app run (role=helper) would still
+      // advertise role=helper after switching to Victim mode, and a scanning
+      // Helper would misclassify it as a peer Helper instead of a Victim —
+      // confirmed on real hardware: it skipped the ack/pull flow entirely and
+      // logged "No bundles to relay" instead of ever pulling the bundle.
+      await bleManager.setRole(bleRoleVictim);
+      // As an autonomous group owner this device is purely passive and must
+      // be pulled (it never pushes), so needsPull is always true in that
+      // case; only the legacy fallback path (createGroup failed) defers to
+      // the learned initiator capability.
+      await bleManager.setNeedsPull(
+        _isAutonomousGroupOwner || !_canInitiateWifiDirect,
+      );
+
+      // Covers the other half: this device ends up P2P *client* despite not
+      // having initiated the connect() call itself (the Helper did, while
+      // pulling) — WIFI_P2P_CONNECTION_CHANGED_ACTION fires on both ends
+      // regardless of who initiated, so this is how the non-initiating side
+      // learns to push. Only acts while in pull mode — the active flow
+      // already pushes directly right after its own connect() succeeds, and
+      // reacting here too would double-send.
+      _connectionFormedSub = wifiDirectManager.connectionFormedStream.listen((
+        info,
+      ) async {
+        if (_stopped || _canInitiateWifiDirect || _pushInFlight) return;
+        final isGroupOwner = info['isGroupOwner'] as bool? ?? false;
+        if (isGroupOwner) return;
+        final groupOwnerAddress = info['groupOwnerAddress'] as String?;
+        if (groupOwnerAddress == null) return;
+        _pushInFlight = true;
+        try {
+          _emit(
+            'Connection formed (pull mode) — pushing bundle to $groupOwnerAddress',
+          );
+          final sent = await wifiDirectManager.sendBundle(
+            groupOwnerAddress,
+            _bundle!.toJson(),
+          );
+          if (sent) {
+            _emit('Bundle ${_bundle!.bundleId} transmitted (pull mode)');
+          }
+          await wifiDirectManager.disconnect();
+        } finally {
+          _pushInFlight = false;
+        }
+      });
+
+      _helperRssiMap.clear();
+      _ackSub = bleManager.helperAckStream.listen((ack) {
+        final helperDeviceId = ack['helperDeviceId'] as String;
+        final rssi = ack['rssi'] as int;
+        _helperRssiMap[helperDeviceId] = rssi;
+        _emit('Helper $helperDeviceId rssi=$rssi recorded');
+      });
+
+      await bleManager.startAdvertising(deviceId!);
+
+      _rssiWindowTimer?.cancel();
+      _rssiWindowTimer = Timer(
+        const Duration(milliseconds: bleRssiCollectionWindowMs),
+        _onRssiWindowClosed,
+      );
+
+      _radioWatchdog?.cancel();
+      _radioWatchdog = Timer.periodic(_radioWatchdogInterval, (_) async {
+        if (_stopped) return;
+        if (!await bleManager.isAdvertising()) {
+          _emit('BLE advertising found stopped unexpectedly — restarting it');
+          await bleManager.startAdvertising(deviceId!);
+        }
+        if (_stopped) return;
+        if (!await wifiDirectManager.isServerRunning()) {
+          _emit(
+            'Wi-Fi Direct server found stopped unexpectedly — restarting it',
+          );
+          await wifiDirectManager.startServer();
+          // The server's accept loop needs the cached bundle to still serve
+          // pull requests — startServer() doesn't touch that cache, but
+          // re-asserting it here is cheap insurance against any future
+          // change to that assumption silently breaking pull mode.
+          if (_bundle != null) {
+            await wifiDirectManager.setLocalBundle(_bundle!.toJson());
+          }
+        }
+        if (_stopped) return;
+        // Re-assert the autonomous group if it was created — if the OS tore
+        // it down (power saving, Wi-Fi blip) this device would silently go
+        // invisible to Helper discovery again. createGroup() is idempotent
+        // natively (it reuses an existing group), so this is cheap to call.
+        if (_isAutonomousGroupOwner) {
+          await wifiDirectManager.createGroup();
+        }
+      });
+    } catch (e) {
+      _emit('Victim mode start failed: $e');
+    }
+  }
+
+  Future<void> _onRssiWindowClosed() async {
+    try {
+      final now = DateTime.now();
+      _helperRssiMap.removeWhere((helperId, _) {
+        final last = _deliveredTo[helperId];
+        return last != null && now.difference(last) < _helperCooldown;
+      });
+
+      if (_helperRssiMap.isEmpty) {
+        if (_stopped) return;
+        // Keep listening — a single failed/empty window used to give up
+        // permanently, leaving the Victim stuck broadcasting with nothing
+        // ever acting on a late-arriving ACK. Re-arm and keep trying for as
+        // long as Victim mode stays active.
+        _emit('No Helper ACKs received in RSSI window — still listening…');
+        _rearm();
+        return;
+      }
+      final bestHelper = _helperRssiMap.entries.reduce(
+        (a, b) => a.value > b.value ? a : b,
+      );
+      _emit('Selected Helper ${bestHelper.key} (rssi=${bestHelper.value})');
+
+      final sent = await _tryDeliverBundle(bestHelper.key);
+      if (sent) {
+        _deliveredTo[bestHelper.key] = DateTime.now();
+        _helperRssiMap.remove(bestHelper.key);
+      } else {
+        // The helper that ACKed may have moved out of range or wasn't
+        // actually reachable over Wi-Fi Direct — drop it so the next window
+        // doesn't immediately retry against stale data, but don't put it on
+        // the success cooldown either.
+        _helperRssiMap.remove(bestHelper.key);
+        _emit('Will retry Wi-Fi Direct handoff…');
+      }
+      if (!_stopped) _rearm();
+    } catch (e) {
+      _emit('Bundle transmission failed: $e');
+      if (!_stopped) _rearm();
+    }
+  }
+
+  void _rearm() {
+    _rssiWindowTimer = Timer(
+      const Duration(milliseconds: bleRssiCollectionWindowMs),
+      _onRssiWindowClosed,
+    );
+  }
+
+  /// Discover the Wi-Fi Direct peer, connect, and send the bundle. Returns
+  /// false (not an exception) for the "nothing worked, but nothing broke
+  /// either" cases — no peers found, or connect failed — so the caller can
+  /// retry instead of silently doing nothing forever (the previous behaviour:
+  /// a Helper ACK had been received fine, but the Victim just gave up at the
+  /// very next step and never told anyone).
+  ///
+  /// Does NOT stop BLE advertising on success any more — one helper picking
+  /// up the bundle doesn't mean no one else should. The Victim keeps
+  /// broadcasting (subject to the per-helper cooldown above) until the user
+  /// manually leaves Victim mode.
+  Future<bool> _tryDeliverBundle(String helperDeviceId) async {
+    if (_isAutonomousGroupOwner) {
+      // This device is a discoverable group owner — it must NOT run its own
+      // discover/connect/disconnect (disconnect() would remove the group and
+      // make it invisible again). The Helper discovers this GO, joins as
+      // client, and pulls from the already-running server. Nothing to do here
+      // but stay advertised and keep serving.
+      _emit('Waiting for a Helper to pull the bundle (group owner — passive)');
+      return false;
+    }
+    if (!_canInitiateWifiDirect) {
+      _cyclesSinceCapabilityProbe++;
+      if (_cyclesSinceCapabilityProbe < _retryProbeEveryNCycles) {
+        // Already learned this device can't discover peers itself — don't
+        // keep hammering a dead end every retry cycle. The Helper sees
+        // needsPull via the BLE status characteristic and connects instead;
+        // this device just needs to stay advertised and keep its server +
+        // cached bundle ready (already done in startVictimMode).
+        _emit('Waiting for a Helper to pull the bundle (cannot self-initiate)');
+        return false;
+      }
+      // Every Nth cycle, test anyway — see the class-level comment on
+      // _retryProbeEveryNCycles for why a flag with no way back is a trap.
+      _cyclesSinceCapabilityProbe = 0;
+      _emit('Re-testing Wi-Fi Direct initiator capability…');
+    }
+
+    final peers = await wifiDirectManager.discoverPeers();
+    if (peers.isEmpty) {
+      await _recordDiscoveryOutcome(succeeded: false);
+      _emit('No Wi-Fi Direct peers discovered');
+      // Same reset HelperController's discovery paths now do — a stuck
+      // P2P discovery state never otherwise gets a disconnect()/
+      // stopPeerDiscovery() call on this path, since that used to only
+      // happen after a connect attempt, not after discovery itself comes
+      // up empty.
+      await wifiDirectManager.disconnect();
+      return false;
+    }
+    await _recordDiscoveryOutcome(succeeded: true);
+    final peerAddress = peers.first['deviceAddress'] as String;
+    final connectionInfo = await wifiDirectManager.connectToHelper(
+      peerAddress,
+      myDeviceId: deviceId ?? '',
+    );
+    if (connectionInfo == null) {
+      _emit('Could not connect to Wi-Fi Direct peer');
+      // A failed connect() (commonly NO_GROUP) can still leave the P2P stack
+      // mid-negotiation — confirmed on real hardware: the very next
+      // discoverPeers() call came back BUSY (reason=2) because of this.
+      // Only the success path used to clean up; do it here too so the next
+      // retry starts from an actually-clean slate instead of colliding.
+      await wifiDirectManager.disconnect();
+      return false;
+    }
+
+    final isGroupOwner = connectionInfo['isGroupOwner'] as bool? ?? false;
+    if (isGroupOwner) {
+      // groupOwnerIntent only biases negotiation, it doesn't guarantee an
+      // outcome — confirmed on real hardware: this device's own connect()
+      // call can still leave IT as group owner instead of $helperDeviceId.
+      // groupOwnerAddress in that case is this device's OWN address, so
+      // blindly sendBundle()-ing to it was a self-loop: this device's native
+      // server (which always has the bundle cached) just served it straight
+      // back to itself, logged as a false "transmitted" success, while
+      // $helperDeviceId — now the actual P2P client — never received
+      // anything. The Helper's own reactive connectionFormedStream listener
+      // notices it unexpectedly became a client and pulls from this
+      // already-running, already-cached server instead.
+      _emit(
+        'Connected as group owner instead of $helperDeviceId — waiting for it to pull',
+      );
+      return false;
+    }
+    final groupOwnerAddress = connectionInfo['groupOwnerAddress'] as String;
+    final sent = await wifiDirectManager.sendBundle(
+      groupOwnerAddress,
+      _bundle!.toJson(),
+    );
+    if (sent) {
+      _emit('Bundle ${_bundle!.bundleId} transmitted to $helperDeviceId');
+    }
+    // Tear down the Wi-Fi Direct group either way — leaving it formed was
+    // letting stale group state carry into the next connect() attempt
+    // (a likely contributor to the groupFormed=false races seen on retry).
+    // Each delivery attempt now starts from a clean slate.
+    await wifiDirectManager.disconnect();
+    return sent;
+  }
+
+  Future<void> _loadInitiatorCapability() async {
+    final prefs = await SharedPreferences.getInstance();
+    final canInitiate = prefs.getBool(_canInitiateKey);
+    final testedAtMs = prefs.getInt(_capabilityTestedAtKey);
+    if (canInitiate == false && testedAtMs != null) {
+      final testedAt = DateTime.fromMillisecondsSinceEpoch(testedAtMs);
+      if (DateTime.now().difference(testedAt) < _capabilityTtl) {
+        _canInitiateWifiDirect = false;
+        _emit(
+          'Learned this device cannot initiate Wi-Fi Direct (last confirmed '
+          '${DateTime.now().difference(testedAt).inHours}h ago) — will wait '
+          'for Helpers to pull instead',
+        );
+        return;
+      }
+      // Stale — give it another fair try; the cause may have been transient.
+    }
+    // Defaults to pull mode (false), not push mode — see the class-level
+    // comment above _canInitiateKey for why: a fresh Victim-initiated
+    // discoverPeers() has consistently failed its very first try on every
+    // device tested so far, so starting optimistic just buys a guaranteed
+    // ~12-18s loss before falling back anyway. The self-heal probe (see
+    // _retryProbeEveryNCycles) still runs periodically from here exactly
+    // the same as if this had been set by a real recorded failure, so push
+    // mode is never permanently ruled out for hardware that genuinely can.
+    _canInitiateWifiDirect = false;
+  }
+
+  /// Only a genuinely-empty *completed* discoverPeers() poll counts toward
+  /// the capability verdict — a thrown exception (LOCATION_DISABLED,
+  /// P2P_DISABLED, PERMISSION_DENIED, etc.) is a separate, already-banner-
+  /// surfaced configuration problem, not evidence about this chipset.
+  Future<void> _recordDiscoveryOutcome({required bool succeeded}) async {
+    if (succeeded) {
+      _consecutiveGenuineFailures = 0;
+      if (!_canInitiateWifiDirect) {
+        // A periodic probe (see _tryDeliverBundle) just succeeded despite
+        // the flag — the earlier failure was transient, not a real chipset
+        // limit. Clear it immediately rather than waiting out the TTL.
+        _canInitiateWifiDirect = true;
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove(_canInitiateKey);
+        await prefs.remove(_capabilityTestedAtKey);
+        await bleManager.setNeedsPull(false);
+        _emit(
+          'Wi-Fi Direct initiation works again — cleared the cannot-initiate flag',
+        );
+      }
+      return;
+    }
+    if (!wifiDirectManager.lastDiscoveryGenuinelyEmpty) return;
+    _consecutiveGenuineFailures++;
+    if (_consecutiveGenuineFailures < _maxConsecutiveGenuineFailures) return;
+
+    _canInitiateWifiDirect = false;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_canInitiateKey, false);
+    await prefs.setInt(
+      _capabilityTestedAtKey,
+      DateTime.now().millisecondsSinceEpoch,
+    );
+    await bleManager.setNeedsPull(true);
+    _emit(
+      'This device cannot initiate Wi-Fi Direct discovery ($_consecutiveGenuineFailures '
+      'consecutive empty results) — flagged to Helpers, switching to pull mode',
+    );
+  }
+
+  Future<String> _loadOrCreateDeviceId() async {
+    final prefs = await SharedPreferences.getInstance();
+    final existing = prefs.getString(deviceIdPrefKey);
+    if (existing != null) return existing;
+    final generated = const Uuid().v4();
+    await prefs.setString(deviceIdPrefKey, generated);
+    return generated;
+  }
+
+  Future<void> _cancelSubs() async {
+    await _ackSub?.cancel();
+    await _bleStatusSub?.cancel();
+    await _wifiStatusSub?.cancel();
+    await _connectionFormedSub?.cancel();
+  }
+
+  Future<void> stopVictimMode() async {
+    try {
+      _stopped = true;
+      _rssiWindowTimer?.cancel();
+      _radioWatchdog?.cancel();
+      await _cancelSubs();
+      await bleManager.stopAdvertising();
+      await bleManager.setNeedsPull(false);
+      await wifiDirectManager.setLocalBundle(null);
+      await wifiDirectManager.stopServer();
+      await wifiDirectManager.disconnect();
+      _emit('Victim mode stopped');
+    } catch (e) {
+      _emit('Victim mode stop failed: $e');
+    }
+  }
+
+  void dispose() {
+    _rssiWindowTimer?.cancel();
+    _radioWatchdog?.cancel();
+    _ackSub?.cancel();
+    _bleStatusSub?.cancel();
+    _wifiStatusSub?.cancel();
+    _connectionFormedSub?.cancel();
+    bleManager.dispose();
+    wifiDirectManager.dispose();
+    _statusController.close();
+  }
+}

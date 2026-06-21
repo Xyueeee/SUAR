@@ -23,7 +23,15 @@ class MeshForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val statusText = intent?.getStringExtra(EXTRA_STATUS_TEXT) ?: "SUAR Mesh Active"
         startForeground(NOTIFICATION_ID, buildNotification(statusText))
-        return START_STICKY
+        // This service owns nothing but the notification — the actual BLE
+        // advertiser/GATT server and Wi-Fi Direct server live in
+        // MainActivity's helpers, a completely separate component. If the
+        // OS killed this service for memory and START_STICKY restarted it,
+        // the result would be a "Mesh Active" notification resurrected with
+        // no mesh activity behind it (the radios it claims to represent
+        // would just be gone) — actively misleading instead of accurate.
+        // START_NOT_STICKY lets it disappear honestly instead.
+        return START_NOT_STICKY
     }
 
     private fun buildNotification(statusText: String): Notification {

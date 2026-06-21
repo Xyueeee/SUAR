@@ -54,7 +54,65 @@ class MainActivity : FlutterActivity() {
                         wifiDirectHelper.stopServer(result)
                         stopMeshService()
                     }
+                    "createGroup" -> wifiDirectHelper.createGroup(result)
                     "disconnect" -> wifiDirectHelper.disconnect(result)
+                    "getStaInfo" -> wifiDirectHelper.getStaInfo(result)
+                    "updateMeshStatus" -> {
+                        // Refreshes the persistent foreground notification text only —
+                        // startForegroundService() on an already-running service just
+                        // updates its notification, no radio is touched. Lets Dart push
+                        // radio-health warnings (e.g. "connected to a Wi-Fi AP") into
+                        // chrome that's visible even with the app backgrounded/screen
+                        // off, instead of relying on an in-app banner nobody's looking
+                        // at — confirmed on real hardware that the in-app-only banner
+                        // was missed during testing.
+                        startMeshService(call.argument<String>("text") ?: "Mesh radio active...")
+                        result.success(null)
+                    }
+                    "openWifiSettings" -> wifiDirectHelper.openWifiSettings(result)
+                    "setLocalBundle" -> {
+                        wifiDirectHelper.setLocalBundle(call.argument<String>("json"))
+                        result.success(null)
+                    }
+                    "requestBundle" -> {
+                        val address = call.argument<String>("address")
+                        if (address == null) {
+                            result.error("BAD_ARGS", "address required", null)
+                        } else {
+                            wifiDirectHelper.requestBundle(address, result)
+                        }
+                    }
+                    "setManifest" -> {
+                        @Suppress("UNCHECKED_CAST")
+                        val ids = call.argument<List<String>>("ids") ?: emptyList()
+                        wifiDirectHelper.setManifest(ids)
+                        result.success(null)
+                    }
+                    "requestManifest" -> {
+                        val address = call.argument<String>("address")
+                        if (address == null) {
+                            result.error("BAD_ARGS", "address required", null)
+                        } else {
+                            wifiDirectHelper.requestManifest(address, result)
+                        }
+                    }
+                    "isServerRunning" -> wifiDirectHelper.isServerRunning(result)
+                    "setRelayBundles" -> {
+                        val json = call.argument<String>("json") ?: "[]"
+                        wifiDirectHelper.setRelayBundles(json)
+                        result.success(null)
+                    }
+                    "sync" -> {
+                        val address = call.argument<String>("address")
+                        @Suppress("UNCHECKED_CAST")
+                        val ownIds = call.argument<List<String>>("ownIds") ?: emptyList()
+                        val payload = call.argument<String>("payload")
+                        if (address == null || payload == null) {
+                            result.error("BAD_ARGS", "address and payload required", null)
+                        } else {
+                            wifiDirectHelper.sync(address, ownIds, payload, result)
+                        }
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -75,7 +133,10 @@ class MainActivity : FlutterActivity() {
                 when (call.method) {
                     "startAdvertising" -> {
                         val deviceId = call.argument<String>("deviceId") ?: ""
-                        startMeshService("Victim broadcasting...")
+                        // Used by both Victim (broadcasting its own beacon) and Helper
+                        // (advertising itself so other Helpers can find it for DTN
+                        // relay) — kept role-agnostic rather than hardcoding "Victim".
+                        startMeshService("Mesh radio active...")
                         blePeripheralHelper.startAdvertising(deviceId)
                         result.success(null)
                     }
@@ -84,6 +145,15 @@ class MainActivity : FlutterActivity() {
                         stopMeshService()
                         result.success(null)
                     }
+                    "setNeedsPull" -> {
+                        blePeripheralHelper.setNeedsPull(call.argument<Boolean>("value") ?: false)
+                        result.success(null)
+                    }
+                    "setRole" -> {
+                        blePeripheralHelper.setRole(call.argument<Int>("value") ?: 0)
+                        result.success(null)
+                    }
+                    "isAdvertising" -> blePeripheralHelper.isAdvertising(result)
                     else -> result.notImplemented()
                 }
             }
@@ -108,5 +178,23 @@ class MainActivity : FlutterActivity() {
 
     private fun stopMeshService() {
         stopService(Intent(this, MeshForegroundService::class.java))
+    }
+
+    /// All the normal stop paths (stopServer/stopAdvertising/disconnect)
+    /// are Dart-initiated MethodChannel calls — they never run if the
+    /// Flutter engine is gone before Dart gets a chance to call them. That
+    /// happens whenever the user swipes this app away from the recent-apps
+    /// list: Android tears down the Activity (onDestroy fires reliably,
+    /// even though the foreground service and process can keep running)
+    /// well before any Dart shutdown code would. Calling the native
+    /// cleanup directly here, in plain Kotlin, guarantees the GATT
+    /// server/advertiser and Wi-Fi Direct server/group actually get torn
+    /// down instead of being orphaned — running, broadcasting, holding the
+    /// port — with no Dart code left listening to ever stop them.
+    override fun onDestroy() {
+        if (::blePeripheralHelper.isInitialized) blePeripheralHelper.stopAdvertising()
+        if (::wifiDirectHelper.isInitialized) wifiDirectHelper.shutdown()
+        stopMeshService()
+        super.onDestroy()
     }
 }

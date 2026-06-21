@@ -1,0 +1,453 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:latlong2/latlong.dart';
+
+import '../map/map_constants.dart';
+import '../map/offline_download_manager.dart';
+import '../widgets/validated_text_dialog.dart';
+
+const double _handleSize = 14;
+const double _minBoxSize = 60;
+const double _defaultBoxSize = 220;
+
+enum _Handle {
+  topLeft,
+  topCenter,
+  topRight,
+  centerRight,
+  bottomRight,
+  bottomCenter,
+  bottomLeft,
+  centerLeft,
+}
+
+/// Lets the user pan/zoom the map, then resize a selection box (drag its
+/// bottom-right handle) to frame the area to download.
+///
+/// Two modes:
+///  - new region (no [existingStore]): name it, download, pop back.
+///  - editing [existingStore]: box preloads the store's saved bounds; the
+///    floating action button re-downloads with the (possibly resized) area,
+///    and the app bar offers rename/delete.
+class RegionDownloadScreen extends StatefulWidget {
+  const RegionDownloadScreen({super.key, this.existingStore});
+
+  final FMTCStore? existingStore;
+
+  @override
+  State<RegionDownloadScreen> createState() => _RegionDownloadScreenState();
+}
+
+class _RegionDownloadScreenState extends State<RegionDownloadScreen> {
+  final MapController _mapController = MapController();
+  Rect? _selectionRect;
+  bool _initialized = false;
+
+  bool get _isEditing => widget.existingStore != null;
+
+  @override
+  void initState() {
+    super.initState();
+    if (_isEditing) {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _loadExistingBounds(),
+      );
+    } else {
+      // Without this the selection box always starts on Kuala Lumpur
+      // (defaultMapCenter) regardless of where the user actually is,
+      // forcing them to pan/search for their own surroundings before they
+      // can even start picking an area — most of the time they just want to
+      // download the area they're standing in right now.
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _centerOnUserLocation(),
+      );
+    }
+  }
+
+  /// Best-effort only — the selection box stays screen-centered regardless
+  /// (see _initSelectionRect), so a failed/slow fix just means the map keeps
+  /// its default center; the user can still pan manually as before.
+  Future<void> _centerOnUserLocation() async {
+    try {
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        return;
+      }
+      if (!await Geolocator.isLocationServiceEnabled()) return;
+      // Last-known only (no live stream) — this screen is a one-time area
+      // picker, not a live-tracking map, so an instant cached fix (or
+      // nothing) is all it needs.
+      final lastKnown = await Geolocator.getLastKnownPosition();
+      if (lastKnown == null || !mounted) return;
+      _mapController.move(
+        LatLng(lastKnown.latitude, lastKnown.longitude),
+        defaultMapZoom,
+      );
+    } catch (_) {
+      // Best-effort, see doc comment above.
+    }
+  }
+
+  @override
+  void dispose() {
+    _mapController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadExistingBounds() async {
+    final metadata = await widget.existingStore!.metadata.read;
+    final north = double.tryParse(metadata['north'] ?? '');
+    final south = double.tryParse(metadata['south'] ?? '');
+    final east = double.tryParse(metadata['east'] ?? '');
+    final west = double.tryParse(metadata['west'] ?? '');
+    if (north == null || south == null || east == null || west == null) {
+      setState(() => _initialized = true);
+      return;
+    }
+
+    final bounds = LatLngBounds(LatLng(north, east), LatLng(south, west));
+    final fitted = CameraFit.bounds(
+      bounds: bounds,
+      padding: const EdgeInsets.all(40),
+    ).fit(_mapController.camera);
+    _mapController.move(fitted.center, fitted.zoom);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final camera = _mapController.camera;
+      final p1 = camera.latLngToScreenOffset(LatLng(north, east));
+      final p2 = camera.latLngToScreenOffset(LatLng(south, west));
+      setState(() {
+        _selectionRect = Rect.fromPoints(p1, p2);
+        _initialized = true;
+      });
+    });
+  }
+
+  void _initSelectionRect(Size mapSize) {
+    if (_initialized) return;
+    final center = mapSize.center(Offset.zero);
+    _selectionRect = Rect.fromCenter(
+      center: center,
+      width: _defaultBoxSize,
+      height: _defaultBoxSize,
+    );
+    _initialized = true;
+  }
+
+  void _onBodyDrag(DragUpdateDetails details, Size mapSize) {
+    final rect = _selectionRect!;
+    final newLeft = (rect.left + details.delta.dx).clamp(
+      0.0,
+      mapSize.width - rect.width,
+    );
+    final newTop = (rect.top + details.delta.dy).clamp(
+      0.0,
+      mapSize.height - rect.height,
+    );
+    setState(
+      () => _selectionRect = Rect.fromLTWH(
+        newLeft,
+        newTop,
+        rect.width,
+        rect.height,
+      ),
+    );
+  }
+
+  /// Corner handles resize both edges they touch; the four edge-midpoint
+  /// handles resize only the one edge they sit on (a "straight" resize).
+  void _onHandleDrag(_Handle handle, DragUpdateDetails details, Size mapSize) {
+    final rect = _selectionRect!;
+    var left = rect.left;
+    var top = rect.top;
+    var right = rect.right;
+    var bottom = rect.bottom;
+
+    const adjustsLeft = {
+      _Handle.topLeft,
+      _Handle.centerLeft,
+      _Handle.bottomLeft,
+    };
+    const adjustsRight = {
+      _Handle.topRight,
+      _Handle.centerRight,
+      _Handle.bottomRight,
+    };
+    const adjustsTop = {_Handle.topLeft, _Handle.topCenter, _Handle.topRight};
+    const adjustsBottom = {
+      _Handle.bottomLeft,
+      _Handle.bottomCenter,
+      _Handle.bottomRight,
+    };
+
+    if (adjustsLeft.contains(handle))
+      left = (left + details.delta.dx).clamp(0.0, right - _minBoxSize);
+    if (adjustsRight.contains(handle))
+      right = (right + details.delta.dx).clamp(
+        left + _minBoxSize,
+        mapSize.width,
+      );
+    if (adjustsTop.contains(handle))
+      top = (top + details.delta.dy).clamp(0.0, bottom - _minBoxSize);
+    if (adjustsBottom.contains(handle))
+      bottom = (bottom + details.delta.dy).clamp(
+        top + _minBoxSize,
+        mapSize.height,
+      );
+
+    setState(() => _selectionRect = Rect.fromLTRB(left, top, right, bottom));
+  }
+
+  LatLngBounds _currentBounds() {
+    final camera = _mapController.camera;
+    final rect = _selectionRect!;
+    return LatLngBounds(
+      camera.screenOffsetToLatLng(rect.topLeft),
+      camera.screenOffsetToLatLng(rect.bottomRight),
+    );
+  }
+
+  Future<void> _saveNewRegion() async {
+    final rect = _selectionRect;
+    if (rect == null) return;
+
+    final name = await showValidatedTextDialog(
+      context: context,
+      title: 'Name this area',
+      confirmLabel: 'Download',
+      hintText: 'e.g. Klang Valley',
+      validate: (value) async {
+        if (await FMTCStore(value).manage.ready) {
+          return 'Cannot be the same name as an existing map.';
+        }
+        return null;
+      },
+    );
+    if (name == null) return;
+
+    await OfflineDownloadManager.instance.startNewRegion(
+      storeName: name,
+      bounds: _currentBounds(),
+      minZoom: minDownloadZoom.round(),
+      maxZoom: maxDownloadZoom.round(),
+    );
+    if (!mounted) return;
+    Navigator.of(context).pop(true);
+  }
+
+  Future<void> _saveEditedBounds() async {
+    final rect = _selectionRect;
+    if (rect == null) return;
+    await OfflineDownloadManager.instance.updateBounds(
+      storeName: widget.existingStore!.storeName,
+      bounds: _currentBounds(),
+      minZoom: minDownloadZoom.round(),
+      maxZoom: maxDownloadZoom.round(),
+    );
+    if (!mounted) return;
+    Navigator.of(context).pop(true);
+  }
+
+  Future<void> _rename() async {
+    final store = widget.existingStore!;
+    final newName = await showValidatedTextDialog(
+      context: context,
+      title: 'Rename region',
+      confirmLabel: 'Save',
+      initialValue: store.storeName,
+      validate: (value) async {
+        if (value == store.storeName) return null;
+        if (await FMTCStore(value).manage.ready) {
+          return 'Cannot be the same name as an existing map.';
+        }
+        return null;
+      },
+    );
+    if (newName == null || newName == store.storeName) return;
+    await store.manage.rename(newName);
+    if (!mounted) return;
+    Navigator.of(context).pop(true);
+  }
+
+  Future<void> _delete() async {
+    final store = widget.existingStore!;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Delete "${store.storeName}"?'),
+        content: const Text(
+          'This removes all downloaded tiles for this region.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await store.manage.delete();
+    if (!mounted) return;
+    Navigator.of(context).pop(true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        foregroundColor: Colors.black,
+        title: Text(
+          _isEditing ? widget.existingStore!.storeName : 'Download Map Area',
+        ),
+        actions: _isEditing
+            ? [
+                IconButton(
+                  onPressed: _rename,
+                  icon: const Icon(Icons.edit_outlined),
+                ),
+                IconButton(
+                  onPressed: _delete,
+                  icon: const Icon(Icons.delete_outline),
+                ),
+              ]
+            : null,
+      ),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final mapSize = Size(constraints.maxWidth, constraints.maxHeight);
+          if (!_isEditing) _initSelectionRect(mapSize);
+          final rect = _selectionRect;
+          return Stack(
+            children: [
+              FlutterMap(
+                mapController: _mapController,
+                options: const MapOptions(
+                  initialCenter: defaultMapCenter,
+                  initialZoom: defaultMapZoom,
+                  // Keeps screenOffsetToLatLng (used to convert the box's
+                  // corners) accurate — that math assumes a north-up map.
+                  interactionOptions: InteractionOptions(
+                    flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
+                  ),
+                ),
+                children: [
+                  TileLayer(
+                    urlTemplate: osmTileUrlTemplate,
+                    userAgentPackageName: osmUserAgentPackageName,
+                    tileProvider: FMTCTileProvider.allStores(
+                      allStoresStrategy: BrowseStoreStrategy.read,
+                      loadingStrategy: BrowseLoadingStrategy.cacheFirst,
+                    ),
+                  ),
+                ],
+              ),
+              if (rect != null) ...[
+                // Box body — drag anywhere inside (away from a handle) to move it.
+                Positioned(
+                  left: rect.left,
+                  top: rect.top,
+                  width: rect.width,
+                  height: rect.height,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onPanUpdate: (details) => _onBodyDrag(details, mapSize),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.red, width: 3),
+                      ),
+                    ),
+                  ),
+                ),
+                for (final handle in _Handle.values)
+                  _buildHandle(handle, rect, mapSize),
+              ],
+              const Positioned(
+                top: 12,
+                left: 12,
+                right: 12,
+                child: Text(
+                  'Pan & zoom the map. Drag inside the box to move it, or a handle to resize.',
+                  style: TextStyle(
+                    color: Colors.white,
+                    backgroundColor: Colors.black54,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+      floatingActionButton: FloatingActionButton(
+        backgroundColor: const Color(0xFFA7C7E7),
+        foregroundColor: Colors.black,
+        tooltip: _isEditing ? 'Save & re-download' : 'Download this area',
+        onPressed: _isEditing ? _saveEditedBounds : _saveNewRegion,
+        child: Icon(_isEditing ? Icons.save : Icons.download),
+      ),
+    );
+  }
+
+  Widget _buildHandle(_Handle handle, Rect rect, Size mapSize) {
+    final double cx = switch (handle) {
+      _Handle.topLeft || _Handle.centerLeft || _Handle.bottomLeft => rect.left,
+      _Handle.topCenter || _Handle.bottomCenter => rect.center.dx,
+      _Handle.topRight ||
+      _Handle.centerRight ||
+      _Handle.bottomRight => rect.right,
+    };
+    final double cy = switch (handle) {
+      _Handle.topLeft || _Handle.topCenter || _Handle.topRight => rect.top,
+      _Handle.centerLeft || _Handle.centerRight => rect.center.dy,
+      _Handle.bottomLeft ||
+      _Handle.bottomCenter ||
+      _Handle.bottomRight => rect.bottom,
+    };
+    const hitSize = _handleSize + 18;
+    return Positioned(
+      left: cx - hitSize / 2,
+      top: cy - hitSize / 2,
+      // Hit target is bigger than the visible dot — a 14px circle is too
+      // small to reliably grab with a finger.
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanUpdate: (details) => _onHandleDrag(handle, details, mapSize),
+        child: SizedBox(
+          width: hitSize,
+          height: hitSize,
+          child: Center(
+            child: Container(
+              width: _handleSize,
+              height: _handleSize,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white,
+                border: Border.all(color: Colors.red, width: 2),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Colors.black26,
+                    blurRadius: 3,
+                    offset: Offset(0, 1),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

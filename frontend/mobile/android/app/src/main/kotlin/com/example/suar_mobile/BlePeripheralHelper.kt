@@ -28,13 +28,15 @@ private const val TAG = "BlePeripheralHelper"
 // Must match constants.dart's suarServiceUuid / suarGattAckCharacteristicUuid.
 private val SERVICE_UUID = UUID.fromString("0000F00D-0000-1000-8000-00805F9B34FB")
 private val ACK_CHARACTERISTIC_UUID = UUID.fromString("0000FEED-0000-1000-8000-00805F9B34FB")
-// Read-only: 2 bytes — [0] non-zero means "this device's chipset can't
+// Read-only header + id: [0] non-zero means "this device's chipset can't
 // initiate Wi-Fi Direct discovery — connect to it instead", [1] is this
-// device's current Dart-side role (0=victim, 1=helper), letting a scanner
-// branch between the RSSI-ack handshake and the DTN relay handshake using the
-// same brief connection. Lives on the same GATT service/connection as the ack
-// write, so it costs nothing extra in the 31-byte advertisement payload
-// (which is already at its hard cap, see below).
+// device's current Dart-side role (0=victim, 1=helper) letting a scanner branch
+// between the RSSI-ack handshake and the DTN relay handshake, [2] non-zero
+// means this device's regular Wi-Fi is joined to an access point (drives the
+// association-aware group-owner decision), then [3..] is the app deviceId. All
+// on the same GATT service/connection as the ack write, so it costs nothing
+// extra in the 31-byte advertisement payload (which is already at its hard
+// cap, see below).
 private val STATUS_CHARACTERISTIC_UUID = UUID.fromString("0000BEEF-0000-1000-8000-00805F9B34FB")
 
 /// Victim-side BLE role: advertise + host a GATT server for the ACK
@@ -49,6 +51,14 @@ class BlePeripheralHelper(private val context: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var needsPull: Boolean = false
     @Volatile private var role: Int = 0
+    // Whether this device's regular Wi-Fi is currently joined to an access
+    // point. Served on the status characteristic so a connecting peer can run
+    // an association-aware Wi-Fi Direct group-owner decision: on single-radio
+    // chipsets a device joined to an AP can host a P2P group on its own
+    // (STA) channel but can't follow a free peer's group to a different
+    // channel, so the AP-joined side must be the one that hosts. Kept fresh by
+    // the Dart side (setAssociated) from its periodic radio check.
+    @Volatile private var associated: Boolean = false
     // This device's own app deviceId (the UUID string), served on the status
     // characteristic read so a peer Helper can run a deterministic Wi-Fi Direct
     // group-owner election against it (see onCharacteristicReadRequest). It does
@@ -73,6 +83,10 @@ class BlePeripheralHelper(private val context: Context) {
 
     fun setRole(value: Int) {
         role = value
+    }
+
+    fun setAssociated(value: Boolean) {
+        associated = value
     }
 
     fun isAdvertising(result: MethodChannel.Result) {
@@ -134,10 +148,23 @@ class BlePeripheralHelper(private val context: Context) {
                 }
             }
             if (characteristic.uuid == ACK_CHARACTERISTIC_UUID && value.size >= 4) {
-                val rssi = ByteBuffer.wrap(value).order(ByteOrder.LITTLE_ENDIAN).int
-                Log.d(TAG, "ACK decoded: helperDeviceId=${device.address} rssi=$rssi")
+                val rssi = ByteBuffer.wrap(value, 0, 4).order(ByteOrder.LITTLE_ENDIAN).int
+                // Optional 5th byte: the connecting Helper telling this (free)
+                // Victim that the Helper is the one that must host the Wi-Fi
+                // Direct group (because the Helper is AP-joined and this device
+                // isn't — see the `associated` field). Older Helper builds write
+                // only the 4-byte rssi, so a missing byte means "no, you host as
+                // usual" and nothing changes.
+                val helperWillHost = value.size >= 5 && value[4].toInt() != 0
+                Log.d(TAG, "ACK decoded: helperDeviceId=${device.address} rssi=$rssi helperWillHost=$helperWillHost")
                 mainHandler.post {
-                    eventSink?.success(mapOf("helperDeviceId" to device.address, "rssi" to rssi))
+                    eventSink?.success(
+                        mapOf(
+                            "helperDeviceId" to device.address,
+                            "rssi" to rssi,
+                            "helperWillHost" to helperWillHost
+                        )
+                    )
                 }
             }
         }
@@ -150,18 +177,25 @@ class BlePeripheralHelper(private val context: Context) {
         ) {
             if (characteristic.uuid == STATUS_CHARACTERISTIC_UUID) {
                 try {
-                    // [0]=needsPull, [1]=role, [2..]=this device's app deviceId
-                    // (UTF-8). The deviceId lets a peer Helper run a
-                    // deterministic group-owner election (lower id = GO) so
-                    // exactly ONE side calls connect() over Wi-Fi Direct —
-                    // eliminating the simultaneous-connect "glare" that made
-                    // Helper-Helper relay fail NO_GROUP/BUSY on real hardware.
-                    // Sliced by offset so the value survives the default 23-byte
-                    // ATT MTU: a UUID string alone is 36 bytes, so the Android
-                    // stack issues READ_BLOB requests for the remainder and the
-                    // central reassembles the full value — no MTU renegotiation
-                    // needed on the (proven-reliable) ack connection.
-                    val header = byteArrayOf(if (needsPull) 1 else 0, role.toByte())
+                    // [0]=needsPull, [1]=role, [2]=associated (joined to a
+                    // Wi-Fi AP), [3..]=this device's app deviceId (UTF-8). The
+                    // deviceId lets a peer Helper run a deterministic group-owner
+                    // election (lower id = GO) so exactly ONE side calls
+                    // connect() over Wi-Fi Direct — eliminating the
+                    // simultaneous-connect "glare" that made Helper-Helper relay
+                    // fail NO_GROUP/BUSY on real hardware. The associated byte
+                    // upgrades that election to be association-aware (the
+                    // AP-joined side hosts; see the field doc). Sliced by offset
+                    // so the value survives the default 23-byte ATT MTU: a UUID
+                    // string alone is 36 bytes, so the Android stack issues
+                    // READ_BLOB requests for the remainder and the central
+                    // reassembles the full value — no MTU renegotiation needed on
+                    // the (proven-reliable) ack connection.
+                    val header = byteArrayOf(
+                        if (needsPull) 1 else 0,
+                        role.toByte(),
+                        if (associated) 1 else 0
+                    )
                     val full = header + deviceId.toByteArray(StandardCharsets.UTF_8)
                     val slice = if (offset >= full.size) {
                         ByteArray(0)

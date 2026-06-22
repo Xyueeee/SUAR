@@ -95,6 +95,19 @@ class BLEManager {
     }
   }
 
+  /// Tells the GATT status characteristic whether this device's regular Wi-Fi
+  /// is currently joined to an access point — read by whoever connects so the
+  /// pair can pick the AP-joined side to host the Wi-Fi Direct group (the only
+  /// side a single-radio chipset can reach across a channel mismatch). Refreshed
+  /// periodically by the controllers, since association can change mid-session.
+  Future<void> setAssociated(bool value) async {
+    try {
+      await _peripheralChannel.invokeMethod('setAssociated', {'value': value});
+    } catch (e) {
+      _emit('setAssociated failed: $e');
+    }
+  }
+
   /// Lets a watchdog notice if native BLE advertising silently died (some
   /// OEMs are known to kill background BLE activity with no callback) and
   /// restart it instead of looking active while actually invisible to
@@ -206,8 +219,28 @@ class BLEManager {
   /// a deterministic Wi-Fi Direct group-owner election (see HelperController.
   /// _attemptHelperRelay); it's null only if the read failed or the peer is an
   /// older build that doesn't serve it.
-  Future<({bool success, bool needsPull, int role, String? peerDeviceId})>
-  sendRssiAck(BluetoothDevice device, int rssi) async {
+  ///
+  /// Also returns whether the peer is joined to a Wi-Fi AP (peerAssociated,
+  /// upgrades the election to be association-aware) and whether THIS device
+  /// decided it must host the Wi-Fi Direct group for a free Victim it can't
+  /// otherwise reach (helperWillHost — written as a 5th ack byte so that Victim
+  /// yields its group and pushes here). [myAssociated] is this device's own
+  /// AP-join state, supplied by the caller, which feeds that decision.
+  Future<
+    ({
+      bool success,
+      bool needsPull,
+      int role,
+      String? peerDeviceId,
+      bool peerAssociated,
+      bool helperWillHost,
+    })
+  >
+  sendRssiAck(
+    BluetoothDevice device,
+    int rssi, {
+    bool myAssociated = false,
+  }) async {
     try {
       _emit('Connecting to ${device.remoteId} for GATT ACK…');
       // mtu:null skips the automatic MTU negotiation flutter_blue_plus does by
@@ -242,18 +275,10 @@ class BLEManager {
       final service = services.firstWhere(
         (s) => s.uuid == Guid(suarServiceUuid),
       );
-      final characteristic = service.characteristics.firstWhere(
-        (c) => c.uuid == Guid(suarGattAckCharacteristicUuid),
-      );
-      final bytes = (ByteData(
-        4,
-      )..setInt32(0, rssi, Endian.little)).buffer.asUint8List();
-      await characteristic.write(bytes);
-      _emit('GATT ACK written to ${device.remoteId} rssi=$rssi');
-
       var needsPull = false;
       var role = bleRoleVictim;
       String? peerDeviceId;
+      var peerAssociated = false;
       try {
         final statusChar = service.characteristics.firstWhere(
           (c) => c.uuid == Guid(suarStatusCharacteristicUuid),
@@ -265,9 +290,10 @@ class BLEManager {
         final statusBytes = await statusChar.read();
         needsPull = statusBytes.isNotEmpty && statusBytes[0] != 0;
         if (statusBytes.length > 1) role = statusBytes[1];
-        if (statusBytes.length > 2) {
+        if (statusBytes.length > 2) peerAssociated = statusBytes[2] != 0;
+        if (statusBytes.length > 3) {
           final decoded = utf8
-              .decode(statusBytes.sublist(2), allowMalformed: true)
+              .decode(statusBytes.sublist(3), allowMalformed: true)
               .replaceAll(' ', '');
           if (decoded.isNotEmpty) peerDeviceId = decoded;
         }
@@ -278,12 +304,35 @@ class BLEManager {
         _emit('Status read skipped: $e');
       }
 
+      // The one case where this device must host instead of pull: it is a
+      // Helper joined to a Wi-Fi AP and the peer is a free Victim waiting to be
+      // pulled. On a single-radio chipset this device cannot follow that free
+      // Victim's group across a channel mismatch, so it tells the Victim (5th
+      // ack byte) to yield its group and push here, and becomes the host.
+      final helperWillHost =
+          needsPull && role == bleRoleVictim && myAssociated && !peerAssociated;
+      final characteristic = service.characteristics.firstWhere(
+        (c) => c.uuid == Guid(suarGattAckCharacteristicUuid),
+      );
+      final bytes =
+          (ByteData(5)
+                ..setInt32(0, rssi, Endian.little)
+                ..setUint8(4, helperWillHost ? 1 : 0))
+              .buffer
+              .asUint8List();
+      await characteristic.write(bytes);
+      _emit(
+        'GATT ACK written to ${device.remoteId} rssi=$rssi host=$helperWillHost',
+      );
+
       await device.disconnect();
       return (
         success: true,
         needsPull: needsPull,
         role: role,
         peerDeviceId: peerDeviceId,
+        peerAssociated: peerAssociated,
+        helperWillHost: helperWillHost,
       );
     } catch (e) {
       _emit('GATT write failed: $e');
@@ -297,6 +346,8 @@ class BLEManager {
         needsPull: false,
         role: bleRoleVictim,
         peerDeviceId: null,
+        peerAssociated: false,
+        helperWillHost: false,
       );
     }
   }

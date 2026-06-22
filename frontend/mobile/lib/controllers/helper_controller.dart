@@ -68,12 +68,53 @@ class HelperController {
   // Same concurrency concern as _pullInFlight, for the Helper-to-Helper DTN
   // relay handshake (_attemptHelperRelay) instead of the Victim pull path.
   final Set<String> _relayInFlight = {};
+  // When a Victim pull ends with THIS device as group owner (so it can't dial
+  // out to fetch — see _attemptActivePull), how many times in a row that has
+  // happened per peer, plus a short teardown timer per peer. This recovers
+  // from the single-channel-concurrency deadlock confirmed on real hardware:
+  // an AP-associated puller can't reach a free Victim's group-owner channel,
+  // so P2P falls back to making US the owner too — and two owners can never
+  // join, so the pair would sit forever. We tear our just-formed group down
+  // after a grace window (so the next contact retries clean) and escalate to a
+  // plain-language hint after a couple of tries. Bounded recovery instead of a
+  // silent infinite wait — the resilience pattern this disaster app needs.
+  final Map<String, int> _pullEndedAsOwnerStreak = {};
+  final Map<String, Timer> _pullOwnerTeardownTimers = {};
+  static const int _pullOwnerHintAfterStreak = 2;
+  static const Duration _pullOwnerTeardownGrace = Duration(seconds: 4);
+  // After a successful pull from a passive group-owner Victim, skip re-pulling
+  // it for this long. A passive Victim keeps advertising needsPull=true, so
+  // without this the Helper re-ran discoverPeers()+connect() against the SAME
+  // already-collected Victim on every ack cycle (~12s) — and on real hardware
+  // every connect() to its group re-popped the system "Allow Wi-Fi Direct
+  // connection?" prompt on the Victim's screen (worst on Samsung One UI, which
+  // never auto-accepts). Bundle dedup already dropped the re-pulled data, so
+  // that reconnect bought nothing but prompt spam. A fresh triage update after
+  // the cooldown still gets collected on the next contact.
+  static const Duration _pullCooldown = Duration(minutes: 2);
+  final Map<String, DateTime> _pulledRecentlyAt = {};
   // Set around every discoverPeers()+connectToHelper() call this controller
   // makes itself (inside _attemptActivePull/_attemptHelperRelay) — guards the
   // reactive connectionFormedStream listener below against double-handling a
   // connection those methods are already explicitly processing.
   bool _explicitWifiDirectInFlight = false;
   bool _stopped = false;
+
+  // Self-heal for a wedged Wi-Fi Direct stack. Two confirmed-on-hardware
+  // failure modes compound across a session: connect() times out with NO_GROUP
+  // against a perfectly-formed Victim group owner, and the very next
+  // discoverPeers() then returns 0 peers even though the Victim is still right
+  // there (its BLE beacon keeps being detected/ACKed). A per-attempt
+  // disconnect() clears one cycle but the framework can stay stuck for many in
+  // a row. Counting consecutive wedged cycles (empty discovery OR failed
+  // connect, NOT a clean pull or the separate both-ended-as-owner case which
+  // has its own recovery) and, past a threshold, doing the same full P2P
+  // teardown+restart that leaving and re-entering the screen does, gives the
+  // stack a genuine clean slate instead of compounding the stuck state. Reset
+  // to 0 on any successful pull.
+  int _wifiStuckStreak = 0;
+  static const int _wifiStuckRecoverAfter = 3;
+  bool _wifiRecovering = false;
 
   // Android can silently kill BLE scanning, BLE advertising, or the Wi-Fi
   // Direct accept-loop thread in the background on some OEMs — no error, no
@@ -134,6 +175,18 @@ class HelperController {
       // during the handshake below) is how a scanner tells which kind of
       // device it just found.
       await bleManager.setRole(bleRoleHelper);
+      // Broadcast a neutral, role-tagged Wi-Fi Direct name so a peer's connect
+      // prompt reads "Helper-1A2B" (clearly a SUAR helper, and anonymous)
+      // instead of this phone's real model name. Best-effort — see
+      // setP2pDeviceName.
+      await wifiDirectManager.setP2pDeviceName(
+        'Helper-${deviceNameSuffix(deviceId!)}',
+      );
+      // Publish this device's Wi-Fi-AP-join state on the status characteristic
+      // so a peer Helper reading it can run the association-aware group-owner
+      // election (see _attemptHelperRelay). Refreshed by the watchdog below,
+      // since association can change mid-session.
+      await _publishAssociation();
       await bleManager.startAdvertising(deviceId!);
       // DTNManager's relay queue is in-memory only — it starts empty on every
       // fresh HelperController (a new mode-screen instance, e.g. after
@@ -213,10 +266,24 @@ class HelperController {
           );
           await wifiDirectManager.startServer();
         }
+        if (_stopped) return;
+        // Keep the advertised AP-join state fresh — it drives the
+        // association-aware election and can change mid-session (a network
+        // joins, drops, or gets auto-disabled by the OS).
+        await _publishAssociation();
       });
     } catch (e) {
       _emit('Helper mode start failed: $e');
     }
+  }
+
+  /// Pushes this device's current Wi-Fi-AP-join state onto the BLE status
+  /// characteristic so a connecting peer reads it during the ack handshake.
+  Future<void> _publishAssociation() async {
+    final associated =
+        (await WiFiDirectManager.getStaInfo())?['associated'] as bool? ?? false;
+    if (_stopped) return;
+    await bleManager.setAssociated(associated);
   }
 
   Future<void> _cancelSubs() async {
@@ -258,7 +325,15 @@ class HelperController {
 
     final attempt = (_ackAttempts[victimDeviceId] ?? 0) + 1;
     _ackAttempts[victimDeviceId] = attempt;
-    final result = await bleManager.sendRssiAck(device, rssi);
+    // This device's own AP-join state — written into the ack so the peer can
+    // run the association-aware group-owner decision, and reused locally below.
+    final myAssociated =
+        (await WiFiDirectManager.getStaInfo())?['associated'] as bool? ?? false;
+    final result = await bleManager.sendRssiAck(
+      device,
+      rssi,
+      myAssociated: myAssociated,
+    );
     _ackInFlight.remove(victimDeviceId);
     if (_stopped) return;
 
@@ -268,18 +343,31 @@ class HelperController {
       if (result.role == bleRoleHelper) {
         // Not actually a Victim — a peer Helper found via the same BLE scan.
         // Don't run the Victim pull-mode logic against it; do a DTN relay
-        // handshake instead. result.peerDeviceId is the peer's app-UUID (read
-        // over GATT just now) — the input to the deterministic group-owner
-        // election that stops both Helpers from connect()-ing at once.
+        // handshake instead. peerDeviceId is the peer's app-UUID and
+        // peerAssociated its AP-join state — both inputs to the
+        // association-aware group-owner election that stops both Helpers from
+        // connect()-ing at once AND keeps the AP-joined side as the host.
         unawaited(
-          _attemptHelperRelay(victimDeviceId, peerAppUuid: result.peerDeviceId),
+          _attemptHelperRelay(
+            victimDeviceId,
+            peerAppUuid: result.peerDeviceId,
+            peerAssociated: result.peerAssociated,
+            myAssociated: myAssociated,
+          ),
         );
         return;
       }
       if (result.needsPull) {
-        // This victim's chipset can't initiate Wi-Fi Direct itself — don't
-        // block the ack bookkeeping on the pull attempt, just kick it off.
-        unawaited(_attemptActivePull(victimDeviceId));
+        if (result.helperWillHost) {
+          // This Helper is on a Wi-Fi network and the Victim is free, so it
+          // can't reach the Victim's group across the channel mismatch. It told
+          // the Victim (over BLE) to push instead, and hosts the group here.
+          unawaited(_hostForVictim(victimDeviceId));
+        } else {
+          // This victim's chipset can't initiate Wi-Fi Direct itself — don't
+          // block the ack bookkeeping on the pull attempt, just kick it off.
+          unawaited(_attemptActivePull(victimDeviceId));
+        }
       }
       return;
     }
@@ -319,7 +407,15 @@ class HelperController {
   /// and pushes into Helper's already-running normal server instead — same
   /// path bundleReceivedStream always uses, no extra code needed here.
   Future<void> _attemptActivePull(String victimDeviceId) async {
-    if (_stopped || !_pullInFlight.add(victimDeviceId)) return;
+    if (_stopped) return;
+    // Recently pulled this Victim — don't reconnect (and re-prompt it) just to
+    // re-fetch data we'd dedupe away. See _pullCooldown.
+    final lastPull = _pulledRecentlyAt[victimDeviceId];
+    if (lastPull != null &&
+        DateTime.now().difference(lastPull) < _pullCooldown) {
+      return;
+    }
+    if (!_pullInFlight.add(victimDeviceId)) return;
     _explicitWifiDirectInFlight = true;
     try {
       _emit(
@@ -331,6 +427,7 @@ class HelperController {
         _emit(
           'No Wi-Fi Direct peers discovered while connecting to $victimDeviceId',
         );
+        _wifiStuckStreak++;
         // Confirmed on real hardware: a stuck/stale P2P discovery state
         // (left over from a previous app run, or just bad luck) can keep
         // returning 0 peers forever — nothing else in this path ever calls
@@ -351,6 +448,7 @@ class HelperController {
       if (_stopped) return;
       if (connectionInfo == null) {
         _emit('Could not connect to Wi-Fi Direct peer $victimDeviceId');
+        _wifiStuckStreak++;
         // Confirmed on real hardware: a failed connect() (NO_GROUP) can leave
         // the P2P stack mid-negotiation, and the very next discoverPeers()
         // call comes back BUSY (reason=2) as a result. Clean up before the
@@ -361,11 +459,43 @@ class HelperController {
       }
       final isGroupOwner = connectionInfo['isGroupOwner'] as bool? ?? false;
       if (isGroupOwner) {
-        // Helper ended up GO, not client — can't dial out to fetch (that
-        // address would be itself). The Victim's own broadcast listener will
-        // notice it's the client and push into this device's running server.
+        // We became group owner instead of joining the Victim's group. The
+        // usual real-hardware cause: this device is associated to a normal
+        // Wi-Fi network, so single-channel concurrency stops it reaching the
+        // Victim's group-owner channel, and P2P falls back to making US the
+        // owner (confirmed: a free Victim GO + an AP-locked puller = two
+        // owners, neither can join the other). A passive autonomous-GO Victim
+        // never pushes into us, so the old "wait for it to push" hung forever
+        // AND leaked this group into the next attempt.
+        //
+        // Give any legitimate reactive push (the rarer legacy non-GO Victim
+        // case — its bundle lands via the normal server path) a short grace
+        // window, then tear our group down so the next contact retries from a
+        // clean slate. Re-pull spacing comes free from the ~12s ack cooldown,
+        // so no extra backoff is needed here.
+        final streak = (_pullEndedAsOwnerStreak[victimDeviceId] ?? 0) + 1;
+        _pullEndedAsOwnerStreak[victimDeviceId] = streak;
         _emit(
-          'Connected to $victimDeviceId as group owner — waiting for it to push',
+          'Could not join $victimDeviceId — both ended up as hosts; will '
+          'retry on the next contact',
+        );
+        if (streak == _pullOwnerHintAfterStreak) {
+          // Plain words on purpose — this shows in the user-facing activity
+          // feed. The amber radio banner carries the same hint persistently.
+          _emit(
+            'Still cannot finish the nearby transfer. If this phone is '
+            'connected to a Wi-Fi network, leaving that network (keep Wi-Fi '
+            'switched on) usually fixes it.',
+          );
+        }
+        _pullOwnerTeardownTimers[victimDeviceId]?.cancel();
+        _pullOwnerTeardownTimers[victimDeviceId] = Timer(
+          _pullOwnerTeardownGrace,
+          () async {
+            _pullOwnerTeardownTimers.remove(victimDeviceId);
+            if (_stopped) return;
+            await wifiDirectManager.disconnect();
+          },
         );
         return;
       }
@@ -377,9 +507,88 @@ class HelperController {
         _emit('Pull from $victimDeviceId returned nothing');
         return;
       }
+      // A clean pull means the deadlock above isn't happening with this peer —
+      // clear any escalation state so a later one-off owner outcome starts fresh.
+      _pullEndedAsOwnerStreak.remove(victimDeviceId);
+      // The stack is demonstrably healthy this cycle — reset the self-heal
+      // counter so transient one-off failures never accumulate into a reset.
+      _wifiStuckStreak = 0;
+      // Start the cooldown so the next ack cycles don't reconnect/re-prompt
+      // this Victim for the same data (set only on success — a failed pull
+      // must stay retryable on the next contact).
+      _pulledRecentlyAt[victimDeviceId] = DateTime.now();
       await _onBundleJsonReceived(json);
     } finally {
       _explicitWifiDirectInFlight = false;
+      _pullInFlight.remove(victimDeviceId);
+    }
+    // After the in-flight guards are cleared (so the reset's own disconnect()
+    // can't collide with this attempt): if too many cycles wedged in a row,
+    // reset the whole P2P stack before the next contact retries into the same
+    // stuck state.
+    if (!_stopped && _wifiStuckStreak >= _wifiStuckRecoverAfter) {
+      await _recoverWifiDirectStack();
+    }
+  }
+
+  /// Full Wi-Fi Direct stack reset — the same teardown+restart that leaving and
+  /// re-entering the Helper screen performs, triggered automatically once
+  /// connect()/discovery have wedged [_wifiStuckRecoverAfter] cycles in a row.
+  /// Tears the P2P framework all the way down (disconnect() chains
+  /// stopPeerDiscovery → cancelConnect → removeGroup) and rebuilds the transfer
+  /// server from scratch, giving the next BLE-driven contact a genuine clean
+  /// slate instead of compounding a stuck discovery/negotiation state. BLE is
+  /// left untouched on purpose — it stays healthy throughout these failures, so
+  /// resetting it would only cost rediscovery time for no benefit.
+  Future<void> _recoverWifiDirectStack() async {
+    if (_wifiRecovering) return;
+    _wifiRecovering = true;
+    try {
+      _emit(
+        'Wi-Fi Direct stuck after $_wifiStuckStreak attempts — resetting the '
+        'radio stack (same as reopening this screen)',
+      );
+      await wifiDirectManager.stopServer();
+      await wifiDirectManager.disconnect();
+      if (_stopped) return;
+      // Let the single-threaded P2P framework finish settling the teardown
+      // before anything dials into it again — firing the next request on top of
+      // an in-flight removeGroup is exactly what returns BUSY (reason=2).
+      await Future.delayed(const Duration(milliseconds: 1200));
+      if (_stopped) return;
+      await wifiDirectManager.startServer();
+      _wifiStuckStreak = 0;
+      _emit('Wi-Fi Direct stack reset — ready to retry on the next contact');
+    } finally {
+      _wifiRecovering = false;
+    }
+  }
+
+  /// Used when this Helper is the one joined to a Wi-Fi access point while the
+  /// Victim is free: a single-radio chipset can host a Wi-Fi Direct group on
+  /// its own (AP) channel but can't follow a free peer's group to a different
+  /// channel, so the AP-joined side must host. The Victim was told over BLE
+  /// (the helperWillHost ack byte) to yield its own group and push into this
+  /// one, which arrives on the already-running server (bundleReceivedStream).
+  /// createGroup is idempotent natively (it reuses an existing group), so a
+  /// repeat on the next contact is a cheap no-op.
+  ///
+  /// ponytail: while holding this group as owner the device can't also dial out
+  /// to pull other peers — fine for the AP-joined case (it couldn't pull anyway)
+  /// and for the 2-device test; revisit with ephemeral teardown if one device
+  /// must serve free Victims AND pull others at once in a 3+ device mesh.
+  Future<void> _hostForVictim(String victimDeviceId) async {
+    if (_stopped || !_pullInFlight.add(victimDeviceId)) return;
+    try {
+      final ok = await wifiDirectManager.createGroup();
+      _emit(
+        ok
+            ? 'On Wi-Fi, so hosting the nearby connection for $victimDeviceId — '
+                  'waiting for it to send'
+            : 'Could not start hosting for $victimDeviceId — will retry on the '
+                  'next contact',
+      );
+    } finally {
       _pullInFlight.remove(victimDeviceId);
     }
   }
@@ -405,6 +614,8 @@ class HelperController {
   Future<void> _attemptHelperRelay(
     String peerHelperDeviceId, {
     String? peerAppUuid,
+    bool peerAssociated = false,
+    bool myAssociated = false,
   }) async {
     if (_stopped || !_relayInFlight.add(peerHelperDeviceId)) return;
     _explicitWifiDirectInFlight = true;
@@ -415,10 +626,23 @@ class HelperController {
       // actively discover + connect jitter" path, which still works most of
       // the time and is no worse than before this election existed.
       final myUuid = deviceId;
-      if (peerAppUuid != null &&
-          myUuid != null &&
-          peerAppUuid != myUuid &&
-          myUuid.compareTo(peerAppUuid) < 0) {
+      final electionPossible =
+          peerAppUuid != null && myUuid != null && peerAppUuid != myUuid;
+      // Association-aware election. When exactly one side is joined to a Wi-Fi
+      // access point, THAT side must be the group owner: a single-radio chipset
+      // can host a Wi-Fi Direct group on its own (AP) channel but can't follow a
+      // free peer's group onto a different channel, so the free side has to be
+      // the one that joins. When both sides are free (or both on Wi-Fi) there's
+      // no such constraint, so fall back to the proven lexicographically-lower-
+      // UUID tiebreak — today's behaviour, unchanged. Both Helpers read the same
+      // two facts off each other's BLE status characteristic and compute the
+      // same result, so exactly ONE elects itself owner — no glare either way.
+      final amGroupOwner = electionPossible
+          ? (myAssociated != peerAssociated
+                ? myAssociated
+                : myUuid.compareTo(peerAppUuid) < 0)
+          : false;
+      if (electionPossible && amGroupOwner) {
         // Lower UUID → passive group owner. createGroup makes this device a
         // discoverable soft-AP at 192.168.49.1; the peer (higher UUID)
         // discovers it, joins as the sole client, and its sync() pushes its
@@ -444,11 +668,11 @@ class HelperController {
         return;
       }
 
-      // Higher UUID (or no UUID available) → active side: discover the peer,
-      // connect as client, and relay. No early-return for an empty
+      // Elected client (lost the election above) → active side: discover the
+      // peer, connect as client, and relay. No early-return for an empty
       // storedBundles — DTNManager.sync pulls from the peer in the same
       // contact, worth doing even with nothing of our own to push.
-      if (peerAppUuid != null && myUuid != null && peerAppUuid != myUuid) {
+      if (electionPossible) {
         _emit(
           'Found peer Helper $peerHelperDeviceId — connecting as client '
           '(group-owner election: peer is the group owner)',
@@ -478,6 +702,7 @@ class HelperController {
         _emit(
           'No Wi-Fi Direct peers discovered while relaying to $peerHelperDeviceId',
         );
+        _wifiStuckStreak++;
         // See _attemptActivePull's identical call for why — a stuck
         // discovery state never gets reset on this path otherwise.
         await wifiDirectManager.disconnect();
@@ -487,13 +712,21 @@ class HelperController {
       final connectionInfo = await wifiDirectManager.connectToHelper(
         peerAddress,
         myDeviceId: deviceId ?? '',
+        // When peerAppUuid is set we ran the GO election and reached here as
+        // the SOLE elected connector — no glare possible, so skip the anti-
+        // glare delay. The legacy (null UUID) path keeps it.
+        skipGlareJitter: peerAppUuid != null,
       );
       if (_stopped) return;
       if (connectionInfo == null) {
         _emit('Could not connect to Wi-Fi Direct peer $peerHelperDeviceId');
+        _wifiStuckStreak++;
         await wifiDirectManager.disconnect();
         return;
       }
+      // Got a real connection this cycle — the stack is healthy, clear the
+      // self-heal counter so transient one-offs never accumulate into a reset.
+      _wifiStuckStreak = 0;
       final isGroupOwner = connectionInfo['isGroupOwner'] as bool? ?? false;
       if (isGroupOwner) {
         // This device can't reliably dial out as group owner (see the
@@ -514,6 +747,11 @@ class HelperController {
     } finally {
       _explicitWifiDirectInFlight = false;
       _relayInFlight.remove(peerHelperDeviceId);
+    }
+    // Same self-heal as _attemptActivePull: if the connect/discovery stack
+    // wedged too many cycles in a row, reset it before the next contact.
+    if (!_stopped && _wifiStuckStreak >= _wifiStuckRecoverAfter) {
+      await _recoverWifiDirectStack();
     }
   }
 
@@ -571,6 +809,12 @@ class HelperController {
         timer.cancel();
       }
       _ackRetryTimers.clear();
+      for (final timer in _pullOwnerTeardownTimers.values) {
+        timer.cancel();
+      }
+      _pullOwnerTeardownTimers.clear();
+      _pullEndedAsOwnerStreak.clear();
+      _pulledRecentlyAt.clear();
       _pullInFlight.clear();
       _relayInFlight.clear();
       _explicitWifiDirectInFlight = false;

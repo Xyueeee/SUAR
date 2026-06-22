@@ -7,6 +7,7 @@ import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../constants.dart';
 import '../controllers/helper_controller.dart';
 import '../map/map_constants.dart';
 import '../models/distress_bundle_model.dart';
@@ -33,13 +34,25 @@ class HelperModeScreen extends StatefulWidget {
   State<HelperModeScreen> createState() => _HelperModeScreenState();
 }
 
-class _HelperModeScreenState extends State<HelperModeScreen> {
+class _HelperModeScreenState extends State<HelperModeScreen>
+    with WidgetsBindingObserver {
   final HelperController _controller = HelperController();
   final MapController _mapController = MapController();
   final List<LogEntry> _log = [];
   List<DistressBundleModel> _bundles = const [];
   LatLng? _userLocation;
   _PinPlacement? _selectedPin;
+  bool _selfInfoOpen = false;
+  bool _mapMinimized = false;
+  // User-actionable reason there's no GPS dot, distinct from a fix that's
+  // simply still pending. Null while normally locating; set when the user
+  // denied the location permission or switched location services off — both
+  // of which otherwise left the map spinning "Locating…" forever with no hint
+  // that it needs THEM to fix something. _gpsBlockIsPermission picks which
+  // settings page the action button opens (app permissions vs the system
+  // location toggle).
+  String? _gpsBlockReason;
+  bool _gpsBlockIsPermission = false;
   // Separate from "Locating…" (_userLocation == null, a GPS concern) — this
   // is "no map tiles exist for here, offline or not pre-downloaded", a
   // completely different reason the map can look blank. Conflating the two
@@ -54,6 +67,11 @@ class _HelperModeScreenState extends State<HelperModeScreen> {
   @override
   void initState() {
     super.initState();
+    // So didChangeAppLifecycleState fires — lets the map retry GPS after the
+    // user fixes a denied permission / off location service in Settings and
+    // returns, instead of staying stuck on the reason badge until the screen
+    // is reopened.
+    WidgetsBinding.instance.addObserver(this);
     _statusSub = _controller.statusStream.listen((line) {
       if (!mounted) return;
       setState(() => _log.add(LogEntry(line)));
@@ -85,6 +103,11 @@ class _HelperModeScreenState extends State<HelperModeScreen> {
   }
 
   Future<void> _centerOnUserLocation() async {
+    // Re-entrant: a lifecycle-resume retry can call this while an earlier
+    // attempt's stream is still active — drop the old one so a fix isn't
+    // delivered twice and the subscription isn't leaked.
+    await _positionSub?.cancel();
+    _positionSub = null;
     try {
       var permission = await Geolocator.checkPermission();
       _logLine('Location permission: $permission');
@@ -95,13 +118,33 @@ class _HelperModeScreenState extends State<HelperModeScreen> {
       if (permission == LocationPermission.denied ||
           permission == LocationPermission.deniedForever) {
         _logLine(
-          'Location permission not granted — map stays at default center.',
+          'Location permission not granted, map stays at default center.',
         );
+        if (mounted) {
+          setState(() {
+            _gpsBlockReason =
+                'Location permission denied, the map can\'t '
+                'show your position or place victims near you.';
+            _gpsBlockIsPermission = true;
+          });
+        }
         return;
       }
       if (!await Geolocator.isLocationServiceEnabled()) {
         _logLine('Location services (GPS) are off on this device.');
+        if (mounted) {
+          setState(() {
+            _gpsBlockReason =
+                'GPS / location is off, turn it on for the map '
+                'to track your position.';
+            _gpsBlockIsPermission = false;
+          });
+        }
         return;
+      }
+      // Permission granted and service on — clear any earlier block badge.
+      if (mounted && _gpsBlockReason != null) {
+        setState(() => _gpsBlockReason = null);
       }
 
       // A cached fix is instant and good enough just to recentre the map —
@@ -171,7 +214,20 @@ class _HelperModeScreenState extends State<HelperModeScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Returning from Settings (where they may have granted location / turned
+    // GPS on) — only retry if we're still blocked and have no fix yet, so a
+    // healthy live position stream isn't needlessly torn down and restarted.
+    if (state == AppLifecycleState.resumed &&
+        _gpsBlockReason != null &&
+        _userLocation == null) {
+      _centerOnUserLocation();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _statusSub?.cancel();
     _bundleSub?.cancel();
     _positionSub?.cancel();
@@ -256,20 +312,35 @@ class _HelperModeScreenState extends State<HelperModeScreen> {
 
   static const double _popupWidth = 190;
 
+  /// Anchors a popup by its bottom edge a fixed [gap] above the marker's
+  /// screen point instead of guessing the popup's height, so the popup grows
+  /// upward as its content grows and never extends down over the marker it
+  /// points at.
+  ({double left, double bottom}) _popupAnchor(
+    Offset screenPoint,
+    Size mapSize,
+    double gap,
+  ) {
+    final left = (screenPoint.dx - _popupWidth / 2).clamp(
+      8.0,
+      mapSize.width - _popupWidth - 8.0,
+    );
+    final bottom = (mapSize.height - screenPoint.dy + gap).clamp(
+      8.0,
+      mapSize.height - 8.0,
+    );
+    return (left: left, bottom: bottom);
+  }
+
   /// Small "tap a pin, see a brief card above it" popup (Waze-style) — a
   /// quick glance without committing to the full bottom sheet.
   Widget _buildBundlePopup(_PinPlacement pin, Size mapSize) {
     final bundle = pin.bundle;
     final screenPoint = _mapController.camera.latLngToScreenOffset(pin.point);
-    final left = (screenPoint.dx - _popupWidth / 2).clamp(
-      8.0,
-      mapSize.width - _popupWidth - 8.0,
-    );
-    final top = (screenPoint.dy - 110).clamp(8.0, mapSize.height - 130.0);
-    final shortId = bundle.deviceId.replaceAll('-', '');
+    final anchor = _popupAnchor(screenPoint, mapSize, 28);
     return Positioned(
-      left: left,
-      top: top,
+      left: anchor.left,
+      bottom: anchor.bottom,
       width: _popupWidth,
       child: Material(
         color: Colors.white,
@@ -285,7 +356,7 @@ class _HelperModeScreenState extends State<HelperModeScreen> {
                 children: [
                   Expanded(
                     child: Text(
-                      'Victim ${shortId.length <= 4 ? shortId : shortId.substring(shortId.length - 4)}',
+                      'Victim-${deviceNameSuffix(bundle.deviceId)}',
                       style: const TextStyle(
                         color: Colors.black,
                         fontWeight: FontWeight.bold,
@@ -352,6 +423,118 @@ class _HelperModeScreenState extends State<HelperModeScreen> {
     );
   }
 
+  /// Small popup above the blue "you are here" dot, mirrors
+  /// _buildBundlePopup's styling so a coordinator on a multi-helper job can
+  /// tap either dot and get the same kind of quick "who is this" glance.
+  Widget _buildSelfPopup(Size mapSize) {
+    final location = _userLocation;
+    if (location == null) return const SizedBox.shrink();
+    final screenPoint = _mapController.camera.latLngToScreenOffset(location);
+    final anchor = _popupAnchor(screenPoint, mapSize, 16);
+    final id = _controller.deviceId;
+    final name = id == null ? 'Helper' : 'Helper-${deviceNameSuffix(id)}';
+    return Positioned(
+      left: anchor.left,
+      bottom: anchor.bottom,
+      width: _popupWidth,
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        elevation: 6,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      name,
+                      style: const TextStyle(
+                        color: Colors.black,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () => setState(() => _selfInfoOpen = false),
+                    child: const Icon(
+                      Icons.close,
+                      size: 16,
+                      color: Colors.black45,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'This is you (Helper Mode)',
+                style: TextStyle(color: Colors.black54, fontSize: 12),
+              ),
+              if (id != null) ...[
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  height: 30,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.grey.shade800,
+                      foregroundColor: Colors.white,
+                      padding: EdgeInsets.zero,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                    onPressed: () => _showSelfDetail(name, id),
+                    child: const Text(
+                      'Details',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Full device ID behind a tap, the popup itself only ever shows the
+  /// 4-character nickname, this is for cases where the full ID is needed
+  /// (e.g. reading it out to a coordinator over radio).
+  void _showSelfDetail(String name, String id) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: Text(name, style: const TextStyle(color: Colors.white)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'This is you (Helper Mode)',
+              style: TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            _DetailRow('Full device ID', id),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Close', style: TextStyle(color: Colors.white70)),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showBundleDetail(DistressBundleModel bundle) {
     showModalBottomSheet<void>(
       context: context,
@@ -371,6 +554,10 @@ class _HelperModeScreenState extends State<HelperModeScreen> {
               ),
             ),
             const SizedBox(height: 12),
+            _DetailRow(
+              'Nickname',
+              'Victim-${deviceNameSuffix(bundle.deviceId)}',
+            ),
             _DetailRow('Device', bundle.deviceId),
             _DetailRow(
               'Priority',
@@ -393,7 +580,7 @@ class _HelperModeScreenState extends State<HelperModeScreen> {
               const _DetailRow(
                 'Caution',
                 'Relayed via another Helper, not directly detected by this '
-                    'device — may already be resolved.',
+                    'device, may already be resolved.',
               ),
           ],
         ),
@@ -464,237 +651,355 @@ class _HelperModeScreenState extends State<HelperModeScreen> {
                 style: TextStyle(color: Colors.white, fontSize: 15),
               ),
               const SizedBox(height: 16),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(25),
-                child: SizedBox(
-                  height: 340,
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final mapSize = Size(
-                        constraints.maxWidth,
-                        constraints.maxHeight,
-                      );
-                      return Stack(
-                        children: [
-                          // Faint grid + range rings, behind the map —
-                          // shows through wherever a tile is missing
-                          // (offline, not pre-downloaded) instead of a flat
-                          // grey/black rectangle, so a gap reads as
-                          // instrumentation missing imagery rather than
-                          // "broken". Drawing the rings on top of the map
-                          // instead was tried and wasn't actually visible
-                          // enough to be worth obscuring tiles/pins for.
-                          Positioned.fill(
-                            child: CustomPaint(
-                              painter: _RadarGridPainter(
-                                // _mapController.camera throws until the
-                                // FlutterMap below has rendered at least
-                                // once — true on this very first build,
-                                // since both are built in the same pass.
-                                zoom: _currentZoomOrDefault(),
-                                latitude:
-                                    _userLocation?.latitude ??
-                                    defaultMapCenter.latitude,
-                                // Rings track the user's actual GPS dot,
-                                // not the widget's geometric center — those
-                                // only coincide right after a fix first
-                                // recentres the camera; panning or zooming
-                                // afterwards (or never having a fix yet)
-                                // moves them apart.
-                                center: _userScreenOffset(mapSize),
-                              ),
-                            ),
+              Align(
+                alignment: Alignment.centerRight,
+                child: InkWell(
+                  onTap: () => setState(() => _mapMinimized = !_mapMinimized),
+                  borderRadius: BorderRadius.circular(8),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          // Hidden: filled map ("tap to bring the map back").
+                          // Shown: outlined map ("tap to put it away").
+                          _mapMinimized ? Icons.map : Icons.map_outlined,
+                          color: Colors.white70,
+                          size: 18,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          _mapMinimized ? 'Show map' : 'Hide map',
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 12,
                           ),
-                          FlutterMap(
-                            mapController: _mapController,
-                            options: MapOptions(
-                              initialCenter: defaultMapCenter,
-                              initialZoom: defaultMapZoom,
-                              // Transparent (not a flat fill) so the radar
-                              // backdrop above shows through missing tiles —
-                              // see the Positioned.fill comment above.
-                              backgroundColor: Colors.transparent,
-                              // OSM raster tiles bake labels into the image — they
-                              // can't un-rotate independently of the tile, so the
-                              // map stays north-up to keep place names readable.
-                              interactionOptions: const InteractionOptions(
-                                flags:
-                                    InteractiveFlag.all &
-                                    ~InteractiveFlag.rotate,
-                              ),
-                              // The popup's position is computed once, at tap time —
-                              // panning/zooming after that would leave it pointing at
-                              // the wrong spot, so just dismiss it instead. Also keeps
-                              // the radar backdrop's range-ring labels live as the
-                              // user pans/zooms.
-                              onPositionChanged: (_, _) {
-                                setState(() {
-                                  if (_selectedPin != null) _selectedPin = null;
-                                });
-                              },
-                            ),
-                            children: [
-                              TileLayer(
-                                urlTemplate: osmTileUrlTemplate,
-                                userAgentPackageName: osmUserAgentPackageName,
-                                tileProvider: FMTCTileProvider.allStores(
-                                  allStoresStrategy: BrowseStoreStrategy.read,
-                                  loadingStrategy:
-                                      BrowseLoadingStrategy.cacheFirst,
-                                ),
-                                // Offline + no pre-downloaded region for this
-                                // area means every tile fails — surfaced as a
-                                // banner (see _tilesUnavailable) instead of
-                                // leaving a blank dark rectangle with no
-                                // explanation.
-                                errorTileCallback: (tile, error, stackTrace) {
-                                  if (_tilesUnavailable) return;
-                                  setState(() => _tilesUnavailable = true);
-                                },
-                              ),
-                              if (_userLocation != null)
-                                MarkerLayer(
-                                  markers: [
-                                    Marker(
-                                      point: _userLocation!,
-                                      width: 22,
-                                      height: 22,
-                                      child: Container(
-                                        decoration: BoxDecoration(
-                                          shape: BoxShape.circle,
-                                          color: Colors.blue,
-                                          border: Border.all(
-                                            color: Colors.white,
-                                            width: 2,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              // Letting the user collapse the map (instead of just hiding the
+              // toggle) frees up the screen for the activity log below, the
+              // map is the single biggest space consumer on this screen and
+              // isn't always what's needed at a glance. Swapping the child to
+              // SizedBox.shrink() (rather than keeping FlutterMap mounted at
+              // zero height) fully unmounts it while hidden, no more tile
+              // fetches or location-triggered rebuilds running in the
+              // background — actually paused, not just invisible.
+              AnimatedSize(
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeInOut,
+                alignment: Alignment.topCenter,
+                child: _mapMinimized
+                    ? const SizedBox(width: double.infinity)
+                    : ClipRRect(
+                        borderRadius: BorderRadius.circular(25),
+                        child: SizedBox(
+                          height: 340,
+                          child: LayoutBuilder(
+                            builder: (context, constraints) {
+                              final mapSize = Size(
+                                constraints.maxWidth,
+                                constraints.maxHeight,
+                              );
+                              return Stack(
+                                children: [
+                                  // Faint grid + range rings, behind the map —
+                                  // shows through wherever a tile is missing
+                                  // (offline, not pre-downloaded) instead of a flat
+                                  // grey/black rectangle, so a gap reads as
+                                  // instrumentation missing imagery rather than
+                                  // "broken". Drawing the rings on top of the map
+                                  // instead was tried and wasn't actually visible
+                                  // enough to be worth obscuring tiles/pins for.
+                                  Positioned.fill(
+                                    child: CustomPaint(
+                                      painter: _RadarGridPainter(
+                                        // _mapController.camera throws until the
+                                        // FlutterMap below has rendered at least
+                                        // once — true on this very first build,
+                                        // since both are built in the same pass.
+                                        zoom: _currentZoomOrDefault(),
+                                        latitude:
+                                            _userLocation?.latitude ??
+                                            defaultMapCenter.latitude,
+                                        // Rings track the user's actual GPS dot,
+                                        // not the widget's geometric center — those
+                                        // only coincide right after a fix first
+                                        // recentres the camera; panning or zooming
+                                        // afterwards (or never having a fix yet)
+                                        // moves them apart.
+                                        center: _userScreenOffset(mapSize),
+                                      ),
+                                    ),
+                                  ),
+                                  FlutterMap(
+                                    mapController: _mapController,
+                                    options: MapOptions(
+                                      initialCenter: defaultMapCenter,
+                                      initialZoom: defaultMapZoom,
+                                      // Transparent (not a flat fill) so the radar
+                                      // backdrop above shows through missing tiles —
+                                      // see the Positioned.fill comment above.
+                                      backgroundColor: Colors.transparent,
+                                      // OSM raster tiles bake labels into the image — they
+                                      // can't un-rotate independently of the tile, so the
+                                      // map stays north-up to keep place names readable.
+                                      interactionOptions:
+                                          const InteractionOptions(
+                                            flags:
+                                                InteractiveFlag.all &
+                                                ~InteractiveFlag.rotate,
                                           ),
-                                          boxShadow: const [
-                                            BoxShadow(
-                                              color: Colors.black38,
-                                              blurRadius: 4,
+                                      // The popup's screen position is recomputed from the
+                                      // camera on every build (see _buildBundlePopup), so it
+                                      // tracks the pin as the map is panned/zoomed instead of
+                                      // being dismissed. This empty setState just forces that
+                                      // rebuild (and keeps the radar backdrop's range-ring
+                                      // labels live as the user pans/zooms).
+                                      onPositionChanged: (_, _) {
+                                        if (mounted) setState(() {});
+                                      },
+                                    ),
+                                    children: [
+                                      TileLayer(
+                                        urlTemplate: osmTileUrlTemplate,
+                                        userAgentPackageName:
+                                            osmUserAgentPackageName,
+                                        tileProvider:
+                                            FMTCTileProvider.allStores(
+                                              allStoresStrategy:
+                                                  BrowseStoreStrategy.read,
+                                              loadingStrategy:
+                                                  BrowseLoadingStrategy
+                                                      .cacheFirst,
+                                            ),
+                                        // Offline + no pre-downloaded region for this
+                                        // area means every tile fails — surfaced as a
+                                        // banner (see _tilesUnavailable) instead of
+                                        // leaving a blank dark rectangle with no
+                                        // explanation.
+                                        errorTileCallback:
+                                            (tile, error, stackTrace) {
+                                              if (_tilesUnavailable) return;
+                                              setState(
+                                                () => _tilesUnavailable = true,
+                                              );
+                                            },
+                                      ),
+                                      if (_userLocation != null)
+                                        MarkerLayer(
+                                          markers: [
+                                            Marker(
+                                              point: _userLocation!,
+                                              width: 22,
+                                              height: 22,
+                                              child: GestureDetector(
+                                                onTap: () => setState(
+                                                  () => _selfInfoOpen =
+                                                      !_selfInfoOpen,
+                                                ),
+                                                child: Container(
+                                                  decoration: BoxDecoration(
+                                                    shape: BoxShape.circle,
+                                                    color: Colors.blue,
+                                                    border: Border.all(
+                                                      color: Colors.white,
+                                                      width: 2,
+                                                    ),
+                                                    boxShadow: const [
+                                                      BoxShadow(
+                                                        color: Colors.black38,
+                                                        blurRadius: 4,
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
                                             ),
                                           ],
                                         ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              MarkerLayer(
-                                markers: [
-                                  for (final pin in pins)
-                                    Marker(
-                                      point: pin.point,
-                                      width: 56,
-                                      // 56 was 1px short of the circle+label
-                                      // Column's natural height, causing a
-                                      // RenderFlex overflow on every pin.
-                                      height: 60,
-                                      // Anchors the circle (not the label beneath it) to the
-                                      // geo-point — default center alignment would otherwise
-                                      // put the midpoint of circle+label on the coordinate.
-                                      alignment: const Alignment(0, -0.45),
-                                      child: GestureDetector(
-                                        onTap: () =>
-                                            setState(() => _selectedPin = pin),
-                                        child: _VictimMarker(
-                                          bundle: pin.bundle,
-                                          isApproximate: pin.isApproximate,
-                                        ),
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ],
-                          ),
-                          Positioned(
-                            top: 8,
-                            left: 8,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 4,
-                              ),
-                              decoration: BoxDecoration(
-                                color: Colors.black54,
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: Text(
-                                '${pins.length} victim bundle(s) received',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ),
-                          ),
-                          // Stacked in one column (not two independently
-                          // positioned corners) — two badges anchored to
-                          // opposite corners visually collided once the
-                          // "no map" text (long) and "Locating…" (short) were
-                          // both showing at once on a narrow map width.
-                          if (_userLocation == null || _tilesUnavailable)
-                            Positioned(
-                              bottom: 8,
-                              left: 8,
-                              right: 8,
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  if (_userLocation == null)
-                                    _MapStatusBadge(
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          const SizedBox(
-                                            width: 10,
-                                            height: 10,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                              color: Colors.white70,
+                                      MarkerLayer(
+                                        markers: [
+                                          for (final pin in pins)
+                                            Marker(
+                                              point: pin.point,
+                                              width: 56,
+                                              // 56 was 1px short of the circle+label
+                                              // Column's natural height, causing a
+                                              // RenderFlex overflow on every pin.
+                                              height: 60,
+                                              // Anchors the circle (not the label beneath it) to the
+                                              // geo-point — default center alignment would otherwise
+                                              // put the midpoint of circle+label on the coordinate.
+                                              alignment: const Alignment(
+                                                0,
+                                                -0.45,
+                                              ),
+                                              child: GestureDetector(
+                                                onTap: () => setState(
+                                                  () => _selectedPin = pin,
+                                                ),
+                                                child: _VictimMarker(
+                                                  bundle: pin.bundle,
+                                                  isApproximate:
+                                                      pin.isApproximate,
+                                                ),
+                                              ),
                                             ),
-                                          ),
-                                          const SizedBox(width: 6),
-                                          // A cold GPS chip with no cached
-                                          // ephemeris data can genuinely take
-                                          // several minutes for its first fix
-                                          // ever, especially indoors — without
-                                          // saying so, a long wait here reads
-                                          // as the app being broken rather
-                                          // than normal first-time GPS behavior.
-                                          const Text(
-                                            'Locating… (first fix can take a '
-                                            'few min indoors)',
-                                            style: TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 12,
-                                            ),
-                                          ),
                                         ],
                                       ),
-                                    ),
-                                  if (_userLocation == null &&
-                                      _tilesUnavailable)
-                                    const SizedBox(height: 6),
-                                  if (_tilesUnavailable)
-                                    const _MapStatusBadge(
+                                    ],
+                                  ),
+                                  Positioned(
+                                    top: 8,
+                                    left: 8,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 4,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Colors.black54,
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
                                       child: Text(
-                                        'No map downloaded for this area (offline)',
-                                        style: TextStyle(
+                                        '${pins.length} victim bundle(s) received',
+                                        style: const TextStyle(
                                           color: Colors.white,
                                           fontSize: 12,
                                         ),
                                       ),
                                     ),
+                                  ),
+                                  // Stacked in one column (not two independently
+                                  // positioned corners) — two badges anchored to
+                                  // opposite corners visually collided once the
+                                  // "no map" text (long) and "Locating…" (short) were
+                                  // both showing at once on a narrow map width.
+                                  if (_userLocation == null ||
+                                      _tilesUnavailable)
+                                    Positioned(
+                                      bottom: 8,
+                                      left: 8,
+                                      right: 8,
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          // GPS blocked by the user (denied permission
+                                          // or location service off) is shown as an
+                                          // actionable badge instead of the "Locating…"
+                                          // spinner — the spinner implied "just wait",
+                                          // but waiting never resolves a denial; this
+                                          // tells them what's wrong and opens the right
+                                          // settings page to fix it.
+                                          if (_gpsBlockReason != null)
+                                            _MapStatusBadge(
+                                              child: Row(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  const Icon(
+                                                    Icons.location_off,
+                                                    color: Colors.amber,
+                                                    size: 14,
+                                                  ),
+                                                  const SizedBox(width: 6),
+                                                  Flexible(
+                                                    child: Text(
+                                                      _gpsBlockReason!,
+                                                      style: const TextStyle(
+                                                        color: Colors.white,
+                                                        fontSize: 12,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  const SizedBox(width: 4),
+                                                  GestureDetector(
+                                                    onTap: () =>
+                                                        _gpsBlockIsPermission
+                                                        ? Geolocator.openAppSettings()
+                                                        : Geolocator.openLocationSettings(),
+                                                    child: const Text(
+                                                      'Settings',
+                                                      style: TextStyle(
+                                                        color:
+                                                            Colors.amberAccent,
+                                                        fontSize: 12,
+                                                        fontWeight:
+                                                            FontWeight.bold,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            )
+                                          else if (_userLocation == null)
+                                            _MapStatusBadge(
+                                              child: Row(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  const SizedBox(
+                                                    width: 10,
+                                                    height: 10,
+                                                    child:
+                                                        CircularProgressIndicator(
+                                                          strokeWidth: 2,
+                                                          color: Colors.white70,
+                                                        ),
+                                                  ),
+                                                  const SizedBox(width: 6),
+                                                  // A cold GPS chip with no cached
+                                                  // ephemeris data can genuinely take
+                                                  // several minutes for its first fix
+                                                  // ever, especially indoors — without
+                                                  // saying so, a long wait here reads
+                                                  // as the app being broken rather
+                                                  // than normal first-time GPS behavior.
+                                                  const Text(
+                                                    'Locating… (first fix can take a '
+                                                    'few min indoors)',
+                                                    style: TextStyle(
+                                                      color: Colors.white,
+                                                      fontSize: 12,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          if (_userLocation == null &&
+                                              _tilesUnavailable)
+                                            const SizedBox(height: 6),
+                                          if (_tilesUnavailable)
+                                            const _MapStatusBadge(
+                                              child: Text(
+                                                'No map downloaded for this area (offline)',
+                                                style: TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 12,
+                                                ),
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                  if (_selectedPin != null)
+                                    _buildBundlePopup(_selectedPin!, mapSize),
+                                  if (_selfInfoOpen) _buildSelfPopup(mapSize),
                                 ],
-                              ),
-                            ),
-                          if (_selectedPin != null)
-                            _buildBundlePopup(_selectedPin!, mapSize),
-                        ],
-                      );
-                    },
-                  ),
-                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
               ),
               const SizedBox(height: 16),
               const RadioStatusBanner(),
@@ -850,12 +1155,7 @@ class _VictimMarker extends StatelessWidget {
     }
   }
 
-  String get _shortId {
-    final id = bundle.deviceId.replaceAll('-', '');
-    return id.length <= 4
-        ? id.toUpperCase()
-        : id.substring(id.length - 4).toUpperCase();
-  }
+  String get _shortId => deviceNameSuffix(bundle.deviceId);
 
   @override
   Widget build(BuildContext context) {

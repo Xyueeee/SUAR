@@ -91,6 +91,17 @@ class VictimController {
   // tears down the very group that makes it discoverable. The Helper does all
   // the active work (discover → join as client → pull). See startVictimMode.
   bool _isAutonomousGroupOwner = false;
+  // Self-heal for a wedged autonomous group. The Victim is passive — it only
+  // hosts the group and waits to be pulled — so the symptom of its own group
+  // going stale (OS power-saving blip, a Helper connect() that half-formed and
+  // poisoned the group) is: Helpers keep ACKing over BLE every contact cycle,
+  // but no pull is ever served (bundleDeliveredStream never fires). Counting
+  // BLE ACKs received since the last delivery and, past a threshold, tearing
+  // the group down and re-creating it fresh recovers from that without
+  // touching BLE. Reset to 0 on every successful delivery.
+  int _acksSinceDelivery = 0;
+  static const int _groupRefreshAfterAcks = 5;
+  bool _refreshingGroup = false;
   int _consecutiveGenuineFailures = 0;
   int _cyclesSinceCapabilityProbe = 0;
   // Guards the pull-mode reactive push below against overlapping itself if
@@ -108,6 +119,20 @@ class VictimController {
   StreamSubscription? _bleStatusSub;
   StreamSubscription? _wifiStatusSub;
   StreamSubscription? _connectionFormedSub;
+  StreamSubscription? _bundleDeliveredSub;
+  // Set true once any Helper has actually fetched this device's bundle, so the
+  // user gets one clear "your info got out" confirmation. A passive group-owner
+  // Victim never sees a "sent" event (it waits to be pulled), which previously
+  // meant a successful delivery looked identical to total silence on screen.
+  bool _deliveredAtLeastOnce = false;
+  // True while this free Victim has yielded its group-owner role to an
+  // AP-joined Helper that offered to host, and is actively pushing to it
+  // instead of waiting to be pulled. A fallback timer (below) restores the
+  // autonomous group if no delivery lands, so a Helper that can't actually host
+  // can never strand this device — it just reverts to today's behaviour.
+  bool _yieldingToHost = false;
+  Timer? _yieldFallbackTimer;
+  static const Duration _yieldFallback = Duration(seconds: 30);
 
   // Android can silently kill BLE advertising or the Wi-Fi Direct
   // accept-loop thread in the background on some OEMs — no error, no
@@ -146,6 +171,105 @@ class VictimController {
     }
   }
 
+  /// Pushes this device's current Wi-Fi-AP-join state onto the BLE status
+  /// characteristic so a connecting Helper reads it during the ack handshake
+  /// and can decide who hosts the Wi-Fi Direct group.
+  Future<void> _publishAssociation() async {
+    final info = await WiFiDirectManager.getStaInfo();
+    if (_stopped) return;
+    await bleManager.setAssociated(info?['associated'] as bool? ?? false);
+  }
+
+  /// A nearby Helper joined to a Wi-Fi network told this (free) device, over the
+  /// BLE ack, that IT will host the Wi-Fi Direct group — on a single-radio
+  /// chipset the Helper can host on its own channel but can't reach this
+  /// device's group on a different one, so the free side has to be the joiner.
+  /// This device gives up its autonomous group-owner role and pushes to the
+  /// Helper instead, reusing the normal active-push path (_tryDeliverBundle via
+  /// the RSSI window). A fallback timer restores the autonomous group if no
+  /// delivery completes, so a Helper whose chipset can't actually host can't
+  /// strand this device.
+  Future<void> _enterHostYield(String helperDeviceId) async {
+    if (_stopped || _yieldingToHost) return;
+    // Don't re-yield to a Helper we just delivered to — its repeat acks during
+    // the cooldown would otherwise tear our group down again and again.
+    final last = _deliveredTo[helperDeviceId];
+    if (last != null && DateTime.now().difference(last) < _helperCooldown) {
+      return;
+    }
+    _yieldingToHost = true;
+    _emit(
+      'A nearby helper is on Wi-Fi and will host the connection — sending to it',
+    );
+    _isAutonomousGroupOwner = false;
+    _canInitiateWifiDirect = true;
+    await wifiDirectManager.disconnect(); // give up our own group
+    if (_stopped) return;
+    await bleManager.setNeedsPull(false); // we push now; don't ask to be pulled
+    _yieldFallbackTimer?.cancel();
+    _yieldFallbackTimer = Timer(_yieldFallback, () {
+      unawaited(
+        _revertHostYield(
+          'No nearby helper completed the transfer — back to wait mode',
+        ),
+      );
+    });
+    // Push promptly instead of waiting out the current RSSI window.
+    _rssiWindowTimer?.cancel();
+    unawaited(_onRssiWindowClosed());
+  }
+
+  /// Undoes [_enterHostYield] — recreates the autonomous group and returns to
+  /// the proven discoverable passive default. Called both on a successful push
+  /// (return to normal so free Helpers can still pull later) and by the
+  /// fallback timer (the host attempt didn't pan out).
+  Future<void> _revertHostYield(String reason) async {
+    if (_stopped || !_yieldingToHost) return;
+    _yieldingToHost = false;
+    _yieldFallbackTimer?.cancel();
+    _emit(reason);
+    _isAutonomousGroupOwner = await wifiDirectManager.createGroup();
+    _canInitiateWifiDirect = false;
+    if (_stopped) return;
+    await bleManager.setNeedsPull(true);
+  }
+
+  /// Self-heal a stale autonomous group: Helpers keep ACKing over BLE but no
+  /// pull ever lands ([_acksSinceDelivery] crossed the threshold), which on real
+  /// hardware means this device's group has gone bad (OS tore it down, or a
+  /// Helper connect() half-formed and poisoned it) while still looking present.
+  /// disconnect() fully removes the old group (native removeGroup retries past
+  /// BUSY) and createGroup() forms a fresh one — the same clean-slate cycle the
+  /// Helper's [_recoverWifiDirectStack] does, from the passive side. The
+  /// transfer server and BLE both keep running untouched.
+  Future<void> _refreshAutonomousGroup() async {
+    if (_refreshingGroup || _stopped || !_isAutonomousGroupOwner) return;
+    _refreshingGroup = true;
+    try {
+      _emit(
+        'Nearby helpers keep checking in but nothing was picked up — '
+        'refreshing the Wi-Fi Direct group',
+      );
+      _acksSinceDelivery = 0;
+      _isAutonomousGroupOwner = false;
+      await wifiDirectManager.disconnect();
+      if (_stopped) return;
+      // Let the single-threaded P2P framework settle the teardown before
+      // re-creating, or createGroup() comes back BUSY.
+      await Future.delayed(const Duration(milliseconds: 1200));
+      if (_stopped) return;
+      _isAutonomousGroupOwner = await wifiDirectManager.createGroup();
+      // The fresh group's accept loop still needs the cached bundle to answer
+      // pulls — disconnect() doesn't touch startServer()'s socket, but the
+      // bundle cache is re-asserted here as cheap insurance.
+      if (_isAutonomousGroupOwner && _bundle != null) {
+        await wifiDirectManager.setLocalBundle(_bundle!.toJson());
+      }
+    } finally {
+      _refreshingGroup = false;
+    }
+  }
+
   Future<void> startVictimMode() async {
     try {
       // Defensive against a double-start (e.g. a rapid back-then-reopen on
@@ -153,12 +277,35 @@ class VictimController {
       // subscriptions and left every event handled twice.
       await _cancelSubs();
       _stopped = false;
+      _deliveredAtLeastOnce = false;
+      _yieldingToHost = false;
 
       deviceId = await _loadOrCreateDeviceId();
       _emit('Victim mode started (deviceId=$deviceId)');
 
       _bleStatusSub = bleManager.statusStream.listen(_emit);
       _wifiStatusSub = wifiDirectManager.statusStream.listen(_emit);
+
+      // A passive group-owner Victim is pulled, never pushes, so it otherwise
+      // gets zero feedback that its distress info actually reached a helper.
+      // In a disaster app that silence is the worst case — the person can't
+      // tell if they still need help. Surface one plain confirmation the first
+      // time, and keep a quieter note for any repeats.
+      _bundleDeliveredSub = wifiDirectManager.bundleDeliveredStream.listen((_) {
+        if (_stopped) return;
+        // A real pull went through — the group is healthy, so clear the
+        // stale-group self-heal counter.
+        _acksSinceDelivery = 0;
+        if (!_deliveredAtLeastOnce) {
+          _deliveredAtLeastOnce = true;
+          _emit(
+            'A nearby helper picked up your information. Stay where you '
+            'are if you can — keep this running.',
+          );
+        } else {
+          _emit('Another nearby helper picked up your information.');
+        }
+      });
 
       // Stubbed payload — real sensor data arrives in Increment 2.
       _bundle = DistressBundleModel(
@@ -208,6 +355,13 @@ class VictimController {
       // confirmed on real hardware: it skipped the ack/pull flow entirely and
       // logged "No bundles to relay" instead of ever pulling the bundle.
       await bleManager.setRole(bleRoleVictim);
+      // Broadcast a neutral, role-tagged Wi-Fi Direct name so a helper's connect
+      // prompt reads "SOS-1A2B" (clearly an incoming distress peer, and
+      // anonymous) instead of this phone's real model name. Best-effort — see
+      // setP2pDeviceName.
+      await wifiDirectManager.setP2pDeviceName(
+        'SOS-${deviceNameSuffix(deviceId!)}',
+      );
       // As an autonomous group owner this device is purely passive and must
       // be pulled (it never pushes), so needsPull is always true in that
       // case; only the legacy fallback path (createGroup failed) defers to
@@ -215,6 +369,12 @@ class VictimController {
       await bleManager.setNeedsPull(
         _isAutonomousGroupOwner || !_canInitiateWifiDirect,
       );
+      // Publish this device's Wi-Fi-AP-join state on the status characteristic
+      // so a connecting Helper can decide who hosts the Wi-Fi Direct group (an
+      // AP-joined Helper must host; this free Victim then yields and pushes —
+      // see the helperWillHost handling in the ack listener). Kept fresh by the
+      // radio watchdog, since association can change mid-session.
+      await _publishAssociation();
 
       // Covers the other half: this device ends up P2P *client* despite not
       // having initiated the connect() call itself (the Helper did, while
@@ -255,6 +415,23 @@ class VictimController {
         final rssi = ack['rssi'] as int;
         _helperRssiMap[helperDeviceId] = rssi;
         _emit('Helper $helperDeviceId rssi=$rssi recorded');
+        // The Helper is joined to a Wi-Fi network and can't reach this free
+        // device's group, so it asked (over the ack) to host instead. Give up
+        // our own group-owner role and push to it. See _enterHostYield.
+        if (ack['helperWillHost'] == true) {
+          unawaited(_enterHostYield(helperDeviceId));
+          return;
+        }
+        // A Helper is in range and ACKing but nothing is being pulled — if this
+        // keeps up while we're the autonomous owner, our group is likely stale.
+        // Refresh it (see _acksSinceDelivery). Only the passive-owner case: a
+        // yielding/non-owner Victim has no group of its own to refresh.
+        if (_isAutonomousGroupOwner) {
+          _acksSinceDelivery++;
+          if (_acksSinceDelivery >= _groupRefreshAfterAcks) {
+            unawaited(_refreshAutonomousGroup());
+          }
+        }
       });
 
       await bleManager.startAdvertising(deviceId!);
@@ -291,9 +468,15 @@ class VictimController {
         // it down (power saving, Wi-Fi blip) this device would silently go
         // invisible to Helper discovery again. createGroup() is idempotent
         // natively (it reuses an existing group), so this is cheap to call.
+        // Skipped while yielding to an AP-joined host (the group is
+        // deliberately torn down then — see _enterHostYield).
         if (_isAutonomousGroupOwner) {
           await wifiDirectManager.createGroup();
         }
+        if (_stopped) return;
+        // Keep the advertised AP-join state fresh — it drives who hosts and can
+        // change mid-session (a network joins, drops, or is auto-disabled).
+        await _publishAssociation();
       });
     } catch (e) {
       _emit('Victim mode start failed: $e');
@@ -327,13 +510,26 @@ class VictimController {
       if (sent) {
         _deliveredTo[bestHelper.key] = DateTime.now();
         _helperRssiMap.remove(bestHelper.key);
+        // Pushed to an AP-joined host while yielding — return to the normal
+        // discoverable group-owner state so other (free) Helpers can still pull.
+        if (_yieldingToHost) {
+          unawaited(
+            _revertHostYield('Sent to the nearby helper — back to wait mode'),
+          );
+        }
       } else {
         // The helper that ACKed may have moved out of range or wasn't
         // actually reachable over Wi-Fi Direct — drop it so the next window
         // doesn't immediately retry against stale data, but don't put it on
         // the success cooldown either.
         _helperRssiMap.remove(bestHelper.key);
-        _emit('Will retry Wi-Fi Direct handoff…');
+        // A passive group-owner Victim ALWAYS returns false here — it never
+        // "sends", it waits to be pulled — so saying "will retry the handoff"
+        // every cycle read like a repeated failure when nothing had failed.
+        // Only the active push paths can actually fail and warrant that line.
+        if (!_isAutonomousGroupOwner) {
+          _emit('Will retry Wi-Fi Direct handoff…');
+        }
       }
       if (!_stopped) _rearm();
     } catch (e) {
@@ -532,6 +728,7 @@ class VictimController {
     await _bleStatusSub?.cancel();
     await _wifiStatusSub?.cancel();
     await _connectionFormedSub?.cancel();
+    await _bundleDeliveredSub?.cancel();
   }
 
   Future<void> stopVictimMode() async {
@@ -539,6 +736,7 @@ class VictimController {
       _stopped = true;
       _rssiWindowTimer?.cancel();
       _radioWatchdog?.cancel();
+      _yieldFallbackTimer?.cancel();
       await _cancelSubs();
       await bleManager.stopAdvertising();
       await bleManager.setNeedsPull(false);
@@ -554,10 +752,12 @@ class VictimController {
   void dispose() {
     _rssiWindowTimer?.cancel();
     _radioWatchdog?.cancel();
+    _yieldFallbackTimer?.cancel();
     _ackSub?.cancel();
     _bleStatusSub?.cancel();
     _wifiStatusSub?.cancel();
     _connectionFormedSub?.cancel();
+    _bundleDeliveredSub?.cancel();
     bleManager.dispose();
     wifiDirectManager.dispose();
     _statusController.close();

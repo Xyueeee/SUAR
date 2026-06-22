@@ -3,10 +3,12 @@ package com.example.suar_mobile
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.provider.Settings
 
 /// Keeps BLE advertising/scanning alive under battery optimisation, per
 /// CLAUDE.md "FOREGROUND SERVICE" requirement.
@@ -16,13 +18,17 @@ class MeshForegroundService : Service() {
         const val CHANNEL_ID = "suar_mesh_channel"
         const val NOTIFICATION_ID = 1
         const val EXTRA_STATUS_TEXT = "status_text"
+        const val EXTRA_DETAIL_TEXT = "detail_text"
+        const val EXTRA_WIFI_ACTION = "wifi_action"
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val statusText = intent?.getStringExtra(EXTRA_STATUS_TEXT) ?: "SUAR Mesh Active"
-        startForeground(NOTIFICATION_ID, buildNotification(statusText))
+        val detailText = intent?.getStringExtra(EXTRA_DETAIL_TEXT)
+        val wifiAction = intent?.getBooleanExtra(EXTRA_WIFI_ACTION, false) ?: false
+        startForeground(NOTIFICATION_ID, buildNotification(statusText, detailText, wifiAction))
         // This service owns nothing but the notification — the actual BLE
         // advertiser/GATT server and Wi-Fi Direct server live in
         // MainActivity's helpers, a completely separate component. If the
@@ -34,7 +40,11 @@ class MeshForegroundService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun buildNotification(statusText: String): Notification {
+    private fun buildNotification(
+        statusText: String,
+        detailText: String?,
+        wifiAction: Boolean
+    ): Notification {
         createNotificationChannelIfNeeded()
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, CHANNEL_ID)
@@ -42,12 +52,39 @@ class MeshForegroundService : Service() {
             @Suppress("DEPRECATION")
             Notification.Builder(this)
         }
-        return builder
+        builder
             .setContentTitle("SUAR Mesh Active")
+            // Collapsed view stays one short line; the long explanation only
+            // appears when the user expands the notification — keeps the shade
+            // tidy instead of showing a wall of text inline.
             .setContentText(statusText)
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
             .setOngoing(true)
-            .build()
+        if (!detailText.isNullOrEmpty()) {
+            builder.style = Notification.BigTextStyle().bigText(detailText)
+        }
+        // A one-tap "Wi-Fi settings" action so a radio problem (off / joined to
+        // a network / P2P unavailable) can be fixed straight from the shade,
+        // without finding and opening the app first — important when the phone
+        // may be in someone else's hand during a response.
+        if (wifiAction) {
+            val settingsIntent = Intent(Settings.ACTION_WIFI_SETTINGS)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val pending = PendingIntent.getActivity(
+                this,
+                0,
+                settingsIntent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            builder.addAction(
+                Notification.Action.Builder(
+                    null,
+                    "Wi-Fi settings",
+                    pending
+                ).build()
+            )
+        }
+        return builder.build()
     }
 
     private fun createNotificationChannelIfNeeded() {

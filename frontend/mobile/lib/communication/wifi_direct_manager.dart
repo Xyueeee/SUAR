@@ -35,9 +35,16 @@ class WiFiDirectManager {
   final _bundleReceivedController = StreamController<String>.broadcast();
   final _connectionFormedController =
       StreamController<Map<String, dynamic>>.broadcast();
+  final _bundleDeliveredController = StreamController<void>.broadcast();
 
   /// Raw bundle JSON strings received by the native ServerSocket.
   Stream<String> get bundleReceivedStream => _bundleReceivedController.stream;
+
+  /// Fires when this device's native server answered a "pull" with a non-empty
+  /// bundle — i.e. a nearby device actually fetched what this (passive
+  /// group-owner) device was holding. Lets a Victim that is waiting to be
+  /// pulled show a real "picked up" confirmation instead of sitting silent.
+  Stream<void> get bundleDeliveredStream => _bundleDeliveredController.stream;
 
   /// Fires whenever a P2P group forms, on EITHER end, regardless of which
   /// side called connect() — driven by WIFI_P2P_CONNECTION_CHANGED_ACTION.
@@ -60,6 +67,11 @@ class WiFiDirectManager {
         case 'bundleReceived':
           _bundleReceivedController.add(map['json'] as String);
           _emit('Bundle received over Wi-Fi Direct');
+        case 'bundleDelivered':
+          if (!_bundleDeliveredController.isClosed) {
+            _bundleDeliveredController.add(null);
+          }
+          _emit('A nearby device fetched the cached bundle');
         case 'connectionFormed':
           _connectionFormedController.add(map);
         case 'debugLog':
@@ -119,6 +131,7 @@ class WiFiDirectManager {
     String deviceAddress, {
     String myDeviceId = '',
     bool isRetry = false,
+    bool skipGlareJitter = false,
   }) async {
     try {
       // Both ends of a contact run their OWN discover+connect cycle
@@ -144,11 +157,23 @@ class WiFiDirectManager {
       // on top only to break the rare case where two ids hash close
       // together. Falls back to pure jitter if no id was supplied (kept
       // backward-compatible for callers that don't have one yet).
-      final deterministicMs = myDeviceId.isEmpty
-          ? 0
-          : myDeviceId.hashCode.abs() % 2000;
-      final jitterMs = 50 + _glareJitter.nextInt(300);
-      await Future.delayed(Duration(milliseconds: deterministicMs + jitterMs));
+      //
+      // skipGlareJitter short-circuits all of the above: the Helper-Helper
+      // relay now runs a deterministic group-owner election (see
+      // HelperController._attemptHelperRelay), so exactly ONE side ever calls
+      // connect() — there is no second connector to glare against. The anti-
+      // glare delay (up to ~2.3s) is then pure wasted latency on every single
+      // relay contact, which was the main reason HH felt slow. Only the legacy
+      // no-election fallback path still needs the jitter.
+      if (!skipGlareJitter) {
+        final deterministicMs = myDeviceId.isEmpty
+            ? 0
+            : myDeviceId.hashCode.abs() % 2000;
+        final jitterMs = 50 + _glareJitter.nextInt(300);
+        await Future.delayed(
+          Duration(milliseconds: deterministicMs + jitterMs),
+        );
+      }
       _emit('Connecting to $deviceAddress');
       final result = await _channel.invokeMethod('connect', {
         'deviceAddress': deviceAddress,
@@ -185,6 +210,7 @@ class WiFiDirectManager {
           deviceAddress,
           myDeviceId: myDeviceId,
           isRetry: true,
+          skipGlareJitter: skipGlareJitter,
         );
       }
       return null;
@@ -386,6 +412,7 @@ class WiFiDirectManager {
     _statusController.close();
     _bundleReceivedController.close();
     _connectionFormedController.close();
+    _bundleDeliveredController.close();
   }
 
   /// Whether the device's regular Wi-Fi (station mode) is currently
@@ -407,9 +434,24 @@ class WiFiDirectManager {
   /// the screen off, unlike an in-app banner which only helps if someone is
   /// currently looking at that exact device's screen. Safe to call
   /// repeatedly; it just refreshes the already-running notification.
-  static Future<void> updateMeshStatus(String text) async {
+  ///
+  /// [text] is the short collapsed line; [detail], when given, is the longer
+  /// plain-language explanation shown when the user expands the notification
+  /// (Android BigTextStyle) — keeps the collapsed notification one tidy line
+  /// instead of a wall of text. [wifiAction] adds a one-tap "Wi-Fi settings"
+  /// button so a radio problem can be fixed straight from the shade without
+  /// opening the app.
+  static Future<void> updateMeshStatus(
+    String text, {
+    String? detail,
+    bool wifiAction = false,
+  }) async {
     try {
-      await _channel.invokeMethod('updateMeshStatus', {'text': text});
+      await _channel.invokeMethod('updateMeshStatus', {
+        'text': text,
+        'detail': detail,
+        'wifiAction': wifiAction,
+      });
     } catch (_) {
       // Best-effort — a stale notification isn't worth surfacing an error for.
     }
@@ -420,6 +462,20 @@ class WiFiDirectManager {
       await _channel.invokeMethod('openWifiSettings');
     } catch (_) {
       // Best-effort — nothing to do if the platform can't open it.
+    }
+  }
+
+  /// Sets the Wi-Fi Direct device name this phone broadcasts — the label the
+  /// other phone sees in its "Allow Wi-Fi Direct connection?" prompt. A neutral
+  /// role-tagged name like "Helper-1A2B" / "SOS-1A2B" makes that prompt both
+  /// understandable (clearly a SUAR peer) and anonymous (hides the real model/
+  /// owner name). Best-effort: the underlying API is hidden and may be blocked
+  /// on newer Android, in which case the prompt just keeps the default name.
+  Future<void> setP2pDeviceName(String name) async {
+    try {
+      await _channel.invokeMethod('setDeviceName', {'name': name});
+    } catch (e) {
+      _emit('setP2pDeviceName failed: $e');
     }
   }
 }

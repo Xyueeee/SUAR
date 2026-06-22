@@ -17,7 +17,7 @@ String _twoDigits(int n) => n.toString().padLeft(2, '0');
 ///
 /// Newest entry first — during testing, new lines arriving at the bottom
 /// meant constantly scrolling down to see what just happened.
-class MeshActivityCard extends StatelessWidget {
+class MeshActivityCard extends StatefulWidget {
   const MeshActivityCard({
     super.key,
     required this.lines,
@@ -28,6 +28,48 @@ class MeshActivityCard extends StatelessWidget {
   final List<LogEntry> lines;
   final ScrollController? scrollController;
   final double fontSize;
+
+  @override
+  State<MeshActivityCard> createState() => _MeshActivityCardState();
+}
+
+class _MeshActivityCardState extends State<MeshActivityCard> {
+  ScrollController? _ownController;
+
+  ScrollController get _controller =>
+      widget.scrollController ?? (_ownController ??= ScrollController());
+
+  @override
+  void didUpdateWidget(MeshActivityCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.lines.length <= oldWidget.lines.length) return;
+    final controller = _controller;
+    if (!controller.hasClients) return;
+    final offset = controller.position.pixels;
+    // Already at the top (or never scrolled) — let the new entry slide into
+    // view normally instead of fighting the user's view.
+    if (offset <= 1) return;
+    final oldMaxExtent = controller.position.maxScrollExtent;
+    // The new entry isn't laid out yet at this point in the frame — wait for
+    // the frame that adds it, then jump forward by exactly the height it
+    // added, so whatever the user was reading stays in the same screen
+    // position instead of being pushed down.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!controller.hasClients) return;
+      final delta = controller.position.maxScrollExtent - oldMaxExtent;
+      if (delta > 0) {
+        controller.jumpTo(
+          (offset + delta).clamp(0.0, controller.position.maxScrollExtent),
+        );
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _ownController?.dispose();
+    super.dispose();
+  }
 
   // The same screen's log keeps accumulating across repeated stop/start
   // cycles within one app session (switching modes, retrying after a
@@ -40,8 +82,8 @@ class MeshActivityCard extends StatelessWidget {
 
   /// Red = something actually went wrong. Amber = working as designed but
   /// worth a second look (retries, capability flags, TTL/dedupe). Green =
-  /// real progress — a packet actually moved or a connection actually
-  /// formed. Blue = plain info (state, mode started) — nothing to act on.
+  /// real progress, a packet actually moved or a connection actually
+  /// formed. Blue = plain info (state, mode started), nothing to act on.
   Color _dotColorFor(String line) {
     final lower = line.toLowerCase();
     if (lower.contains('fail') || lower.contains('error')) {
@@ -73,6 +115,7 @@ class MeshActivityCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final lines = widget.lines;
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
@@ -83,10 +126,13 @@ class MeshActivityCard extends StatelessWidget {
       child: lines.isEmpty
           ? Text(
               'Waiting for activity…',
-              style: TextStyle(color: Colors.white70, fontSize: fontSize),
+              style: TextStyle(
+                color: Colors.white70,
+                fontSize: widget.fontSize,
+              ),
             )
           : ListView.separated(
-              controller: scrollController,
+              controller: _controller,
               itemCount: lines.length,
               separatorBuilder: (_, _) => const Padding(
                 padding: EdgeInsets.symmetric(vertical: 10),
@@ -104,7 +150,7 @@ class MeshActivityCard extends StatelessWidget {
                   dotColor: isSessionStart
                       ? Colors.purpleAccent
                       : _dotColorFor(entry.message),
-                  fontSize: fontSize,
+                  fontSize: widget.fontSize,
                   isSessionStart: isSessionStart,
                 );
               },

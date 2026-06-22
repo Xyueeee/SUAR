@@ -66,10 +66,22 @@ class MainActivity : FlutterActivity() {
                         // off, instead of relying on an in-app banner nobody's looking
                         // at — confirmed on real hardware that the in-app-only banner
                         // was missed during testing.
-                        startMeshService(call.argument<String>("text") ?: "Mesh radio active...")
+                        startMeshService(
+                            call.argument<String>("text") ?: "Mesh radio active...",
+                            call.argument<String>("detail"),
+                            call.argument<Boolean>("wifiAction") ?: false
+                        )
                         result.success(null)
                     }
                     "openWifiSettings" -> wifiDirectHelper.openWifiSettings(result)
+                    "setDeviceName" -> {
+                        val name = call.argument<String>("name")
+                        if (name == null) {
+                            result.error("BAD_ARGS", "name required", null)
+                        } else {
+                            wifiDirectHelper.setDeviceName(name, result)
+                        }
+                    }
                     "setLocalBundle" -> {
                         wifiDirectHelper.setLocalBundle(call.argument<String>("json"))
                         result.success(null)
@@ -153,6 +165,10 @@ class MainActivity : FlutterActivity() {
                         blePeripheralHelper.setRole(call.argument<Int>("value") ?: 0)
                         result.success(null)
                     }
+                    "setAssociated" -> {
+                        blePeripheralHelper.setAssociated(call.argument<Boolean>("value") ?: false)
+                        result.success(null)
+                    }
                     "isAdvertising" -> blePeripheralHelper.isAdvertising(result)
                     else -> result.notImplemented()
                 }
@@ -170,9 +186,15 @@ class MainActivity : FlutterActivity() {
             })
     }
 
-    private fun startMeshService(statusText: String) {
+    private fun startMeshService(
+        statusText: String,
+        detailText: String? = null,
+        wifiAction: Boolean = false
+    ) {
         val intent = Intent(this, MeshForegroundService::class.java)
             .putExtra(MeshForegroundService.EXTRA_STATUS_TEXT, statusText)
+            .putExtra(MeshForegroundService.EXTRA_DETAIL_TEXT, detailText)
+            .putExtra(MeshForegroundService.EXTRA_WIFI_ACTION, wifiAction)
         startForegroundService(intent)
     }
 

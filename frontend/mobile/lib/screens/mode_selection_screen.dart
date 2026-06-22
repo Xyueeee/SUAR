@@ -20,19 +20,34 @@ class _ModeSelectionScreenState extends State<ModeSelectionScreen> {
   Future<void> _enterMode(Widget Function() screenBuilder) async {
     if (_requesting) return;
     setState(() => _requesting = true);
-    final granted = await requestMeshPermissions();
+    bool granted = false;
+    try {
+      // requestMeshPermissions() itself no longer throws on the known
+      // permission_handler "already running" failure (see its doc), but this
+      // try/finally is the actual fix for the freeze reported on real
+      // hardware: the old code reset _requesting only on the line AFTER the
+      // await, so any exception escaping that await (this one, or any other)
+      // skipped the reset and left every mode card permanently disabled
+      // (busy: true) for the rest of the app session — confirmed via logcat
+      // showing the unhandled PlatformException with no recovery. finally
+      // guarantees the guard releases no matter how this await ends.
+      granted = await requestMeshPermissions();
+    } finally {
+      if (mounted) setState(() => _requesting = false);
+    }
     if (!mounted) return;
-    setState(() => _requesting = false);
 
     if (!granted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Bluetooth and Wi-Fi Direct permissions are required.'),
+          content: Text(
+            'Bluetooth and Wi-Fi Direct permissions are required. '
+            'Tap again to retry.',
+          ),
         ),
       );
       return;
     }
-    if (!mounted) return;
     Navigator.of(
       context,
     ).push(MaterialPageRoute(builder: (_) => screenBuilder()));

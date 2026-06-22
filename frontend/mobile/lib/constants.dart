@@ -46,3 +46,13 @@ const int dtnMaxHopCount = 12;
 
 const String deviceIdPrefKey = "suar_device_id";
 const String appVersion = "1.0.0";
+
+/// A short, stable 4-character tag derived from a device's UUID — the
+/// human-readable suffix in the Wi-Fi Direct name shown on a peer's connection
+/// prompt (e.g. "Helper-1A2B"). Hex from the UUID is unique enough to tell two
+/// nearby peers apart while revealing nothing identifying about the device.
+String deviceNameSuffix(String deviceId) {
+  final hex = deviceId.replaceAll(RegExp('[^0-9a-fA-F]'), '');
+  final tag = hex.length >= 4 ? hex.substring(0, 4) : hex.padRight(4, '0');
+  return tag.toUpperCase();
+}

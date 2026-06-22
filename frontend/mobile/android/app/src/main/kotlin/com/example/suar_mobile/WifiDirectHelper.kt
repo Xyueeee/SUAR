@@ -179,6 +179,48 @@ class WifiDirectHelper(
         }
     }
 
+    /// Sets the Wi-Fi Direct device name this phone broadcasts — the name the
+    /// OTHER phone sees in its system "Allow Wi-Fi Direct connection?" prompt.
+    /// By default Android shows the raw hardware name (e.g. "Galaxy S24+"),
+    /// which both leaks the model/owner and means nothing to the person being
+    /// asked to accept. Setting it to a neutral, role-tagged label like
+    /// "Helper-1A2B" / "SOS-1A2B" makes the prompt understandable (the user can
+    /// see it's a legitimate SUAR peer) AND anonymous (no real device name).
+    ///
+    /// setDeviceName is a hidden WifiP2pManager API with no public replacement,
+    /// so it's called by reflection. On newer Android the hidden-API policy can
+    /// block it — that's fine: this is purely cosmetic, so on failure the
+    /// prompt just falls back to the default name. Never fails mode start.
+    fun setDeviceName(name: String, result: MethodChannel.Result) {
+        try {
+            val method = manager.javaClass.getMethod(
+                "setDeviceName",
+                WifiP2pManager.Channel::class.java,
+                String::class.java,
+                WifiP2pManager.ActionListener::class.java
+            )
+            method.invoke(
+                manager,
+                channel,
+                name,
+                object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() {
+                        Log.d(TAG, "setDeviceName('$name'): success")
+                        mainHandler.post { result.success(true) }
+                    }
+
+                    override fun onFailure(reason: Int) {
+                        Log.d(TAG, "setDeviceName('$name') failed: reason=$reason")
+                        mainHandler.post { result.success(false) }
+                    }
+                }
+            )
+        } catch (e: Exception) {
+            Log.d(TAG, "setDeviceName('$name') unavailable on this device: $e")
+            mainHandler.post { result.success(false) }
+        }
+    }
+
     fun openWifiSettings(result: MethodChannel.Result) {
         try {
             context.startActivity(
@@ -285,6 +327,15 @@ class WifiDirectHelper(
             this.groupOwnerIntent = 0
         }
         try {
+            // NOTE: do NOT call stopPeerDiscovery() before connect() on this
+            // hardware. It was tried (to give the WPS negotiation a settled
+            // state) and confirmed to make things strictly worse: stopping
+            // discovery CLEARS the peer cache on this chipset (a burst of
+            // peers-changed broadcasts fires immediately), so connect() then
+            // ran against a peer the framework no longer knew and failed
+            // instantly with reason=0 (ERROR) on every single attempt —
+            // turning the old slow NO_GROUP into an immediate hard reject.
+            // connect() already stops discovery implicitly; leave it to do so.
             Log.d(TAG, "connect() requested to $deviceAddress")
             manager.connect(channel, config, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() {
@@ -327,9 +378,30 @@ class WifiDirectHelper(
             // group from a previous attempt), reuse it instead of failing —
             // createGroup() on an existing group returns BUSY otherwise.
             manager.requestGroupInfo(channel) { group ->
-                if (group != null) {
+                if (group != null && group.isGroupOwner) {
                     Log.d(TAG, "createGroup: group already exists, reusing")
                     mainHandler.post { result.success(null) }
+                } else if (group != null) {
+                    // A group exists but THIS device is a CLIENT in it, not the
+                    // owner — WifiP2pGroup is returned to every member, GO or
+                    // not, so the old `group != null` check here would wrongly
+                    // report "I'm the GO, reuse it" while actually being a
+                    // client of someone else's group (e.g. the deterministic
+                    // relay election picked this device as the intended GO, but
+                    // a flaky/one-sided P2P negotiation pulled it into the
+                    // peer's group as a client instead — confirmed possible on
+                    // real hardware via the groupOwnerIntent caveats elsewhere
+                    // in this file). Reporting false success here would leave
+                    // BOTH sides passively waiting for the other to act —
+                    // a "double-passive" deadlock distinct from the glare this
+                    // function already fixed. Leave the wrong-role group first,
+                    // then fall through to a fresh createGroup() as the actual
+                    // owner.
+                    Log.d(TAG, "createGroup: existing group is NOT owned by this device — leaving before recreating")
+                    manager.removeGroup(channel, object : WifiP2pManager.ActionListener {
+                        override fun onSuccess() = createGroup(result)
+                        override fun onFailure(reason: Int) = createGroup(result)
+                    })
                 } else {
                     manager.createGroup(channel, object : WifiP2pManager.ActionListener {
                         override fun onSuccess() {
@@ -641,6 +713,15 @@ class WifiDirectHelper(
                 client.getOutputStream().write((bundle + "\n").toByteArray(StandardCharsets.UTF_8))
                 client.getOutputStream().flush()
                 Log.d(TAG, "Answered pull (${bundle.length} bytes) to ${client.inetAddress}")
+                // A passive group-owner device (e.g. a Victim waiting to be
+                // pulled) otherwise gets no signal that its bundle actually
+                // left — it just sits silent. Tell the Dart side a non-empty
+                // pull was served so the user can see a real "picked up"
+                // confirmation. An empty pull means nothing was cached to hand
+                // over, so it isn't a delivery.
+                if (bundle.isNotEmpty()) {
+                    mainHandler.post { eventSink?.success(mapOf("event" to "bundleDelivered")) }
+                }
             }
             "manifest" -> {
                 val response = JSONObject().put("bundleIds", JSONArray(manifestIds)).toString()

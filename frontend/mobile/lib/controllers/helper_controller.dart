@@ -58,16 +58,6 @@ class HelperController {
   final Map<String, int> _ackAttempts = {};
   final Map<String, Timer> _ackRetryTimers = {};
   final Map<String, DateTime> _ackedAt = {};
-  // discoverPeers()+connect() can take longer than _ackedCooldown to
-  // resolve — without this, a second ack for the same victim (cooldown
-  // already expired) could fire a second, overlapping pull attempt while
-  // the first is still mid-negotiation. Two concurrent WifiP2pManager calls
-  // racing each other is a real, confirmed-on-hardware source of the
-  // NO_GROUP/BUSY flakiness chased throughout this whole testing arc.
-  final Set<String> _pullInFlight = {};
-  // Same concurrency concern as _pullInFlight, for the Helper-to-Helper DTN
-  // relay handshake (_attemptHelperRelay) instead of the Victim pull path.
-  final Set<String> _relayInFlight = {};
   // When a Victim pull ends with THIS device as group owner (so it can't dial
   // out to fetch — see _attemptActivePull), how many times in a row that has
   // happened per peer, plus a short teardown timer per peer. This recovers
@@ -93,10 +83,88 @@ class HelperController {
   // the cooldown still gets collected on the next contact.
   static const Duration _pullCooldown = Duration(minutes: 2);
   final Map<String, DateTime> _pulledRecentlyAt = {};
-  // Set around every discoverPeers()+connectToHelper() call this controller
-  // makes itself (inside _attemptActivePull/_attemptHelperRelay) — guards the
-  // reactive connectionFormedStream listener below against double-handling a
-  // connection those methods are already explicitly processing.
+  // Same prompt-spam problem as _pullCooldown above, but for the
+  // Helper-Helper relay handshake: the global Wi-Fi Direct mutex only blocks a
+  // second, overlapping attempt while one is already running — once it frees, the
+  // next BLE re-detection (every ~12s, governed by _ackedCooldown) re-ran the
+  // full disconnect()+discoverPeers()+connectToHelper() dance against the
+  // SAME peer even though nothing had changed, and each connectToHelper()
+  // re-popped the OS "Invitation to connect" dialog on the group-owner side
+  // (confirmed on real hardware: 6 prompts in ~65s during one HH test round).
+  // DTNManager.relayMissing already dedupes by bundleId, so a reconnect this
+  // soon bought nothing but prompt spam.
+  static const Duration _relayCooldown = Duration(minutes: 2);
+  final Map<String, DateTime> _relayedRecentlyAt = {};
+  // BOTH cooldowns above only register AFTER connectToHelper() returns a real
+  // connection (connectionInfo != null). But the logs show the connect MOSTLY
+  // TIMES OUT first ("Could not pair with the peer in time") — and on that path
+  // the success cooldown is never set, so the SAME peer got re-dialled on every
+  // BLE re-detection (~30s: 13s connect timeout + ~12s ack cooldown), each dial
+  // re-firing the OS "Invitation to connect" dialog. Confirmed on hardware: 6
+  // FRESH connects in ~2.5 min, one dialog each, before pairing finally took.
+  // This cooldown is recorded the moment connect() is ATTEMPTED, regardless of
+  // outcome, so a failing peer is re-dialled at most once per window. Shorter
+  // than the 2-min success cooldowns on purpose: a genuine transient pairing
+  // failure must still retry soon (pairing here often needs a few tries), just
+  // not be hammered every 30s. 45s ≈ halves the dial/dialog rate while still
+  // landing a successful pair within a couple of minutes.
+  static const Duration _attemptCooldown = Duration(seconds: 45);
+  final Map<String, DateTime> _attemptedRecentlyAt = {};
+  // Consecutive failed connect attempts per peer. The 45s base above is fine
+  // for a peer that's reachable but momentarily slow to pair, but when a peer
+  // NEVER accepts (the user is away from that phone, not tapping the OS
+  // "Invitation to connect" prompt) a flat 45s means they come back to a stack
+  // of prompts. So back off: effective cooldown = 45s doubled per consecutive
+  // failure, capped at 4 min — quick to retry a reachable peer, quiet for an
+  // ignored one. Reset to 0 the instant a connection actually forms.
+  final Map<String, int> _attemptFailStreak = {};
+  static const int _attemptBackoffCapSeconds = 240;
+  Duration _effectiveAttemptCooldown(String peerId) {
+    final streak = (_attemptFailStreak[peerId] ?? 0).clamp(0, 5);
+    final secs = (_attemptCooldown.inSeconds << streak)
+        .clamp(_attemptCooldown.inSeconds, _attemptBackoffCapSeconds);
+    return Duration(seconds: secs);
+  }
+
+  // P2P MAC -> last time we actually connected to it. Drives _selectPeer's
+  // round-robin so that when several Victim/Helper groups are discoverable at
+  // once, the global Wi-Fi Direct mutex doesn't keep dialing the same
+  // peers.first and starve the rest — it picks the least-recently-serviced one
+  // each window instead. Keyed by MAC, not app deviceId, because that's the
+  // only identity discoverPeers gives us (matching a discovered peer to a
+  // specific app deviceId would need the peer's P2P device name plumbed through
+  // the BLE handshake — the extension point for directed/chatroom addressing;
+  // unnecessary for relay correctness since DTNManager.relayMissing fully
+  // drains whichever peer we connect to, deduped by bundleId).
+  final Map<String, DateTime> _peerServicedAt = {};
+
+  /// Choose which discovered peer to dial when several are visible. Returns the
+  /// least-recently-serviced peer (never-serviced sorts first) so successive
+  /// mutex-serialized windows fan out across all of them instead of hammering
+  /// peers.first. Caller stamps _peerServicedAt once a connection forms.
+  Map<String, dynamic> _selectPeer(List<Map<String, dynamic>> peers) {
+    final epoch = DateTime.fromMillisecondsSinceEpoch(0);
+    peers.sort((a, b) {
+      final ta = _peerServicedAt[a['deviceAddress']] ?? epoch;
+      final tb = _peerServicedAt[b['deviceAddress']] ?? epoch;
+      return ta.compareTo(tb);
+    });
+    return peers.first;
+  }
+
+  // Global serializer for outbound Wi-Fi Direct sessions. The P2P radio forms
+  // exactly ONE group at a time — two concurrent connect()/createGroup() calls
+  // collide (the second returns BUSY), which was the multi-victim "fight": two
+  // victims both flagged needsPull each fired _attemptActivePull via unawaited,
+  // racing discoverPeers()+connect(). Every outbound session (_attemptActivePull,
+  // _attemptHelperRelay, _hostForVictim) now both CHECKS this at entry (skips if
+  // a session is already active — the next BLE re-detection retries it) and SETS
+  // it for its whole duration. Dart is single-threaded, so the entry check and
+  // the set below it run with no await between them = atomic; a second microtask
+  // can't slip past. Per-peer cooldowns then give natural round-robin: a peer
+  // just serviced is on cooldown, so the next free window picks a different one.
+  // Also still guards the reactive connectionFormedStream listener below against
+  // double-handling a connection these methods are already processing.
   bool _explicitWifiDirectInFlight = false;
   bool _stopped = false;
 
@@ -408,6 +476,9 @@ class HelperController {
   /// path bundleReceivedStream always uses, no extra code needed here.
   Future<void> _attemptActivePull(String victimDeviceId) async {
     if (_stopped) return;
+    // Global Wi-Fi Direct mutex — a session (this or another peer's pull/relay/
+    // host) is already on the radio; skip, the next BLE re-detection retries us.
+    if (_explicitWifiDirectInFlight) return;
     // Recently pulled this Victim — don't reconnect (and re-prompt it) just to
     // re-fetch data we'd dedupe away. See _pullCooldown.
     final lastPull = _pulledRecentlyAt[victimDeviceId];
@@ -415,7 +486,15 @@ class HelperController {
         DateTime.now().difference(lastPull) < _pullCooldown) {
       return;
     }
-    if (!_pullInFlight.add(victimDeviceId)) return;
+    // Recently ATTEMPTED (even if it failed to pair) — don't re-dial and
+    // re-prompt this peer. Window grows with the failure streak (backoff). See
+    // _attemptCooldown / _effectiveAttemptCooldown.
+    final lastAttempt = _attemptedRecentlyAt[victimDeviceId];
+    if (lastAttempt != null &&
+        DateTime.now().difference(lastAttempt) <
+            _effectiveAttemptCooldown(victimDeviceId)) {
+      return;
+    }
     _explicitWifiDirectInFlight = true;
     try {
       _emit(
@@ -438,9 +517,14 @@ class HelperController {
         await wifiDirectManager.disconnect();
         return;
       }
-      // Same first-peer simplification as the push path — fine for the 2
-      // test devices this is verified against; see discoverPeers() docs.
-      final peerAddress = peers.first['deviceAddress'] as String;
+      // Round-robin across all discovered groups (least-recently-serviced
+      // first) instead of blind peers.first, so multiple simultaneous Victims
+      // don't starve. See _selectPeer.
+      final peerAddress = _selectPeer(peers)['deviceAddress'] as String;
+      // Record the attempt NOW, before connect() — the OS dialog fires on the
+      // connect() call itself, and this is the only path that runs whether the
+      // connect succeeds or times out below. See _attemptCooldown.
+      _attemptedRecentlyAt[victimDeviceId] = DateTime.now();
       final connectionInfo = await wifiDirectManager.connectToHelper(
         peerAddress,
         myDeviceId: deviceId ?? '',
@@ -449,6 +533,9 @@ class HelperController {
       if (connectionInfo == null) {
         _emit('Could not connect to Wi-Fi Direct peer $victimDeviceId');
         _wifiStuckStreak++;
+        // Peer didn't pair — grow its backoff so we don't keep re-prompting.
+        _attemptFailStreak[victimDeviceId] =
+            (_attemptFailStreak[victimDeviceId] ?? 0) + 1;
         // Confirmed on real hardware: a failed connect() (NO_GROUP) can leave
         // the P2P stack mid-negotiation, and the very next discoverPeers()
         // call comes back BUSY (reason=2) as a result. Clean up before the
@@ -457,6 +544,10 @@ class HelperController {
         await wifiDirectManager.disconnect();
         return;
       }
+      // Connection formed — peer is reachable, reset its backoff and mark its
+      // MAC serviced so _selectPeer rotates to a different group next window.
+      _attemptFailStreak.remove(victimDeviceId);
+      _peerServicedAt[peerAddress] = DateTime.now();
       final isGroupOwner = connectionInfo['isGroupOwner'] as bool? ?? false;
       if (isGroupOwner) {
         // We became group owner instead of joining the Victim's group. The
@@ -520,9 +611,8 @@ class HelperController {
       await _onBundleJsonReceived(json);
     } finally {
       _explicitWifiDirectInFlight = false;
-      _pullInFlight.remove(victimDeviceId);
     }
-    // After the in-flight guards are cleared (so the reset's own disconnect()
+    // After the mutex is cleared (so the reset's own disconnect()
     // can't collide with this attempt): if too many cycles wedged in a row,
     // reset the whole P2P stack before the next contact retries into the same
     // stuck state.
@@ -578,7 +668,11 @@ class HelperController {
   /// and for the 2-device test; revisit with ephemeral teardown if one device
   /// must serve free Victims AND pull others at once in a 3+ device mesh.
   Future<void> _hostForVictim(String victimDeviceId) async {
-    if (_stopped || !_pullInFlight.add(victimDeviceId)) return;
+    if (_stopped) return;
+    // Global Wi-Fi Direct mutex (see _explicitWifiDirectInFlight) — don't start
+    // hosting (createGroup) while a pull/relay/another host is on the radio.
+    if (_explicitWifiDirectInFlight) return;
+    _explicitWifiDirectInFlight = true;
     try {
       final ok = await wifiDirectManager.createGroup();
       _emit(
@@ -589,7 +683,13 @@ class HelperController {
                   'next contact',
       );
     } finally {
-      _pullInFlight.remove(victimDeviceId);
+      // Released after the group is up. The autonomous group persists in the
+      // native layer independently of this flag; releasing here lets other
+      // contacts proceed rather than wedging the mutex for the whole hosting
+      // lifetime (which has no explicit end signal). ponytail: a later pull
+      // that calls disconnect() can still tear this group down — the pre-
+      // existing 3+ device host-and-pull limitation noted above; unchanged.
+      _explicitWifiDirectInFlight = false;
     }
   }
 
@@ -617,7 +717,10 @@ class HelperController {
     bool peerAssociated = false,
     bool myAssociated = false,
   }) async {
-    if (_stopped || !_relayInFlight.add(peerHelperDeviceId)) return;
+    if (_stopped) return;
+    // Global Wi-Fi Direct mutex (see _explicitWifiDirectInFlight) — one P2P
+    // session at a time; skip if the radio is busy, next contact retries.
+    if (_explicitWifiDirectInFlight) return;
     _explicitWifiDirectInFlight = true;
     try {
       // Deterministic group-owner election. Only possible when the peer's
@@ -668,6 +771,24 @@ class HelperController {
         return;
       }
 
+      // Recently relayed with this peer — don't reconnect (and re-prompt its
+      // GO side) just to re-sync data DTNManager.relayMissing would dedupe
+      // away. See _relayCooldown.
+      final lastRelay = _relayedRecentlyAt[peerHelperDeviceId];
+      if (lastRelay != null &&
+          DateTime.now().difference(lastRelay) < _relayCooldown) {
+        return;
+      }
+      // Recently ATTEMPTED (even if it failed to pair) — don't re-dial and
+      // re-prompt this peer's GO side. Window grows with the failure streak
+      // (backoff). See _attemptCooldown / _effectiveAttemptCooldown.
+      final lastAttempt = _attemptedRecentlyAt[peerHelperDeviceId];
+      if (lastAttempt != null &&
+          DateTime.now().difference(lastAttempt) <
+              _effectiveAttemptCooldown(peerHelperDeviceId)) {
+        return;
+      }
+
       // Elected client (lost the election above) → active side: discover the
       // peer, connect as client, and relay. No early-return for an empty
       // storedBundles — DTNManager.sync pulls from the peer in the same
@@ -708,7 +829,14 @@ class HelperController {
         await wifiDirectManager.disconnect();
         return;
       }
-      final peerAddress = peers.first['deviceAddress'] as String;
+      // Round-robin across discovered peer Helpers (see _selectPeer) — the
+      // UUID election already fixes which side dials, this just avoids starving
+      // one when several peer groups are visible at once.
+      final peerAddress = _selectPeer(peers)['deviceAddress'] as String;
+      // Record the attempt NOW, before connect() — the OS dialog fires on the
+      // connect() call itself, whether it succeeds or times out below. See
+      // _attemptCooldown.
+      _attemptedRecentlyAt[peerHelperDeviceId] = DateTime.now();
       final connectionInfo = await wifiDirectManager.connectToHelper(
         peerAddress,
         myDeviceId: deviceId ?? '',
@@ -721,12 +849,25 @@ class HelperController {
       if (connectionInfo == null) {
         _emit('Could not connect to Wi-Fi Direct peer $peerHelperDeviceId');
         _wifiStuckStreak++;
+        // Peer didn't pair — grow its backoff so we don't keep re-prompting.
+        _attemptFailStreak[peerHelperDeviceId] =
+            (_attemptFailStreak[peerHelperDeviceId] ?? 0) + 1;
         await wifiDirectManager.disconnect();
         return;
       }
       // Got a real connection this cycle — the stack is healthy, clear the
       // self-heal counter so transient one-offs never accumulate into a reset.
       _wifiStuckStreak = 0;
+      // Connection formed — peer is reachable, reset its backoff and mark its
+      // MAC serviced so _selectPeer rotates to a different group next window.
+      _attemptFailStreak.remove(peerHelperDeviceId);
+      _peerServicedAt[peerAddress] = DateTime.now();
+      // The OS "Invitation to connect" prompt fires on the peer's GO side the
+      // moment connectToHelper() above forms a connection, regardless of how
+      // this cycle ends below — start the cooldown here so a successful but
+      // otherwise uneventful contact (e.g. isGroupOwner below) still skips
+      // re-prompting the peer next time.
+      _relayedRecentlyAt[peerHelperDeviceId] = DateTime.now();
       final isGroupOwner = connectionInfo['isGroupOwner'] as bool? ?? false;
       if (isGroupOwner) {
         // This device can't reliably dial out as group owner (see the
@@ -746,7 +887,6 @@ class HelperController {
       await wifiDirectManager.disconnect();
     } finally {
       _explicitWifiDirectInFlight = false;
-      _relayInFlight.remove(peerHelperDeviceId);
     }
     // Same self-heal as _attemptActivePull: if the connect/discovery stack
     // wedged too many cycles in a row, reset it before the next contact.
@@ -815,8 +955,10 @@ class HelperController {
       _pullOwnerTeardownTimers.clear();
       _pullEndedAsOwnerStreak.clear();
       _pulledRecentlyAt.clear();
-      _pullInFlight.clear();
-      _relayInFlight.clear();
+      _relayedRecentlyAt.clear();
+      _attemptedRecentlyAt.clear();
+      _attemptFailStreak.clear();
+      _peerServicedAt.clear();
       _explicitWifiDirectInFlight = false;
       await bleManager.stopScanning();
       await bleManager.stopAdvertising();

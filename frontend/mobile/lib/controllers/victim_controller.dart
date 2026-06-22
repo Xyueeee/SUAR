@@ -27,6 +27,37 @@ class VictimController {
   // bundle, ever, ending the Victim's participation in the mesh for good.
   static const Duration _helperCooldown = Duration(minutes: 2);
   final Map<String, DateTime> _deliveredTo = {};
+  // _deliveredTo only gates a retry after a FULL delivery success — a
+  // connectToHelper() that forms a connection but then fails later (ends up
+  // group owner itself, or sendBundle fails) deliberately skips it (see the
+  // "don't put it on the success cooldown either" comment below) so a
+  // genuinely reachable Helper isn't punished for one bad cycle. But ATTEMPTING
+  // a connection at all is what pops the OS "Invitation to connect" dialog on
+  // the Helper's screen — and the connect MOSTLY TIMES OUT before forming
+  // (logs: "Could not pair with the peer in time"), so gating only on a formed
+  // connection never fired and the same Helper got re-dialled every ~8s RSSI
+  // window, one dialog each. _connectedRecentlyAt is therefore recorded the
+  // moment connect() is ATTEMPTED, before it can time out, on its own short
+  // cooldown — long enough to stop the ~8s hammering, short enough that a
+  // transient pairing failure (common on this hardware, often needs a few
+  // tries) still retries soon. Distinct from the 2-min _helperCooldown, which
+  // means "already fully delivered, nothing more to send".
+  static const Duration _attemptCooldown = Duration(seconds: 45);
+  final Map<String, DateTime> _connectedRecentlyAt = {};
+  // Consecutive failed connect attempts per Helper. A flat 45s is fine for a
+  // Helper that's reachable but slow to pair, but when a Helper NEVER accepts
+  // (its user is away, not tapping the OS "Invitation to connect" prompt) the
+  // Victim keeps re-dialling and they come back to a stack of prompts. Back
+  // off: effective cooldown = 45s doubled per consecutive failure, capped at
+  // 4 min. Reset the instant a connection forms. Mirrors HelperController.
+  final Map<String, int> _attemptFailStreak = {};
+  static const int _attemptBackoffCapSeconds = 240;
+  Duration _effectiveAttemptCooldown(String helperId) {
+    final streak = (_attemptFailStreak[helperId] ?? 0).clamp(0, 5);
+    final secs = (_attemptCooldown.inSeconds << streak)
+        .clamp(_attemptCooldown.inSeconds, _attemptBackoffCapSeconds);
+    return Duration(seconds: secs);
+  }
 
   // Real-device testing found some chipsets (confirmed: a budget Oppo unit)
   // can be discovered and connected to over Wi-Fi Direct fine, but can never
@@ -583,6 +614,13 @@ class VictimController {
       _emit('Re-testing Wi-Fi Direct initiator capability…');
     }
 
+    final lastAttempt = _connectedRecentlyAt[helperDeviceId];
+    if (lastAttempt != null &&
+        DateTime.now().difference(lastAttempt) <
+            _effectiveAttemptCooldown(helperDeviceId)) {
+      return false;
+    }
+
     final peers = await wifiDirectManager.discoverPeers();
     if (peers.isEmpty) {
       await _recordDiscoveryOutcome(succeeded: false);
@@ -597,12 +635,23 @@ class VictimController {
     }
     await _recordDiscoveryOutcome(succeeded: true);
     final peerAddress = peers.first['deviceAddress'] as String;
+    // Record the attempt NOW, before connect() — the OS dialog fires on the
+    // connect() call itself, and the call commonly TIMES OUT below (returning
+    // null) without ever forming a connection. Setting it here (not after a
+    // formed connection) is the whole point: it's the only place that runs on
+    // both the timed-out and the failed-later paths, so a Helper this device
+    // can't pair with isn't re-dialled/re-prompted every ~8s RSSI window. See
+    // _attemptCooldown.
+    _connectedRecentlyAt[helperDeviceId] = DateTime.now();
     final connectionInfo = await wifiDirectManager.connectToHelper(
       peerAddress,
       myDeviceId: deviceId ?? '',
     );
     if (connectionInfo == null) {
       _emit('Could not connect to Wi-Fi Direct peer');
+      // Helper didn't pair — grow its backoff so we don't keep re-prompting.
+      _attemptFailStreak[helperDeviceId] =
+          (_attemptFailStreak[helperDeviceId] ?? 0) + 1;
       // A failed connect() (commonly NO_GROUP) can still leave the P2P stack
       // mid-negotiation — confirmed on real hardware: the very next
       // discoverPeers() call came back BUSY (reason=2) because of this.
@@ -611,6 +660,8 @@ class VictimController {
       await wifiDirectManager.disconnect();
       return false;
     }
+    // Connection formed — Helper is reachable, reset its backoff.
+    _attemptFailStreak.remove(helperDeviceId);
 
     final isGroupOwner = connectionInfo['isGroupOwner'] as bool? ?? false;
     if (isGroupOwner) {

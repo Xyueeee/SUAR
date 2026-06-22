@@ -196,13 +196,20 @@ class _HelperModeScreenState extends State<HelperModeScreen>
     }
   }
 
+  /// Zoom the map settles at once a GPS fix arrives and it recenters on the
+  /// user (see _applyPosition). defaultMapZoom (12) is only the pre-fix KL
+  /// overview — by the time the user is looking at the page it's already here,
+  /// so the "recenter" button and the GPS-fix recenter must use THIS, not
+  /// defaultMapZoom, to count as "back to the view it opened at".
+  static const double _recenterZoom = 15;
+
   void _applyPosition(
     Position position, {
     required String label,
     required bool recenter,
   }) {
     final location = LatLng(position.latitude, position.longitude);
-    if (recenter) _mapController.move(location, 15);
+    if (recenter) _mapController.move(location, _recenterZoom);
     setState(() => _userLocation = location);
     // Routed through _logLine (not a direct _log.add) so a successful fix
     // is mirrored to logcat too — without this, a logcat-only capture could
@@ -312,6 +319,17 @@ class _HelperModeScreenState extends State<HelperModeScreen>
 
   static const double _popupWidth = 190;
 
+  /// Both the self dot and victim dots are now the same 22px circle (white
+  /// border + shadow), so one shared gap clears either: dot radius 11 +
+  /// border 2 = 13px to the visual edge, plus a small margin so the popup's
+  /// rounded card doesn't visually kiss the dot.
+  static const double _popupGap = 18;
+
+  /// Placeholder "zoning" radius (metres) drawn around a victim pin that has
+  /// no real GPS fix yet — tunable here until Increment 4's location
+  /// estimator can shrink/grow it per bundle based on signal confidence.
+  static const double _estimateZoneRadiusMeters = 60;
+
   /// Anchors a popup by its bottom edge a fixed [gap] above the marker's
   /// screen point instead of guessing the popup's height, so the popup grows
   /// upward as its content grows and never extends down over the marker it
@@ -337,7 +355,7 @@ class _HelperModeScreenState extends State<HelperModeScreen>
   Widget _buildBundlePopup(_PinPlacement pin, Size mapSize) {
     final bundle = pin.bundle;
     final screenPoint = _mapController.camera.latLngToScreenOffset(pin.point);
-    final anchor = _popupAnchor(screenPoint, mapSize, 28);
+    final anchor = _popupAnchor(screenPoint, mapSize, _popupGap);
     return Positioned(
       left: anchor.left,
       bottom: anchor.bottom,
@@ -430,7 +448,7 @@ class _HelperModeScreenState extends State<HelperModeScreen>
     final location = _userLocation;
     if (location == null) return const SizedBox.shrink();
     final screenPoint = _mapController.camera.latLngToScreenOffset(location);
-    final anchor = _popupAnchor(screenPoint, mapSize, 16);
+    final anchor = _popupAnchor(screenPoint, mapSize, _popupGap);
     final id = _controller.deviceId;
     final name = id == null ? 'Helper' : 'Helper-${deviceNameSuffix(id)}';
     return Positioned(
@@ -709,6 +727,26 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                                 constraints.maxWidth,
                                 constraints.maxHeight,
                               );
+                              // Re-resolve the open victim card against THIS
+                              // build's fresh pin list (by bundleId), not the
+                              // _PinPlacement captured on tap. _victimPins
+                              // re-mints placements every build and a bundle's
+                              // point moves when a newer/relayed copy arrives,
+                              // so the captured object's .point went stale and
+                              // the card stayed pinned where the dot used to be
+                              // while the dot jumped. Looking it up live makes
+                              // the card track the dot. Gone from the list ⇒ no
+                              // card (the victim aged out / was cleared).
+                              _PinPlacement? selectedLivePin;
+                              if (_selectedPin != null) {
+                                for (final p in pins) {
+                                  if (p.bundle.bundleId ==
+                                      _selectedPin!.bundle.bundleId) {
+                                    selectedLivePin = p;
+                                    break;
+                                  }
+                                }
+                              }
                               return Stack(
                                 children: [
                                   // Faint grid + range rings, behind the map —
@@ -794,6 +832,36 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                                               );
                                             },
                                       ),
+                                      // Translucent "zoning" rings for pins without a
+                                      // real GPS fix. Drawn first — before BOTH marker
+                                      // layers below — so every dot (self included)
+                                      // always paints on top of every ring, regardless
+                                      // of whose ring it is; otherwise a ring that
+                                      // happens to overlap a nearby dot visually buries
+                                      // it. Not tappable (flutter_map's CircleLayer has
+                                      // no hit-testing of its own), so it never blocks a
+                                      // tap meant for a dot either.
+                                      CircleLayer(
+                                        circles: [
+                                          for (final pin in pins)
+                                            if (pin.isApproximate)
+                                              CircleMarker(
+                                                point: pin.point,
+                                                radius:
+                                                    _estimateZoneRadiusMeters,
+                                                useRadiusInMeter: true,
+                                                color:
+                                                    _VictimMarker.colorForTier(
+                                                      pin.bundle.priorityTier,
+                                                    ).withValues(alpha: 0.18),
+                                                borderStrokeWidth: 1,
+                                                borderColor:
+                                                    _VictimMarker.colorForTier(
+                                                      pin.bundle.priorityTier,
+                                                    ).withValues(alpha: 0.4),
+                                              ),
+                                        ],
+                                      ),
                                       if (_userLocation != null)
                                         MarkerLayer(
                                           markers: [
@@ -802,10 +870,16 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                                               width: 22,
                                               height: 22,
                                               child: GestureDetector(
-                                                onTap: () => setState(
-                                                  () => _selfInfoOpen =
-                                                      !_selfInfoOpen,
-                                                ),
+                                                onTap: () => setState(() {
+                                                  _selfInfoOpen =
+                                                      !_selfInfoOpen;
+                                                  // Only one info card open at
+                                                  // a time — opening this one
+                                                  // dismisses any victim card.
+                                                  if (_selfInfoOpen) {
+                                                    _selectedPin = null;
+                                                  }
+                                                }),
                                                 child: Container(
                                                   decoration: BoxDecoration(
                                                     shape: BoxShape.circle,
@@ -831,26 +905,63 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                                           for (final pin in pins)
                                             Marker(
                                               point: pin.point,
-                                              width: 56,
-                                              // 56 was 1px short of the circle+label
-                                              // Column's natural height, causing a
-                                              // RenderFlex overflow on every pin.
-                                              height: 60,
-                                              // Anchors the circle (not the label beneath it) to the
-                                              // geo-point — default center alignment would otherwise
-                                              // put the midpoint of circle+label on the coordinate.
+                                              // Wide enough for an "Victim-XXXX" label
+                                              // below the dot without wrapping.
+                                              width: 84,
+                                              // Dot (22) + spacing (3) + label line
+                                              // (~12), with a few px of slack.
+                                              height: 44,
+                                              // Anchors the dot's centre (not the label
+                                              // beneath it) to the geo-point. flutter_map's
+                                              // alignment.y measures from the point DOWN to
+                                              // the box's bottom edge, not from the box's top
+                                              // — positive y pulls the box up so the point
+                                              // lands inside it. With height 44 and a 22px
+                                              // dot at the top, the dot's centre sits at
+                                              // Alignment(0, 0.5).
                                               alignment: const Alignment(
                                                 0,
-                                                -0.45,
+                                                0.5,
                                               ),
                                               child: GestureDetector(
-                                                onTap: () => setState(
-                                                  () => _selectedPin = pin,
-                                                ),
-                                                child: _VictimMarker(
-                                                  bundle: pin.bundle,
-                                                  isApproximate:
-                                                      pin.isApproximate,
+                                                onTap: () => setState(() {
+                                                  _selectedPin = pin;
+                                                  // Only one info card open at
+                                                  // a time — opening this one
+                                                  // dismisses the self card.
+                                                  _selfInfoOpen = false;
+                                                }),
+                                                // Selecting a pin focuses it — every
+                                                // other victim dot fades back a bit so
+                                                // the selected one (and its popup) reads
+                                                // clearly against the rest of the mesh.
+                                                // The self/blue dot is unaffected, it
+                                                // lives in its own MarkerLayer above.
+                                                // Compared by bundleId, not identity —
+                                                // _victimPins mints a fresh
+                                                // _PinPlacement every build, so the
+                                                // stored _selectedPin is never the same
+                                                // instance as this build's pin even when
+                                                // it's the same victim.
+                                                child: AnimatedOpacity(
+                                                  duration: const Duration(
+                                                    milliseconds: 150,
+                                                  ),
+                                                  opacity:
+                                                      _selectedPin == null ||
+                                                          _selectedPin!
+                                                                  .bundle
+                                                                  .bundleId ==
+                                                              pin
+                                                                  .bundle
+                                                                  .bundleId
+                                                      ? 1.0
+                                                      : 0.35,
+                                                  child: _VictimMarker(
+                                                    bundle: pin.bundle,
+                                                    isApproximate:
+                                                        pin.isApproximate,
+                                                  ),
                                                 ),
                                               ),
                                             ),
@@ -879,6 +990,34 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                                       ),
                                     ),
                                   ),
+                                  if (_userLocation != null)
+                                    Positioned(
+                                      top: 8,
+                                      right: 8,
+                                      child: GestureDetector(
+                                        // Matches the zoom the map recenters to
+                                        // on GPS fix (_recenterZoom), i.e. the
+                                        // view the user is actually looking at
+                                        // after the page settles — not the
+                                        // far-out pre-fix defaultMapZoom.
+                                        onTap: () => _mapController.move(
+                                          _userLocation!,
+                                          _recenterZoom,
+                                        ),
+                                        child: Container(
+                                          padding: const EdgeInsets.all(8),
+                                          decoration: const BoxDecoration(
+                                            color: Colors.black54,
+                                            shape: BoxShape.circle,
+                                          ),
+                                          child: const Icon(
+                                            Icons.my_location,
+                                            color: Colors.white,
+                                            size: 18,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
                                   // Stacked in one column (not two independently
                                   // positioned corners) — two badges anchored to
                                   // opposite corners visually collided once the
@@ -991,8 +1130,8 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                                         ],
                                       ),
                                     ),
-                                  if (_selectedPin != null)
-                                    _buildBundlePopup(_selectedPin!, mapSize),
+                                  if (selectedLivePin != null)
+                                    _buildBundlePopup(selectedLivePin, mapSize),
                                   if (_selfInfoOpen) _buildSelfPopup(mapSize),
                                 ],
                               );
@@ -1134,14 +1273,19 @@ class _RadarGridPainter extends CustomPainter {
       oldDelegate.center != center;
 }
 
+/// A victim pin is the same solid dot regardless of GPS confidence — a name
+/// doesn't fit inside a 22px circle, so it's printed below instead. Whether
+/// the bundle has a real GPS fix or not is shown separately, via the
+/// translucent zoning ring drawn by the CircleLayer behind this marker (see
+/// the victim MarkerLayer's parent Stack child order).
 class _VictimMarker extends StatelessWidget {
   const _VictimMarker({required this.bundle, required this.isApproximate});
 
   final DistressBundleModel bundle;
   final bool isApproximate;
 
-  Color get _color {
-    switch (bundle.priorityTier) {
+  static Color colorForTier(String tier) {
+    switch (tier) {
       case 'Critical':
         return Colors.redAccent;
       case 'High':
@@ -1155,49 +1299,37 @@ class _VictimMarker extends StatelessWidget {
     }
   }
 
-  String get _shortId => deviceNameSuffix(bundle.deviceId);
-
   @override
   Widget build(BuildContext context) {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         Container(
-          width: 40,
-          height: 40,
+          width: 22,
+          height: 22,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            // Approximate (no real GPS yet) pins render lighter/more
-            // translucent than confirmed-GPS pins, to visually flag the
-            // uncertainty rather than implying an exact fix.
-            color: _color.withValues(alpha: isApproximate ? 0.55 : 0.85),
-            border: Border.all(
-              color: Colors.white,
-              width: 2,
-              style: isApproximate ? BorderStyle.none : BorderStyle.solid,
-            ),
+            color: colorForTier(bundle.priorityTier),
+            border: Border.all(color: Colors.white, width: 2),
             boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 4)],
           ),
-          alignment: Alignment.center,
-          child: Text(
-            _shortId,
-            style: const TextStyle(
-              color: Colors.black,
-              fontSize: 11,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
         ),
-        Container(
-          margin: const EdgeInsets.only(top: 2),
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-          decoration: BoxDecoration(
-            color: Colors.black54,
-            borderRadius: BorderRadius.circular(6),
-          ),
-          child: Text(
-            isApproximate ? '~Victim' : 'Victim',
-            style: const TextStyle(color: Colors.white, fontSize: 9),
+        const SizedBox(height: 3),
+        Text(
+          'Victim-${deviceNameSuffix(bundle.deviceId)}',
+          maxLines: 1,
+          softWrap: false,
+          overflow: TextOverflow.clip,
+          style: const TextStyle(
+            color: Colors.black,
+            fontWeight: FontWeight.bold,
+            fontSize: 10,
+            // White halo instead of a solid background pill — keeps the
+            // black text readable over dark tiles without boxing the name.
+            shadows: [
+              Shadow(color: Colors.white, blurRadius: 3),
+              Shadow(color: Colors.white, blurRadius: 3),
+            ],
           ),
         ),
       ],

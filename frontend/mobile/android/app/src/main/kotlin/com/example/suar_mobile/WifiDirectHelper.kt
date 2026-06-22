@@ -23,12 +23,33 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.charset.StandardCharsets
+import java.security.SecureRandom
 import org.json.JSONArray
 import org.json.JSONObject
 
 private const val TAG = "WifiDirectHelper"
 private const val WIFI_DIRECT_PORT = 8988
 private const val MAX_SYNC_IDS = 1000
+
+// Network name (SSID) for the autonomous group created in createGroup() on API
+// 29+. A band-pinned WifiP2pConfig is only legal if it also carries a peer
+// address OR a networkName+passphrase pair — createGroup has no peer, so it
+// must supply these. networkName must match ^DIRECT-[a-zA-Z0-9]{2}.* and be
+// <=32 UTF-8 bytes. The SSID is not a secret; clients join via the normal
+// discoverPeers()+connect(peer) flow, which targets the GO's MAC, not its SSID.
+private const val GROUP_NETWORK_NAME = "DIRECT-SUAR"
+
+// Generate a fresh WPA2 passphrase per group with a CSPRNG. The passphrase
+// must be 8..63 chars (WifiP2pConfig requirement). It is NOT shipped as a
+// constant: a static key in the APK would let anyone who unpacks the app derive
+// every group's link key. Peer-address connect() clients are provisioned the
+// credential automatically via WPS, so they never need to pre-know it — making
+// the passphrase per-session-random is transparent to the join path.
+private fun randomPassphrase(): String {
+    val chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    val rnd = SecureRandom()
+    return (1..16).map { chars[rnd.nextInt(chars.length)] }.joinToString("")
+}
 
 /// Wraps Android's WifiP2pManager (no mature Flutter plugin exists) and the
 /// transfer ServerSocket/Socket, exposed to Dart via "suar/wifi_direct".
@@ -403,7 +424,7 @@ class WifiDirectHelper(
                         override fun onFailure(reason: Int) = createGroup(result)
                     })
                 } else {
-                    manager.createGroup(channel, object : WifiP2pManager.ActionListener {
+                    val listener = object : WifiP2pManager.ActionListener {
                         override fun onSuccess() {
                             Log.d(TAG, "createGroup: success (now autonomous group owner)")
                             mainHandler.post { result.success(null) }
@@ -424,7 +445,42 @@ class WifiDirectHelper(
                                 }
                             }
                         }
-                    })
+                    }
+                    // Force the group onto the 2.4GHz band. The no-config
+                    // createGroup() lets the framework pick — on the Samsung S926B
+                    // it picked 5GHz (channel 149, freq=5745), and the budget OPPO
+                    // A96 client could never complete the join: its provision-
+                    // discovery reached the GO but the GO's response action frames
+                    // failed ("P2P: Failed to send Action frame"), so groupFormed
+                    // stayed false for 14s every attempt and the relay deadlocked.
+                    // 2.4GHz is the universally-supported social-channel band, has
+                    // longer range, and is what the proven Victim->Helper pull path
+                    // already lands on, so pin every autonomous group to it.
+                    // Builder + the 3-arg createGroup are API 29+; both test
+                    // devices (API 36 / API 30) qualify. Pre-29 keeps the old
+                    // framework-chosen behaviour (no 2.4GHz guarantee, but those
+                    // devices weren't the ones hitting the 5GHz default).
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        // A band-only config is illegal — build() throws
+                        // IllegalStateException("peer address must be set if
+                        // network name and pasphrase are not set.") (crashed
+                        // both phones). Supply fixed creds to satisfy it. Also
+                        // enablePersistentMode(false): the config-based Builder
+                        // defaults to PERSISTENT, but the old no-config
+                        // createGroup made a TEMPORARY group — keep that so we
+                        // don't leak saved groups across sessions. Clients join
+                        // through the unchanged discoverPeers()+connect(peer)
+                        // path; the fixed creds just also permit legacy joins.
+                        val config = WifiP2pConfig.Builder()
+                            .setNetworkName(GROUP_NETWORK_NAME)
+                            .setPassphrase(randomPassphrase())
+                            .enablePersistentMode(false)
+                            .setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_2GHZ)
+                            .build()
+                        manager.createGroup(channel, config, listener)
+                    } else {
+                        manager.createGroup(channel, listener)
+                    }
                 }
             }
         } catch (e: SecurityException) {

@@ -11,11 +11,14 @@ private const val WIFI_DIRECT_CHANNEL = "suar/wifi_direct"
 private const val WIFI_DIRECT_EVENTS = "suar/wifi_direct_events"
 private const val BLE_PERIPHERAL_CHANNEL = "suar/ble_peripheral"
 private const val BLE_PERIPHERAL_EVENTS = "suar/ble_peripheral_events"
+private const val SENSORS_CHANNEL = "suar/sensors"
+private const val SENSORS_EVENTS = "suar/sensors_events"
 
 class MainActivity : FlutterActivity() {
 
     private lateinit var wifiDirectHelper: WifiDirectHelper
     private lateinit var blePeripheralHelper: BlePeripheralHelper
+    private lateinit var sensorProbe: SensorProbe
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -24,6 +27,7 @@ class MainActivity : FlutterActivity() {
         val wifiP2pChannel = wifiP2pManager.initialize(this, mainLooper, null)
         wifiDirectHelper = WifiDirectHelper(this, wifiP2pManager, wifiP2pChannel)
         blePeripheralHelper = BlePeripheralHelper(this)
+        sensorProbe = SensorProbe(this)
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, WIFI_DIRECT_CHANNEL)
             .setMethodCallHandler { call, result ->
@@ -182,6 +186,53 @@ class MainActivity : FlutterActivity() {
 
                 override fun onCancel(arguments: Any?) {
                     blePeripheralHelper.setEventSink(null)
+                }
+            })
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SENSORS_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "getAvailability" -> result.success(sensorProbe.availability())
+                    "isWifiEnabled" -> result.success(sensorProbe.isWifiEnabled())
+                    "getSensorInfo" -> {
+                        val key = call.argument<String>("key")
+                        if (key == null) {
+                            result.error("BAD_ARGS", "key required", null)
+                        } else {
+                            result.success(sensorProbe.sensorInfo(key))
+                        }
+                    }
+                    "readSensor" -> {
+                        val key = call.argument<String>("key")
+                        val timeoutMs = (call.argument<Int>("timeoutMs") ?: 600).toLong()
+                        if (key == null) {
+                            result.error("BAD_ARGS", "key required", null)
+                        } else {
+                            sensorProbe.readSensor(key, timeoutMs, result)
+                        }
+                    }
+                    "startSensorStream" -> {
+                        call.argument<String>("key")?.let { sensorProbe.startSensorStream(it) }
+                        result.success(null)
+                    }
+                    "stopSensorStream" -> {
+                        call.argument<String>("key")?.let { sensorProbe.stopSensorStream(it) }
+                        result.success(null)
+                    }
+                    "bluetoothConnectedDevices" ->
+                        sensorProbe.bluetoothConnectedDevices(result)
+                    else -> result.notImplemented()
+                }
+            }
+
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, SENSORS_EVENTS)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    sensorProbe.setEventSink(events)
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    sensorProbe.setEventSink(null)
                 }
             })
     }

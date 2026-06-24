@@ -78,10 +78,15 @@ class HelperController {
   // already-collected Victim on every ack cycle (~12s) — and on real hardware
   // every connect() to its group re-popped the system "Allow Wi-Fi Direct
   // connection?" prompt on the Victim's screen (worst on Samsung One UI, which
-  // never auto-accepts). Bundle dedup already dropped the re-pulled data, so
-  // that reconnect bought nothing but prompt spam. A fresh triage update after
-  // the cooldown still gets collected on the next contact.
-  static const Duration _pullCooldown = Duration(minutes: 2);
+  // never auto-accepts). Originally 2 min, on the assumption a re-pull only
+  // re-fetched identical (deduped) data. That changed in Increment 2: a Victim
+  // now updates its triage (score/tier/flags) every few seconds under the SAME
+  // bundleId, and timestamp-based upsert (SQLiteRepository.saveBundle) refreshes
+  // the stored record + map pin on each newer pull — so re-pulling IS now worth
+  // it. Shortened to 30s to keep a Victim's status reasonably live; the cost is
+  // the Wi-Fi Direct prompt re-appearing that often on chipsets that don't
+  // auto-accept (Samsung). Tunable — raise it if the prompts get intrusive.
+  static const Duration _pullCooldown = Duration(seconds: 30);
   final Map<String, DateTime> _pulledRecentlyAt = {};
   // Same prompt-spam problem as _pullCooldown above, but for the
   // Helper-Helper relay handshake: the global Wi-Fi Direct mutex only blocks a

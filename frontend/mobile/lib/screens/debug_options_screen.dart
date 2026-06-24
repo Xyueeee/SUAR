@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../widgets/back_chevron.dart';
 import '../widgets/validated_text_dialog.dart';
 import 'debug_database_screen.dart';
+import 'triage_logic_screen.dart';
 
 const String backendSyncUrlPrefKey = 'suar_backend_sync_url';
 
@@ -60,6 +62,7 @@ class _DebugOptionsScreenState extends State<DebugOptionsScreen> {
       appBar: AppBar(
         backgroundColor: Colors.white,
         foregroundColor: Colors.black,
+        leading: const BackChevron(),
         title: const Text('Debugging Options'),
       ),
       body: ListView(
@@ -96,6 +99,26 @@ class _DebugOptionsScreenState extends State<DebugOptionsScreen> {
             ),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const DebugDatabaseScreen()),
+            ),
+          ),
+          const Divider(
+            color: Colors.black12,
+            height: 1,
+            indent: 16,
+            endIndent: 16,
+          ),
+          ListTile(
+            leading: const Icon(Icons.tune_outlined, color: Colors.black),
+            title: const Text(
+              'Triage Logic',
+              style: TextStyle(color: Colors.black),
+            ),
+            subtitle: const Text(
+              'Sensor weights, tiers and override rules',
+              style: TextStyle(color: Colors.black54),
+            ),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const TriageLogicScreen()),
             ),
           ),
         ],

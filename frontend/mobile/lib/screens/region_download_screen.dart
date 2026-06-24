@@ -6,6 +6,7 @@ import 'package:latlong2/latlong.dart';
 
 import '../map/map_constants.dart';
 import '../map/offline_download_manager.dart';
+import '../widgets/back_chevron.dart';
 import '../widgets/validated_text_dialog.dart';
 
 const double _handleSize = 14;
@@ -309,6 +310,7 @@ class _RegionDownloadScreenState extends State<RegionDownloadScreen> {
       appBar: AppBar(
         backgroundColor: Colors.white,
         foregroundColor: Colors.black,
+        leading: const BackChevron(),
         title: Text(
           _isEditing ? widget.existingStore!.storeName : 'Download Map Area',
         ),

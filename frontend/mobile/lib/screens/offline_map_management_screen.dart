@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 
 import '../map/offline_download_manager.dart';
+import '../widgets/back_chevron.dart';
 import 'region_download_screen.dart';
 
 // No seconds in here on purpose — a seconds-resolution countdown changes
@@ -103,6 +104,7 @@ class _OfflineMapManagementScreenState
         backgroundColor: Colors.white,
         foregroundColor: Colors.black,
         elevation: 0,
+        leading: const BackChevron(),
         title: const Text('Offline Map Management'),
       ),
       body: FutureBuilder<List<FMTCStore>>(

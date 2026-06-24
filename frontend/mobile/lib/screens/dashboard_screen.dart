@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'device_test_screen.dart';
 import 'mode_selection_screen.dart';
 import 'settings_screen.dart';
 
@@ -33,11 +34,14 @@ class DashboardScreen extends StatelessWidget {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Row(
+                        // Bottom-align the wordmark with the flame's base.
+                        crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
-                          const Icon(
-                            Icons.local_fire_department,
-                            color: Colors.black,
-                            size: 28,
+                          // Flame mark (height-constrained so the aspect ratio
+                          // is preserved). Black for this light header.
+                          Image.asset(
+                            'assets/logo/suar_logo_black.png',
+                            height: 30,
                           ),
                           const SizedBox(width: 8),
                           const Text(
@@ -46,6 +50,7 @@ class DashboardScreen extends StatelessWidget {
                               color: Colors.black,
                               fontSize: 20,
                               fontWeight: FontWeight.bold,
+                              height: 1.0,
                             ),
                           ),
                         ],
@@ -174,31 +179,39 @@ class DashboardScreen extends StatelessWidget {
                     ),
                   ),
                   SizedBox(height: 16 * scale),
-                  Container(
-                    width: double.infinity,
-                    height: 153 * scale,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFA7C7E7),
-                      borderRadius: BorderRadius.circular(14),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(14),
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const DeviceTestScreen(),
+                      ),
                     ),
-                    child: const Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.science_outlined,
-                          size: 40,
-                          color: Colors.black,
-                        ),
-                        SizedBox(height: 8),
-                        Text(
-                          'Device Test',
-                          style: TextStyle(
+                    child: Container(
+                      width: double.infinity,
+                      height: 153 * scale,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFA7C7E7),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: const Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.science_outlined,
+                            size: 40,
                             color: Colors.black,
-                            fontSize: 24,
-                            fontWeight: FontWeight.w500,
                           ),
-                        ),
-                      ],
+                          SizedBox(height: 8),
+                          Text(
+                            'Device Test',
+                            style: TextStyle(
+                              color: Colors.black,
+                              fontSize: 24,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                   SizedBox(height: 16 * scale),

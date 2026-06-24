@@ -65,3 +65,24 @@ Future<bool> requestMeshPermissions() async {
   final recheck = await Future.wait(permissions.map((p) => p.status));
   return recheck.every((s) => s.isGranted);
 }
+
+/// Requests microphone access for ambient-sound triage / the Device Test page.
+///
+/// Deliberately separate from [requestMeshPermissions]: the mic is OPTIONAL.
+/// Denial must never block the app — the triage engine simply drops the
+/// microphone term and renormalises the remaining sensor weights, and the
+/// Device Test page shows the microphone row as unavailable. Never throws
+/// (same stuck-native-lock guard as above).
+Future<bool> requestMicPermission() async {
+  try {
+    final status = await Permission.microphone.request();
+    if (status.isGranted) return true;
+  } on PlatformException catch (e) {
+    assert(() {
+      // ignore: avoid_print
+      print('[permissions] mic request() threw, falling back to status: $e');
+      return true;
+    }());
+  }
+  return await Permission.microphone.status.isGranted;
+}

@@ -26,6 +26,11 @@
     <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
         android:usesPermissionFlags="neverForLocation" tools:targetApi="tiramisu"/>
 
+    <!-- Microphone — ambient sound level (decibels) only, for triage + the
+         Device Test page. No audio is ever recorded or stored (no-PII NFR).
+         Optional at runtime: denial degrades gracefully (mic term drops out). -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+
     <!-- Foreground service (mesh active notification) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
@@ -34,7 +39,7 @@
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>
 
     <application
-        android:label="suar_mobile"
+        android:label="SUAR"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

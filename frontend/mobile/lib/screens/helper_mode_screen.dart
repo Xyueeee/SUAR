@@ -11,6 +11,7 @@ import '../constants.dart';
 import '../controllers/helper_controller.dart';
 import '../map/map_constants.dart';
 import '../models/distress_bundle_model.dart';
+import '../sensing/triage_calculator.dart' show TriageFlag;
 import '../widgets/mesh_activity_card.dart';
 import '../widgets/radio_status_banner.dart';
 
@@ -399,6 +400,18 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                     : '${bundle.priorityTier} priority',
                 style: const TextStyle(color: Colors.black54, fontSize: 12),
               ),
+              // At-a-glance safety-flag icons — tap Details for the full labels.
+              if (bundle.flags.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Wrap(
+                    spacing: 6,
+                    children: [
+                      for (final f in bundle.flags)
+                        Icon(_flagIcon(f), size: 16, color: _flagColor(f)),
+                    ],
+                  ),
+                ),
               Text(
                 // hopCount > 0 means this bundle reached this device via DTN
                 // relay, not a direct Wi-Fi Direct transfer — by the time it's
@@ -525,30 +538,28 @@ class _HelperModeScreenState extends State<HelperModeScreen>
   /// 4-character nickname, this is for cases where the full ID is needed
   /// (e.g. reading it out to a coordinator over radio).
   void _showSelfDetail(String name, String id) {
-    showDialog<void>(
+    showModalBottomSheet<void>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        title: Text(name, style: const TextStyle(color: Colors.white)),
-        content: Column(
+      backgroundColor: const Color(0xFF1A1A1A),
+      builder: (context) => Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'This is you (Helper Mode)',
-              style: TextStyle(color: Colors.white70, fontSize: 13),
+            Text(
+              name,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
             ),
             const SizedBox(height: 12),
+            const _DetailRow('Role', 'This is you (Helper Mode)'),
             _DetailRow('Full device ID', id),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Close', style: TextStyle(color: Colors.white70)),
-          ),
-        ],
       ),
     );
   }
@@ -588,6 +599,23 @@ class _HelperModeScreenState extends State<HelperModeScreen>
               '${bundle.updatedAt.toLocal()} (${_ageLabel(bundle.updatedAt)})',
             ),
             _DetailRow('Synced', bundle.isSynced ? 'Yes' : 'No'),
+            if (bundle.flags.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              const Text(
+                'Safety flags',
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [for (final f in bundle.flags) _flagChip(f)],
+              ),
+            ],
             // hopCount == 0 means this device detected the victim directly
             // over Wi-Fi Direct — first-hand and trustworthy. hopCount > 0
             // means it arrived via another Helper's relay, so this device
@@ -602,6 +630,47 @@ class _HelperModeScreenState extends State<HelperModeScreen>
               ),
           ],
         ),
+      ),
+    );
+  }
+
+  // Fall / faint / critical battery are life-or-comms-critical (red); low
+  // battery is a caution (amber).
+  Color _flagColor(String flag) => (flag == TriageFlag.fall ||
+          flag == TriageFlag.faint ||
+          flag == TriageFlag.criticalBattery)
+      ? const Color(0xFFFF6B6B)
+      : const Color(0xFFE0A500);
+
+  IconData _flagIcon(String flag) => switch (flag) {
+        TriageFlag.fall => Icons.personal_injury,
+        TriageFlag.faint => Icons.airline_seat_flat,
+        TriageFlag.criticalBattery => Icons.battery_alert,
+        TriageFlag.lowBattery => Icons.battery_2_bar,
+        _ => Icons.warning_amber_rounded,
+      };
+
+  Widget _flagChip(String flag) {
+    final label = TriageFlag.labels[flag] ?? flag;
+    final color = _flagColor(flag);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.18),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withValues(alpha: 0.6)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(_flagIcon(flag), size: 14, color: color),
+          const SizedBox(width: 5),
+          Text(
+            label,
+            style: TextStyle(
+                color: color, fontSize: 12, fontWeight: FontWeight.w600),
+          ),
+        ],
       ),
     );
   }

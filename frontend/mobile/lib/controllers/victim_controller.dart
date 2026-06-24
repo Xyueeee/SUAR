@@ -8,6 +8,9 @@ import '../communication/ble_manager.dart';
 import '../communication/wifi_direct_manager.dart';
 import '../constants.dart';
 import '../models/distress_bundle_model.dart';
+import '../permissions.dart';
+import '../sensing/sensor_fusion_engine.dart';
+import '../sensing/triage_config.dart';
 
 class VictimController {
   VictimController()
@@ -16,6 +19,13 @@ class VictimController {
 
   final BLEManager bleManager;
   final WiFiDirectManager wifiDirectManager;
+
+  // Increment 2: live sensor fusion → triage. Sampled only while Victim mode
+  // is active (battery-conscious), recomputed on a fixed cadence. ≤2s compute
+  // NFR is met trivially — evaluate() is a synchronous weighted sum.
+  final SensorFusionEngine _sensorEngine = SensorFusionEngine();
+  static const Duration _triageInterval = Duration(seconds: 5);
+  Timer? _triageTimer;
 
   final _statusController = StreamController<String>.broadcast();
   Stream<String> get statusStream => _statusController.stream;
@@ -338,11 +348,13 @@ class VictimController {
         }
       });
 
-      // Stubbed payload — real sensor data arrives in Increment 2.
+      // Starts at None/0 until the first triage cycle fills it in (see
+      // _startTriage) — the sensor windows need a moment of data before a
+      // score means anything.
       _bundle = DistressBundleModel(
         bundleId: const Uuid().v4(),
         deviceId: deviceId!,
-        priorityScore: 0.5,
+        priorityScore: 0.0,
         priorityTier: 'None',
         createdAt: DateTime.now(),
         updatedAt: DateTime.now(),
@@ -509,9 +521,63 @@ class VictimController {
         // change mid-session (a network joins, drops, or is auto-disabled).
         await _publishAssociation();
       });
+
+      // Kick off sensor fusion + triage AFTER the mesh is live, and don't
+      // await it — requesting mic permission pops a dialog, and the SOS
+      // broadcast must never wait behind it.
+      unawaited(_startTriage());
     } catch (e) {
       _emit('Victim mode start failed: $e');
     }
+  }
+
+  /// Requests the (optional) mic permission, starts the sensor engine, and
+  /// begins recomputing triage on a fixed cadence. Best-effort throughout —
+  /// a denied mic just drops that term; a failure here never breaks the mesh.
+  Future<void> _startTriage() async {
+    try {
+      final micGranted = await requestMicPermission();
+      if (_stopped) return;
+      await _sensorEngine.start(withMic: micGranted);
+      if (_stopped) return;
+      _emit(
+        micGranted
+            ? 'Sensor triage started (microphone enabled)'
+            : 'Sensor triage started (microphone unavailable — using other sensors)',
+      );
+      _triageTimer?.cancel();
+      _triageTimer = Timer.periodic(_triageInterval, (_) => _recomputeTriage());
+      await _recomputeTriage();
+    } catch (e) {
+      _emit('Sensor triage failed to start: $e');
+    }
+  }
+
+  /// Re-scores the bundle from the latest sensor state and re-caches it so the
+  /// next Helper pull carries the current triage. Updates the live bundle in
+  /// place (priority score/tier + sensor readings).
+  Future<void> _recomputeTriage() async {
+    final bundle = _bundle;
+    if (bundle == null || _stopped) return;
+    final outcome = _sensorEngine.evaluate(bundle.bundleId);
+    // Score is additive points on a 0..scoreCap scale; the schema's
+    // PriorityScore is 0..1, so store the normalised value. The tier carries
+    // the real classification.
+    final cap = TriageConfig.active.scoreCap;
+    bundle.priorityScore =
+        cap > 0 ? (outcome.result.score / cap).clamp(0.0, 1.0) : 0.0;
+    bundle.priorityTier = outcome.result.tier;
+    bundle.sensorReadings = outcome.readings.map((r) => r.toJson()).toList();
+    bundle.flags = outcome.result.flags;
+    bundle.updatedAt = DateTime.now();
+    await wifiDirectManager.setLocalBundle(bundle.toJson());
+    if (_stopped) return;
+    final note = outcome.result.note;
+    _emit(
+      'Triage updated: ${outcome.result.tier} '
+      '(${outcome.result.score.round()} pts)'
+      '${note != null ? ' — $note' : ''}',
+    );
   }
 
   Future<void> _onRssiWindowClosed() async {
@@ -788,6 +854,8 @@ class VictimController {
       _rssiWindowTimer?.cancel();
       _radioWatchdog?.cancel();
       _yieldFallbackTimer?.cancel();
+      _triageTimer?.cancel();
+      await _sensorEngine.stop();
       await _cancelSubs();
       await bleManager.stopAdvertising();
       await bleManager.setNeedsPull(false);
@@ -804,6 +872,8 @@ class VictimController {
     _rssiWindowTimer?.cancel();
     _radioWatchdog?.cancel();
     _yieldFallbackTimer?.cancel();
+    _triageTimer?.cancel();
+    _sensorEngine.dispose();
     _ackSub?.cancel();
     _bleStatusSub?.cancel();
     _wifiStatusSub?.cancel();

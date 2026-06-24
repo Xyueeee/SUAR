@@ -22,12 +22,24 @@ class SuarApp extends StatelessWidget {
     // Light is the default everywhere. Screens reached through "Emergency
     // Mode" hardcode their own dark colours (OLED battery saving) regardless
     // of this theme — see VictimModeScreen/HelperModeScreen/ModeSelectionScreen.
+    // The app's accent blue (matches the Dashboard "Device Test" card). Applied
+    // to dialog buttons + text-field cursors/selection so every popup reads in
+    // the same blue instead of the Material-3 default purple.
+    const accentInk = Color(0xFF3E6FA8);
     return MaterialApp(
       title: 'SUAR',
       theme: ThemeData(
         brightness: Brightness.light,
         scaffoldBackgroundColor: Colors.white,
         useMaterial3: true,
+        textButtonTheme: TextButtonThemeData(
+          style: TextButton.styleFrom(foregroundColor: accentInk),
+        ),
+        textSelectionTheme: TextSelectionThemeData(
+          cursorColor: accentInk,
+          selectionColor: accentInk.withValues(alpha: 0.3),
+          selectionHandleColor: accentInk,
+        ),
       ),
       home: const DashboardScreen(),
     );

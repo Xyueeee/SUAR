@@ -272,36 +272,65 @@ class BLEManager {
           'Discovered ${services.length} service(s) on ${device.remoteId} (retry)',
         );
       }
-      final service = services.firstWhere(
-        (s) => s.uuid == Guid(suarServiceUuid),
-      );
+      // Still missing after the retry above: a real absence (or a
+      // disconnect mid-discovery), not the transient OEM glitch the retry
+      // covers. firstWhere() would throw a bare "Bad state: No element"
+      // here, indistinguishable in the log from any other failure — fail
+      // explicitly instead so the cause is legible (confirmed on real
+      // S926B hardware: this path is hit in practice, not theoretical).
+      BluetoothService? service;
+      for (final s in services) {
+        if (s.uuid == Guid(suarServiceUuid)) {
+          service = s;
+          break;
+        }
+      }
+      if (service == null) {
+        _emit('SUAR service still missing after retry, aborting ACK');
+        await device.disconnect();
+        return (
+          success: false,
+          needsPull: false,
+          role: bleRoleVictim,
+          peerDeviceId: null,
+          peerAssociated: false,
+          helperWillHost: false,
+        );
+      }
       var needsPull = false;
       var role = bleRoleVictim;
       String? peerDeviceId;
       var peerAssociated = false;
-      try {
-        final statusChar = service.characteristics.firstWhere(
-          (c) => c.uuid == Guid(suarStatusCharacteristicUuid),
-        );
-        // Bytes are [0]=needsPull, [1]=role, [2..]=peer's app deviceId (UTF-8);
-        // flutter_blue_plus reassembles the full value across READ_BLOBs, so the
-        // UUID (longer than the default ATT MTU) arrives intact. See
-        // BlePeripheralHelper.onCharacteristicReadRequest.
-        final statusBytes = await statusChar.read();
-        needsPull = statusBytes.isNotEmpty && statusBytes[0] != 0;
-        if (statusBytes.length > 1) role = statusBytes[1];
-        if (statusBytes.length > 2) peerAssociated = statusBytes[2] != 0;
-        if (statusBytes.length > 3) {
-          final decoded = utf8
-              .decode(statusBytes.sublist(3), allowMalformed: true)
-              .replaceAll(' ', '');
-          if (decoded.isNotEmpty) peerDeviceId = decoded;
+      BluetoothCharacteristic? statusChar;
+      for (final c in service.characteristics) {
+        if (c.uuid == Guid(suarStatusCharacteristicUuid)) {
+          statusChar = c;
+          break;
         }
-      } catch (e) {
-        // Status characteristic missing/unreadable — treat as "normal
-        // Victim push", the existing behaviour, rather than failing the
-        // whole ack.
-        _emit('Status read skipped: $e');
+      }
+      if (statusChar == null) {
+        // Status characteristic missing: treat as "normal Victim push",
+        // the existing behaviour, rather than failing the whole ack.
+        _emit('Status characteristic missing, skipping status read');
+      } else {
+        try {
+          // Bytes are [0]=needsPull, [1]=role, [2..]=peer's app deviceId
+          // (UTF-8); flutter_blue_plus reassembles the full value across
+          // READ_BLOBs, so the UUID (longer than the default ATT MTU)
+          // arrives intact. See BlePeripheralHelper.onCharacteristicReadRequest.
+          final statusBytes = await statusChar.read();
+          needsPull = statusBytes.isNotEmpty && statusBytes[0] != 0;
+          if (statusBytes.length > 1) role = statusBytes[1];
+          if (statusBytes.length > 2) peerAssociated = statusBytes[2] != 0;
+          if (statusBytes.length > 3) {
+            final decoded = utf8
+                .decode(statusBytes.sublist(3), allowMalformed: true)
+                .replaceAll('\u0000', '');
+            if (decoded.isNotEmpty) peerDeviceId = decoded;
+          }
+        } catch (e) {
+          _emit('Status read failed: $e');
+        }
       }
 
       // The one case where this device must host instead of pull: it is a
@@ -311,9 +340,25 @@ class BLEManager {
       // ack byte) to yield its group and push here, and becomes the host.
       final helperWillHost =
           needsPull && role == bleRoleVictim && myAssociated && !peerAssociated;
-      final characteristic = service.characteristics.firstWhere(
-        (c) => c.uuid == Guid(suarGattAckCharacteristicUuid),
-      );
+      BluetoothCharacteristic? characteristic;
+      for (final c in service.characteristics) {
+        if (c.uuid == Guid(suarGattAckCharacteristicUuid)) {
+          characteristic = c;
+          break;
+        }
+      }
+      if (characteristic == null) {
+        _emit('ACK characteristic missing, aborting ACK');
+        await device.disconnect();
+        return (
+          success: false,
+          needsPull: needsPull,
+          role: role,
+          peerDeviceId: peerDeviceId,
+          peerAssociated: peerAssociated,
+          helperWillHost: false,
+        );
+      }
       final bytes =
           (ByteData(5)
                 ..setInt32(0, rssi, Endian.little)

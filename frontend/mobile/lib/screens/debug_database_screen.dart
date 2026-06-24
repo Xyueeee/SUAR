@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../storage/sqlite_repository.dart';
+import '../widgets/back_chevron.dart';
 
 /// Settings > Debugging Options > Local Database. Lists the on-device
 /// SQLite tables so they can be inspected/cleared without pulling the .db
@@ -30,6 +31,7 @@ class _DebugDatabaseScreenState extends State<DebugDatabaseScreen> {
       appBar: AppBar(
         backgroundColor: Colors.white,
         foregroundColor: Colors.black,
+        leading: const BackChevron(),
         title: const Text('Local Database'),
       ),
       body: FutureBuilder<List<String>>(
@@ -141,6 +143,7 @@ class _DebugTableScreenState extends State<DebugTableScreen> {
       appBar: AppBar(
         backgroundColor: Colors.white,
         foregroundColor: Colors.black,
+        leading: const BackChevron(),
         title: Text(widget.tableName),
         actions: [
           IconButton(

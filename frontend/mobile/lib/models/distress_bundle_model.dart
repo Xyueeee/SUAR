@@ -11,6 +11,10 @@ class DistressBundleModel {
   DateTime updatedAt;
   List<Map<String, dynamic>> sensorReadings;
 
+  /// Active triage safety flags ([TriageFlag] keys: fall/faint/lowBattery/
+  /// criticalBattery) so a Helper can surface them on the victim's detail card.
+  List<String> flags;
+
   DistressBundleModel({
     required this.bundleId,
     required this.deviceId,
@@ -23,6 +27,7 @@ class DistressBundleModel {
     required this.createdAt,
     required this.updatedAt,
     this.sensorReadings = const [],
+    this.flags = const [],
   });
 
   Map<String, dynamic> toJson() {
@@ -38,6 +43,7 @@ class DistressBundleModel {
       'createdAt': createdAt.toIso8601String(),
       'updatedAt': updatedAt.toIso8601String(),
       'sensorReadings': sensorReadings,
+      'flags': flags,
     };
   }
 
@@ -56,6 +62,7 @@ class DistressBundleModel {
       sensorReadings:
           (json['sensorReadings'] as List?)?.cast<Map<String, dynamic>>() ??
           const [],
+      flags: (json['flags'] as List?)?.cast<String>() ?? const [],
     );
   }
 
@@ -72,6 +79,7 @@ class DistressBundleModel {
       'IsSynced': isSynced ? 1 : 0,
       'CreatedAt': createdAt.toIso8601String(),
       'UpdatedAt': updatedAt.toIso8601String(),
+      'Flags': flags.join(','),
     };
   }
 
@@ -87,6 +95,11 @@ class DistressBundleModel {
       isSynced: (map['IsSynced'] as int) == 1,
       createdAt: DateTime.parse(map['CreatedAt'] as String),
       updatedAt: DateTime.parse(map['UpdatedAt'] as String),
+      flags: (map['Flags'] as String?)
+              ?.split(',')
+              .where((s) => s.isNotEmpty)
+              .toList() ??
+          const [],
     );
   }
 }

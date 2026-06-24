@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../widgets/back_chevron.dart';
 import 'debug_options_screen.dart';
 import 'offline_map_management_screen.dart';
 
@@ -16,6 +17,7 @@ class SettingsScreen extends StatelessWidget {
       appBar: AppBar(
         backgroundColor: Colors.white,
         foregroundColor: Colors.black,
+        leading: const BackChevron(),
         title: const Text('Settings'),
       ),
       body: ListView(

@@ -1,0 +1,129 @@
+/* Dashboard: situation board. Triage-tier bar is the hero (what a coordinator
+ * reads first), backed by stat tiles, a 14-day activity chart, a tier doughnut,
+ * recent bundles and a mini map of located victims. */
+window.SUAR = window.SUAR || {};
+SUAR.views = SUAR.views || {};
+
+SUAR.views.dashboard = (function () {
+  const TIERS = ["Critical", "High", "Moderate", "Low", "None"];
+  const TIER_COLORS = {
+    Critical: "#d64545", High: "#ec7a1c", Moderate: "#e0a500", Low: "#3fb836", None: "#9aa4b2",
+  };
+  let charts = [];
+  let map = null;
+
+  function tierBarHtml(counts) {
+    const total = TIERS.reduce((a, t) => a + (counts[t] || 0), 0);
+    const segs = TIERS.map((t) => {
+      const c = counts[t] || 0;
+      if (!c) return "";
+      return '<div class="tierbar__seg seg-' + t.toLowerCase() + '" style="flex-grow:' + c + '" title="' + t + ": " + c + '"></div>';
+    }).join("");
+    const legend = TIERS.map((t) =>
+      '<div class="tier-legend__item"><span class="tier-legend__swatch sw-' + t.toLowerCase() + '"></span>' +
+      '<span class="tier-legend__count">' + (counts[t] || 0) + '</span>' +
+      '<span class="tier-legend__name">' + t + "</span></div>"
+    ).join("");
+    return (
+      '<div class="card"><div class="card__head"><h3>Triage severity</h3><span class="spacer"></span>' +
+      '<span class="eyebrow">' + total + ' bundles</span></div><div class="card__body">' +
+      '<div class="tierbar">' + (total ? segs : '<div class="tierbar__seg seg-none" style="flex-grow:1"></div>') + "</div>" +
+      '<div class="tier-legend">' + legend + "</div></div></div>"
+    );
+  }
+
+  function statTile(label, value, sub, accent) {
+    return (
+      '<div class="stat">' + (accent ? '<div class="stat__accent" style="background:' + accent + '"></div>' : "") +
+      '<div class="stat__label">' + label + "</div>" +
+      '<div class="stat__value">' + value + "</div>" +
+      (sub ? '<div class="stat__sub">' + sub + "</div>" : "") + "</div>"
+    );
+  }
+
+  async function render(container) {
+    charts.forEach((c) => c.destroy()); charts = [];
+    if (map) { map.remove(); map = null; }
+
+    const s = await SUAR.api.get("/admin/stats");
+
+    container.innerHTML =
+      '<div class="grid grid--stats" style="margin-bottom:16px">' +
+        statTile("Total bundles", s.totalBundles, s.locatedCount + " located", "var(--accent)") +
+        statTile("Critical + High", (s.tierCounts.Critical + s.tierCounts.High), "need attention", "var(--critical)") +
+        statTile("Devices seen", s.deviceCount, s.topDevices.length + " active", "var(--accent-soft)") +
+        statTile("Unsynced", s.unsyncedCount, s.syncedCount + " synced", s.unsyncedCount ? "var(--high)" : "var(--low)") +
+      "</div>" +
+      '<div style="margin-bottom:16px">' + tierBarHtml(s.tierCounts) + "</div>" +
+      '<div class="grid grid--2" style="margin-bottom:16px">' +
+        '<div class="card"><div class="card__head"><h3>Activity — last 14 days</h3></div><div class="card__body"><canvas id="dash-activity" height="150"></canvas></div></div>' +
+        '<div class="card"><div class="card__head"><h3>Severity split</h3></div><div class="card__body" style="display:grid;place-items:center"><div style="max-width:240px;width:100%"><canvas id="dash-tier"></canvas></div></div></div>' +
+      "</div>" +
+      '<div class="grid grid--2">' +
+        '<div class="card"><div class="card__head"><h3>Recent bundles</h3><span class="spacer"></span><a href="#/bundles" class="eyebrow">View all →</a></div><div class="table-wrap" id="dash-recent"></div></div>' +
+        '<div class="card"><div class="card__head"><h3>Located victims</h3><span class="spacer"></span><a href="#/map" class="eyebrow">Open map →</a></div><div class="card__body" style="padding:12px"><div class="map map--mini" id="dash-map"></div></div></div>' +
+      "</div>";
+
+    // Recent bundles table
+    const recent = s.recentBundles || [];
+    document.getElementById("dash-recent").innerHTML = recent.length
+      ? '<table class="data"><thead><tr><th>Tier</th><th>Score</th><th>Device</th><th>When</th></tr></thead><tbody>' +
+        recent.map((b) =>
+          "<tr><td>" + SUAR.ui.tierBadge(b.prioritytier) + "</td>" +
+          '<td class="mono-cell">' + (b.priorityscore != null ? b.priorityscore.toFixed(2) : "—") + "</td>" +
+          '<td class="id-trunc">' + SUAR.ui.truncId(b.deviceid, 10) + "</td>" +
+          '<td class="muted">' + SUAR.ui.fmtRelative(b.createdat) + "</td></tr>"
+        ).join("") + "</tbody></table>"
+      : SUAR.ui.empty("No bundles yet", "They'll appear once a Helper syncs.");
+
+    // Activity chart
+    const act = s.activityByDay || [];
+    charts.push(new Chart(document.getElementById("dash-activity"), {
+      type: "bar",
+      data: {
+        labels: act.map((d) => d.date.slice(5)),
+        datasets: [{ data: act.map((d) => d.count), backgroundColor: "#3e6fa8", borderRadius: 4, maxBarThickness: 22 }],
+      },
+      options: {
+        plugins: { legend: { display: false } },
+        scales: { y: { beginAtZero: true, ticks: { precision: 0 }, grid: { color: "#eef1f5" } }, x: { grid: { display: false } } },
+      },
+    }));
+
+    // Tier doughnut
+    const tc = s.tierCounts;
+    const hasTier = TIERS.some((t) => tc[t] > 0);
+    charts.push(new Chart(document.getElementById("dash-tier"), {
+      type: "doughnut",
+      data: {
+        labels: TIERS,
+        datasets: [{
+          data: hasTier ? TIERS.map((t) => tc[t]) : [1],
+          backgroundColor: hasTier ? TIERS.map((t) => TIER_COLORS[t]) : ["#e3e8ef"],
+          borderWidth: 2, borderColor: "#fff",
+        }],
+      },
+      options: { cutout: "62%", plugins: { legend: { display: false }, tooltip: { enabled: hasTier } } },
+    }));
+
+    // Mini map
+    map = L.map("dash-map", { zoomControl: false, attributionControl: false });
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(map);
+    const located = recent.filter((b) => b.estimatedlat != null && b.estimatedlng != null);
+    if (located.length) {
+      const pts = [];
+      located.forEach((b) => {
+        const color = TIER_COLORS[b.prioritytier] || "#9aa4b2";
+        L.circleMarker([b.estimatedlat, b.estimatedlng], {
+          radius: 7, color: "#fff", weight: 2, fillColor: color, fillOpacity: 0.95,
+        }).addTo(map);
+        pts.push([b.estimatedlat, b.estimatedlng]);
+      });
+      map.fitBounds(pts, { padding: [30, 30], maxZoom: 15 });
+    } else {
+      map.setView([3.139, 101.6869], 11); // KL fallback
+    }
+  }
+
+  return { render };
+})();

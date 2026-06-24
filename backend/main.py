@@ -1,11 +1,21 @@
-"""SUAR cloud sync bridge. Receives bundles from the Helper app, dedupes
-by BundleId, and persists into Supabase. See CLAUDE.md Section 8/14."""
+"""SUAR cloud sync bridge + admin API.
+
+Two consumers:
+  - the Helper app  -> POST /sync (unauthenticated; mesh devices have no admin login)
+  - the admin web   -> /admin/* (Supabase-Auth JWT required) + public GET reads
+
+All data is read/written here with the service-role key; the web never touches
+Supabase directly except to log in. See CLAUDE.md Section 8/9/14 and
+docs/superpowers/specs/2026-06-24-admin-web-design.md.
+"""
 import logging
 import os
-from datetime import datetime, timezone
+from collections import Counter, defaultdict
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from supabase import Client, create_client
 
 from models import SyncRequest, SyncResponse
@@ -19,13 +29,60 @@ supabase: Client = create_client(
     os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SECRET_KEY")
 )
 
-app = FastAPI(title="SUAR Sync Backend")
+# Emails allowed into /admin/*. A valid Supabase login is NOT enough — the anon
+# key is public, so any self-registered user has a valid token. Only these
+# operators are admins. Empty set => no admin access (fail closed).
+ADMIN_EMAILS = {e.strip().lower() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()}
+
+app = FastAPI(title="SUAR Sync + Admin Backend")
+
+# Dev: the static web dashboard is opened from file:// or any local host and
+# talks to this API over the ngrok URL, so origins are unpredictable. We auth
+# with a Bearer header (no cookies), so wildcard origins are safe here.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# --------------------------------------------------------------------------- #
+# Auth                                                                         #
+# --------------------------------------------------------------------------- #
+def require_admin(authorization: str = Header(None)):
+    """Verify a Supabase Auth JWT passed as `Authorization: Bearer <token>`.
+
+    ponytail: validates by calling GoTrue (one network round-trip per request).
+    Fine at admin volume; swap to local JWT-secret (HS256) verification if
+    latency ever matters.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    token = authorization.split(" ", 1)[1]
+    try:
+        res = supabase.auth.get_user(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    if not res or not res.user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    # A valid token only proves "some Supabase user" — enforce the admin allowlist.
+    if not ADMIN_EMAILS:
+        raise HTTPException(status_code=503, detail="Admin allowlist not configured (set ADMIN_EMAILS in backend .env)")
+    email = (getattr(res.user, "email", None) or "").lower()
+    if email not in ADMIN_EMAILS:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return res.user
+
+
+# --------------------------------------------------------------------------- #
+# Sync (Helper app)                                                            #
+# --------------------------------------------------------------------------- #
 def ensure_device(device_id: str, mode: str, version: str | None = None, touch_lastseen: bool = True) -> None:
     existing = supabase.table("device").select("deviceid").eq("deviceid", device_id).execute()
     if existing.data:
@@ -50,6 +107,8 @@ def health():
 
 @app.get("/bundles")
 def get_bundles():
+    """Legacy public listing kept for backward compat (RLS already exposes
+    these read-only). The admin web uses /admin/bundles instead."""
     result = (
         supabase.table("distressbundle")
         .select("*")
@@ -160,3 +219,278 @@ def sync(payload: SyncRequest):
         duplicates=duplicates,
         errors=errors,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Public reads (also used by the app in a later increment)                     #
+# --------------------------------------------------------------------------- #
+@app.get("/notices")
+def public_notices():
+    rows = supabase.table("notice").select("*").eq("isactive", True).order("createdat", desc=True).execute().data
+    now = datetime.now(timezone.utc)
+    return [r for r in rows if not r.get("expiresat") or datetime.fromisoformat(r["expiresat"]) > now]
+
+
+@app.get("/geofences")
+def public_geofences():
+    return supabase.table("geofence").select("*").eq("isactive", True).order("createdat", desc=True).execute().data
+
+
+@app.get("/content")
+def public_content(category: str | None = Query(None)):
+    q = supabase.table("appcontent").select("*").eq("ispublished", True)
+    if category:
+        q = q.eq("category", category)
+    return q.order("updatedat", desc=True).execute().data
+
+
+@app.get("/prep-plans")
+def public_prep_plans():
+    return supabase.table("prepplan").select("*").eq("ispublished", True).order("updatedat", desc=True).execute().data
+
+
+# --------------------------------------------------------------------------- #
+# Admin: identity check (web re-validates the session against the allowlist)   #
+# --------------------------------------------------------------------------- #
+@app.get("/admin/me")
+def admin_me(user=Depends(require_admin)):
+    return {"email": getattr(user, "email", None), "id": getattr(user, "id", None)}
+
+
+# --------------------------------------------------------------------------- #
+# Admin: dashboard stats                                                       #
+# --------------------------------------------------------------------------- #
+@app.get("/admin/stats")
+def admin_stats(_=Depends(require_admin)):
+    bundles = (
+        supabase.table("distressbundle")
+        .select("bundleid,deviceid,prioritytier,priorityscore,issynced,createdat,estimatedlat,estimatedlng")
+        .order("createdat", desc=True)
+        .execute()
+        .data
+    )
+
+    tiers = Counter(b["prioritytier"] for b in bundles)
+    synced = sum(1 for b in bundles if b["issynced"])
+    located = sum(1 for b in bundles if b.get("estimatedlat") is not None and b.get("estimatedlng") is not None)
+
+    # Activity over the last 14 days, keyed by UTC date.
+    today = datetime.now(timezone.utc).date()
+    days = [(today - timedelta(days=i)).isoformat() for i in range(13, -1, -1)]
+    per_day = defaultdict(int)
+    for b in bundles:
+        try:
+            d = datetime.fromisoformat(b["createdat"]).date().isoformat()
+            per_day[d] += 1
+        except (ValueError, TypeError, KeyError):
+            continue
+    activity = [{"date": d, "count": per_day.get(d, 0)} for d in days]
+
+    per_device = Counter(b["deviceid"] for b in bundles)
+
+    def _count(table, col=None, val=None):
+        q = supabase.table(table).select("*", count="exact", head=True)
+        if col is not None:
+            q = q.eq(col, val)
+        return q.execute().count or 0
+
+    return {
+        "totalBundles": len(bundles),
+        "tierCounts": {
+            "Critical": tiers.get("Critical", 0),
+            "High": tiers.get("High", 0),
+            "Moderate": tiers.get("Moderate", 0),
+            "Low": tiers.get("Low", 0),
+            "None": tiers.get("None", 0),
+        },
+        "syncedCount": synced,
+        "unsyncedCount": len(bundles) - synced,
+        "locatedCount": located,
+        "deviceCount": _count("device"),
+        "sensorReadingCount": _count("sensorreading"),
+        "geofenceCount": _count("geofence", "isactive", True),
+        "noticeCount": _count("notice", "isactive", True),
+        "contentCount": _count("appcontent"),
+        "prepPlanCount": _count("prepplan"),
+        "activityByDay": activity,
+        "topDevices": [{"deviceId": d, "count": c} for d, c in per_device.most_common(5)],
+        "recentBundles": bundles[:8],
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Admin: bundles                                                               #
+# --------------------------------------------------------------------------- #
+@app.get("/admin/bundles")
+def admin_list_bundles(
+    _=Depends(require_admin),
+    tier: str | None = Query(None),
+    synced: bool | None = Query(None),
+    device: str | None = Query(None),
+    limit: int = Query(200, le=1000),
+):
+    q = supabase.table("distressbundle").select("*")
+    if tier:
+        q = q.eq("prioritytier", tier)
+    if synced is not None:
+        q = q.eq("issynced", synced)
+    if device:
+        q = q.eq("deviceid", device)
+    return q.order("createdat", desc=True).limit(limit).execute().data
+
+
+@app.get("/admin/bundles/{bundle_id}")
+def admin_bundle_detail(bundle_id: str, _=Depends(require_admin)):
+    bundle = supabase.table("distressbundle").select("*").eq("bundleid", bundle_id).execute().data
+    if not bundle:
+        raise HTTPException(status_code=404, detail="Bundle not found")
+    readings = supabase.table("sensorreading").select("*").eq("bundleid", bundle_id).order("recordedat").execute().data
+    relays = supabase.table("relaylog").select("*").eq("bundleid", bundle_id).order("hopsequence").execute().data
+    sync = supabase.table("syncrecord").select("*").eq("bundleid", bundle_id).execute().data
+    return {
+        "bundle": bundle[0],
+        "sensorReadings": readings,
+        "relayLogs": relays,
+        "syncRecord": sync[0] if sync else None,
+    }
+
+
+_BUNDLE_EDITABLE = {"prioritytier", "priorityscore", "estimatedlat", "estimatedlng", "issynced"}
+
+
+@app.patch("/admin/bundles/{bundle_id}")
+def admin_update_bundle(bundle_id: str, payload: dict = Body(...), _=Depends(require_admin)):
+    row = {k: v for k, v in payload.items() if k in _BUNDLE_EDITABLE}
+    if not row:
+        raise HTTPException(status_code=400, detail="No editable fields supplied")
+    row["updatedat"] = _now_iso()
+    try:
+        res = supabase.table("distressbundle").update(row).eq("bundleid", bundle_id).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Bundle not found")
+    return res.data[0]
+
+
+@app.delete("/admin/bundles/{bundle_id}")
+def admin_delete_bundle(bundle_id: str, _=Depends(require_admin)):
+    # Sensor readings / relay logs / sync record cascade on FK delete.
+    supabase.table("distressbundle").delete().eq("bundleid", bundle_id).execute()
+    return {"deleted": bundle_id}
+
+
+# --------------------------------------------------------------------------- #
+# Admin: devices                                                               #
+# --------------------------------------------------------------------------- #
+@app.get("/admin/devices")
+def admin_list_devices(_=Depends(require_admin)):
+    devices = supabase.table("device").select("*").order("lastseenat", desc=True).execute().data
+    counts = Counter(
+        b["deviceid"]
+        for b in supabase.table("distressbundle").select("deviceid").execute().data
+    )
+    for d in devices:
+        d["bundleCount"] = counts.get(d["deviceid"], 0)
+    return devices
+
+
+@app.patch("/admin/devices/{device_id}")
+def admin_update_device(device_id: str, payload: dict = Body(...), _=Depends(require_admin)):
+    row = {k: v for k, v in payload.items() if k in {"applicationmode", "applicationversion"}}
+    if not row:
+        raise HTTPException(status_code=400, detail="No editable fields supplied")
+    try:
+        res = supabase.table("device").update(row).eq("deviceid", device_id).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Device not found")
+    return res.data[0]
+
+
+@app.delete("/admin/devices/{device_id}")
+def admin_delete_device(device_id: str, _=Depends(require_admin)):
+    # WARNING: distressbundle.deviceid cascades — deletes that device's bundles.
+    supabase.table("device").delete().eq("deviceid", device_id).execute()
+    return {"deleted": device_id}
+
+
+# --------------------------------------------------------------------------- #
+# Admin: generic CRUD for the four simple admin-authored tables                #
+# --------------------------------------------------------------------------- #
+# geofence / notice / appcontent / prepplan share an identical CRUD shape, so
+# one registrar covers all four instead of ~150 lines of copy-paste.
+_ADMIN_RESOURCES = {
+    "geofences": dict(
+        table="geofence", pk="geofenceid",
+        fields=["name", "hazardtype", "shape", "geometry", "severity", "isactive"],
+        versioned=False,
+    ),
+    "notices": dict(
+        table="notice", pk="noticeid",
+        fields=["title", "body", "severity", "isactive", "expiresat"],
+        versioned=False,
+    ),
+    "content": dict(
+        table="appcontent", pk="contentid",
+        fields=["category", "title", "body", "ispublished"],
+        versioned=True,
+    ),
+    "prep-plans": dict(
+        table="prepplan", pk="prepplanid",
+        fields=["title", "structure", "ispublished"],
+        versioned=True,
+    ),
+}
+
+
+def _register_crud(name: str, cfg: dict) -> None:
+    table, pk, fields, versioned = cfg["table"], cfg["pk"], cfg["fields"], cfg["versioned"]
+
+    def list_all(_=Depends(require_admin)):
+        return supabase.table(table).select("*").order("createdat", desc=True).execute().data
+
+    def create(payload: dict = Body(...), _=Depends(require_admin)):
+        row = {k: payload[k] for k in fields if k in payload}
+        try:
+            res = supabase.table(table).insert(row).execute()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return res.data[0]
+
+    def update(item_id: str, payload: dict = Body(...), _=Depends(require_admin)):
+        row = {k: payload[k] for k in fields if k in payload}
+        if not row:
+            raise HTTPException(status_code=400, detail="No editable fields supplied")
+        row["updatedat"] = _now_iso()
+        if versioned:
+            cur = supabase.table(table).select("version").eq(pk, item_id).execute().data
+            row["version"] = (cur[0]["version"] + 1) if cur else 1
+        try:
+            res = supabase.table(table).update(row).eq(pk, item_id).execute()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if not res.data:
+            raise HTTPException(status_code=404, detail=f"{name} item not found")
+        return res.data[0]
+
+    def delete(item_id: str, _=Depends(require_admin)):
+        supabase.table(table).delete().eq(pk, item_id).execute()
+        return {"deleted": item_id}
+
+    # Unique function names so FastAPI doesn't warn on duplicate operation IDs.
+    slug = name.replace("-", "_")
+    list_all.__name__ = f"admin_list_{slug}"
+    create.__name__ = f"admin_create_{slug}"
+    update.__name__ = f"admin_update_{slug}"
+    delete.__name__ = f"admin_delete_{slug}"
+
+    app.get(f"/admin/{name}")(list_all)
+    app.post(f"/admin/{name}")(create)
+    app.patch(f"/admin/{name}/{{item_id}}")(update)
+    app.delete(f"/admin/{name}/{{item_id}}")(delete)
+
+
+for _name, _cfg in _ADMIN_RESOURCES.items():
+    _register_crud(_name, _cfg)

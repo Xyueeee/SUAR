@@ -56,9 +56,13 @@ class TriageConfig {
   double wLight;
   double wProximity;
 
-  // The score is clamped to this cap (the sum of all sensor weights = 100 by
-  // default), so the number stays on a clean, comparable 0..cap scale even
-  // though the raw additive total can run higher.
+  // The score is clamped to this cap, so PriorityScore stays a clean 0..1
+  // (score/cap). Continuous sensors sum to 100 at full risk; safety boosts
+  // (fall 25 + faint 55 + critical-battery 80 = up to 160) stack on top, so a
+  // worst-case stacked victim runs ~230-260 raw. The cap is pure headroom +
+  // the normaliser denominator — it does NOT move tier boundaries (those are
+  // absolute point thresholds, all far below the cap). A higher cap just lets
+  // the most extreme cases differentiate instead of all pinning at 1.0.
   double scoreCap;
 
   // Tier thresholds (points, on the 0..scoreCap scale).
@@ -115,9 +119,10 @@ class TriageConfig {
         wBarometer: 12,
         wLight: 6,
         wProximity: 4,
-        // Cap with headroom so stacked severe signals still differentiate
-        // (a faint scenario lands well above Critical rather than pinning).
-        scoreCap: 150,
+        // Headroom for stacked severe signals: realistic worst case runs
+        // ~230-260 raw, so 200 keeps all but the absolute extreme off the 1.0
+        // ceiling and differentiating. Tiers unaffected (absolute thresholds).
+        scoreCap: 200,
         criticalThreshold: 75,
         highThreshold: 50,
         moderateThreshold: 25,

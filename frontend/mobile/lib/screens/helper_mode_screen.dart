@@ -11,6 +11,7 @@ import '../constants.dart';
 import '../controllers/helper_controller.dart';
 import '../map/map_constants.dart';
 import '../models/distress_bundle_model.dart';
+import '../sensing/location_estimator.dart';
 import '../sensing/triage_calculator.dart' show TriageFlag;
 import '../widgets/mesh_activity_card.dart';
 import '../widgets/radio_status_banner.dart';
@@ -20,11 +21,20 @@ class _PinPlacement {
     required this.bundle,
     required this.point,
     required this.isApproximate,
+    required this.ringRadiusMeters,
   });
 
   final DistressBundleModel bundle;
-  final LatLng point;
+  // Not final: the declutter pass nudges near-coincident pins apart for
+  // legibility (see _declutterPins) before they're drawn.
+  LatLng point;
   final bool isApproximate;
+
+  /// Radius of the translucent uncertainty circle drawn under the pin. For a
+  /// real GPS pin this is the bundle's reported ± accuracy (clamped to stay
+  /// legible); for an approximate pin it's the fixed "somewhere near here"
+  /// zone. See [_HelperModeScreenState._estimateZoneRadiusMeters].
+  final double ringRadiusMeters;
 }
 
 /// "4.1.4 SUAR Emergency Mode - Helper Mode" (Figma node 10:191).
@@ -109,6 +119,29 @@ class _HelperModeScreenState extends State<HelperModeScreen>
     // delivered twice and the subscription isn't leaked.
     await _positionSub?.cancel();
     _positionSub = null;
+    // Spoof overrides real GPS everywhere, including the Helper's own blue dot —
+    // so a location set in the debug page drives both the victim bundles AND
+    // this map's centre. loadSpoof() populates the static from prefs in case
+    // this screen is the first thing to touch it after an app restart.
+    await LocationEstimator.loadSpoof();
+    if (LocationEstimator.isSpoofing) {
+      final s = LocationEstimator.spoof!;
+      if (!mounted) return;
+      setState(() {
+        _gpsBlockReason = null;
+        _userLocation = LatLng(s.latitude, s.longitude);
+      });
+      try {
+        _mapController.move(_userLocation!, _recenterZoom);
+      } catch (_) {
+        // Map not laid out yet — initialCenter covers it; the dot still shows.
+      }
+      _logLine(
+        'Using spoofed location (testing): '
+        '${s.latitude.toStringAsFixed(5)}, ${s.longitude.toStringAsFixed(5)}',
+      );
+      return;
+    }
     try {
       var permission = await Geolocator.checkPermission();
       _logLine('Location permission: $permission');
@@ -267,12 +300,12 @@ class _HelperModeScreenState extends State<HelperModeScreen>
     }
   }
 
-  /// Only the latest bundle per deviceId. Real GPS coords (estimatedLat/Lng)
-  /// are null until LocationEstimator (Increment 4) lands — until then, a
-  /// bundle that arrived at all means the victim is within Wi-Fi Direct
-  /// range, so it's placed near this Helper's own position as a rough
-  /// stand-in rather than hidden from the map entirely (a bundle had no way
-  /// to show up — or even be counted — before this).
+  /// Only the latest bundle per deviceId. A bundle now carries real GPS coords
+  /// (estimatedLat/Lng + accuracyMeters) from the victim's LocationEstimator
+  /// whenever a fix was available; when it wasn't (permission denied, no lock
+  /// yet, GPS off), those are null and the bundle is placed near this Helper's
+  /// own position as a rough "within radio range" stand-in rather than hidden
+  /// from the map entirely.
   List<_PinPlacement> get _victimPins {
     final seenDevices = <String>{};
     final pins = <_PinPlacement>[];
@@ -291,11 +324,71 @@ class _HelperModeScreenState extends State<HelperModeScreen>
       final point = hasGps
           ? LatLng(bundle.estimatedLat!, bundle.estimatedLng!)
           : _jitter(_userLocation ?? defaultMapCenter, bundle.deviceId);
+      // Real GPS pin → draw the chip's reported ± accuracy as the ring (so a
+      // tight fix is a small circle and a rough one a big circle), clamped so a
+      // 3 m fix is still visible and a 2 km fix doesn't swallow the map. A GPS
+      // pin whose chip reported no accuracy falls back to a small default ring.
+      // Approximate pin (no fix) → the fixed "near the Helper" zone.
+      final double ringRadiusMeters;
+      if (!hasGps) {
+        ringRadiusMeters = _estimateZoneRadiusMeters;
+      } else if (bundle.accuracyMeters != null) {
+        ringRadiusMeters = bundle.accuracyMeters!.clamp(
+          _minAccuracyRingMeters,
+          _maxAccuracyRingMeters,
+        );
+      } else {
+        ringRadiusMeters = _minAccuracyRingMeters;
+      }
       pins.add(
-        _PinPlacement(bundle: bundle, point: point, isApproximate: !hasGps),
+        _PinPlacement(
+          bundle: bundle,
+          point: point,
+          isApproximate: !hasGps,
+          ringRadiusMeters: ringRadiusMeters,
+        ),
       );
     }
+    _declutterPins(pins);
     return pins;
+  }
+
+  /// How far apart to fan victims that share (almost) the same point.
+  static const double _declutterSpreadMeters = 9;
+
+  /// Several victims at the same spot — multiple people in one building, or
+  /// just within each other's GPS noise — would otherwise render as one
+  /// stacked dot/label. Fan each group onto a small circle around its centroid
+  /// so all are tappable. The offset (≤ a few metres) is within GPS accuracy,
+  /// so it trades sub-noise precision for legibility; altitude (detail sheet)
+  /// is the real differentiator for genuinely-stacked floors.
+  void _declutterPins(List<_PinPlacement> pins) {
+    final groups = <String, List<_PinPlacement>>{};
+    for (final pin in pins) {
+      // ~11 m grid (4 decimal places) — close enough to count as "same spot".
+      final key = '${pin.point.latitude.toStringAsFixed(4)},'
+          '${pin.point.longitude.toStringAsFixed(4)}';
+      (groups[key] ??= []).add(pin);
+    }
+    for (final group in groups.values) {
+      if (group.length < 2) continue;
+      var clat = 0.0, clng = 0.0;
+      for (final p in group) {
+        clat += p.point.latitude;
+        clng += p.point.longitude;
+      }
+      clat /= group.length;
+      clng /= group.length;
+      final metresPerDegLng = 111320 * math.cos(clat * math.pi / 180);
+      for (var k = 0; k < group.length; k++) {
+        final angle = 2 * math.pi * k / group.length;
+        final dLat = _declutterSpreadMeters / 111320 * math.cos(angle);
+        final dLng = metresPerDegLng == 0
+            ? 0.0
+            : _declutterSpreadMeters / metresPerDegLng * math.sin(angle);
+        group[k].point = LatLng(clat + dLat, clng + dLng);
+      }
+    }
   }
 
   /// Deterministic small offset so multiple GPS-less victims near the same
@@ -326,10 +419,16 @@ class _HelperModeScreenState extends State<HelperModeScreen>
   /// rounded card doesn't visually kiss the dot.
   static const double _popupGap = 18;
 
-  /// Placeholder "zoning" radius (metres) drawn around a victim pin that has
-  /// no real GPS fix yet — tunable here until Increment 4's location
-  /// estimator can shrink/grow it per bundle based on signal confidence.
+  /// "Zoning" radius (metres) drawn around a victim pin that has no real GPS
+  /// fix — the bundle arrived over Wi-Fi Direct so the victim is within radio
+  /// range, but its exact spot is unknown, so this coarse circle near the
+  /// Helper stands in for it.
   static const double _estimateZoneRadiusMeters = 60;
+
+  /// Clamp bounds for the real GPS ± accuracy ring: a few-metre fix still draws
+  /// a visible circle, and a wildly-uncertain fix can't swallow the whole map.
+  static const double _minAccuracyRingMeters = 8;
+  static const double _maxAccuracyRingMeters = 500;
 
   /// Anchors a popup by its bottom edge a fixed [gap] above the marker's
   /// screen point instead of guessing the popup's height, so the popup grows
@@ -397,7 +496,9 @@ class _HelperModeScreenState extends State<HelperModeScreen>
               Text(
                 pin.isApproximate
                     ? '${bundle.priorityTier} priority · approx. location'
-                    : '${bundle.priorityTier} priority',
+                    : bundle.accuracyMeters != null
+                        ? '${bundle.priorityTier} priority · ±${bundle.accuracyMeters!.round()} m'
+                        : '${bundle.priorityTier} priority',
                 style: const TextStyle(color: Colors.black54, fontSize: 12),
               ),
               // At-a-glance safety-flag icons — tap Details for the full labels.
@@ -592,6 +693,21 @@ class _HelperModeScreenState extends State<HelperModeScreen>
               'Priority',
               '${bundle.priorityTier} (${bundle.priorityScore.toStringAsFixed(2)})',
             ),
+            _DetailRow(
+              'Location',
+              bundle.estimatedLat != null && bundle.estimatedLng != null
+                  ? '${bundle.estimatedLat!.toStringAsFixed(5)}, '
+                      '${bundle.estimatedLng!.toStringAsFixed(5)}'
+                      '${bundle.accuracyMeters != null ? ' (±${bundle.accuracyMeters!.round()} m)' : ''}'
+                  : 'Approximate (no GPS fix) — shown near this Helper',
+            ),
+            if (bundle.estimatedAltitude != null)
+              _DetailRow(
+                'Altitude',
+                '~${bundle.estimatedAltitude!.round()} m — GPS estimate, '
+                    'uncalibrated. Coarse floor hint only, not a reliable '
+                    'height.',
+              ),
             _DetailRow('Hop count', '${bundle.hopCount}'),
             _DetailRow('Created', bundle.createdAt.toLocal().toString()),
             _DetailRow(
@@ -912,23 +1028,32 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                                       // tap meant for a dot either.
                                       CircleLayer(
                                         circles: [
+                                          // A ring under every pin now: a real
+                                          // GPS pin's ring is the chip's ±
+                                          // accuracy (so the circle's real-world
+                                          // size IS the uncertainty), an
+                                          // approximate pin's is the coarse
+                                          // near-Helper zone. A solid border
+                                          // reads as "measured", a dashed-looking
+                                          // fainter one as "approximate".
                                           for (final pin in pins)
-                                            if (pin.isApproximate)
-                                              CircleMarker(
-                                                point: pin.point,
-                                                radius:
-                                                    _estimateZoneRadiusMeters,
-                                                useRadiusInMeter: true,
-                                                color:
-                                                    _VictimMarker.colorForTier(
-                                                      pin.bundle.priorityTier,
-                                                    ).withValues(alpha: 0.18),
-                                                borderStrokeWidth: 1,
-                                                borderColor:
-                                                    _VictimMarker.colorForTier(
-                                                      pin.bundle.priorityTier,
-                                                    ).withValues(alpha: 0.4),
-                                              ),
+                                            CircleMarker(
+                                              point: pin.point,
+                                              radius: pin.ringRadiusMeters,
+                                              useRadiusInMeter: true,
+                                              color: _VictimMarker.colorForTier(
+                                                pin.bundle.priorityTier,
+                                              ).withValues(alpha: 0.15),
+                                              borderStrokeWidth: 1,
+                                              borderColor:
+                                                  _VictimMarker.colorForTier(
+                                                    pin.bundle.priorityTier,
+                                                  ).withValues(
+                                                    alpha: pin.isApproximate
+                                                        ? 0.4
+                                                        : 0.7,
+                                                  ),
+                                            ),
                                         ],
                                       ),
                                       if (_userLocation != null)

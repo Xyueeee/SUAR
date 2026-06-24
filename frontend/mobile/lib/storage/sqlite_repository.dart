@@ -7,7 +7,9 @@ import '../models/sensor_reading_model.dart';
 class SQLiteRepository {
   static const String _dbName = 'suar_local.db';
   // v2: added the SensorReading table. v3: added DistressBundle.Flags.
-  static const int _dbVersion = 3;
+  // v4: added DistressBundle.AccuracyMeters (GPS ± radius).
+  // v5: added DistressBundle.EstimatedAltitude (GPS altitude).
+  static const int _dbVersion = 5;
 
   Database? _db;
 
@@ -19,6 +21,8 @@ class SQLiteRepository {
       PriorityTier TEXT NOT NULL,
       EstimatedLat REAL,
       EstimatedLng REAL,
+      AccuracyMeters REAL,
+      EstimatedAltitude REAL,
       HopCount INTEGER NOT NULL DEFAULT 0,
       IsSynced INTEGER NOT NULL DEFAULT 0,
       CreatedAt TEXT NOT NULL,
@@ -57,6 +61,16 @@ class SQLiteRepository {
         }
         if (oldVersion < 3) {
           await db.execute('ALTER TABLE DistressBundle ADD COLUMN Flags TEXT');
+        }
+        if (oldVersion < 4) {
+          await db.execute(
+            'ALTER TABLE DistressBundle ADD COLUMN AccuracyMeters REAL',
+          );
+        }
+        if (oldVersion < 5) {
+          await db.execute(
+            'ALTER TABLE DistressBundle ADD COLUMN EstimatedAltitude REAL',
+          );
         }
       },
     );

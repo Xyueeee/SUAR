@@ -9,6 +9,7 @@ import '../communication/wifi_direct_manager.dart';
 import '../constants.dart';
 import '../models/distress_bundle_model.dart';
 import '../permissions.dart';
+import '../sensing/location_estimator.dart';
 import '../sensing/sensor_fusion_engine.dart';
 import '../sensing/triage_config.dart';
 
@@ -26,6 +27,18 @@ class VictimController {
   final SensorFusionEngine _sensorEngine = SensorFusionEngine();
   static const Duration _triageInterval = Duration(seconds: 5);
   Timer? _triageTimer;
+
+  // Increment 4: GPS (with last-known cache) so each bundle carries the
+  // victim's position + the chip's ± accuracy radius. Started alongside triage
+  // (same optional-permission, never-block-the-mesh treatment as the mic), and
+  // the latest fix is stamped onto the bundle on every triage recompute.
+  final LocationEstimator _locationEstimator = LocationEstimator();
+
+  // Live triage for the Victim's own screen — a plain at-a-glance status card,
+  // so the user sees their current priority without parsing the activity log.
+  // Updated every triage recompute; null until the first cycle fills it in.
+  final ValueNotifier<({String tier, int points, List<String> flags})?>
+      triageStatus = ValueNotifier(null);
 
   final _statusController = StreamController<String>.broadcast();
   Stream<String> get statusStream => _statusController.stream;
@@ -540,6 +553,16 @@ class VictimController {
       if (_stopped) return;
       await _sensorEngine.start(withMic: micGranted);
       if (_stopped) return;
+      // Best-effort GPS — denial/no-service just leaves the bundle without a
+      // fix (the Helper map then places it approximately near itself), never
+      // blocks triage or the mesh.
+      final located = await _locationEstimator.start();
+      if (_stopped) return;
+      _emit(
+        located
+            ? 'Location tracking started'
+            : 'Location unavailable — bundle will be placed approximately',
+      );
       _emit(
         micGranted
             ? 'Sensor triage started (microphone enabled)'
@@ -569,7 +592,22 @@ class VictimController {
     bundle.priorityTier = outcome.result.tier;
     bundle.sensorReadings = outcome.readings.map((r) => r.toJson()).toList();
     bundle.flags = outcome.result.flags;
+    // Stamp the latest GPS fix (synchronous read of the cached stream value —
+    // no await, so it never delays re-caching). Null while still acquiring the
+    // first lock; the Helper map falls back to an approximate pin until then.
+    final fix = _locationEstimator.lastFix;
+    if (fix != null) {
+      bundle.estimatedLat = fix.latitude;
+      bundle.estimatedLng = fix.longitude;
+      bundle.accuracyMeters = fix.accuracyMeters.isNaN ? null : fix.accuracyMeters;
+      bundle.estimatedAltitude = fix.altitude;
+    }
     bundle.updatedAt = DateTime.now();
+    triageStatus.value = (
+      tier: outcome.result.tier,
+      points: outcome.result.score.round(),
+      flags: outcome.result.flags,
+    );
     await wifiDirectManager.setLocalBundle(bundle.toJson());
     if (_stopped) return;
     final note = outcome.result.note;
@@ -856,6 +894,7 @@ class VictimController {
       _yieldFallbackTimer?.cancel();
       _triageTimer?.cancel();
       await _sensorEngine.stop();
+      await _locationEstimator.stop();
       await _cancelSubs();
       await bleManager.stopAdvertising();
       await bleManager.setNeedsPull(false);
@@ -874,6 +913,8 @@ class VictimController {
     _yieldFallbackTimer?.cancel();
     _triageTimer?.cancel();
     _sensorEngine.dispose();
+    _locationEstimator.dispose();
+    triageStatus.dispose();
     _ackSub?.cancel();
     _bleStatusSub?.cancel();
     _wifiStatusSub?.cancel();

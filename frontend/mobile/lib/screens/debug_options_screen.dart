@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../widgets/back_chevron.dart';
 import '../widgets/validated_text_dialog.dart';
 import 'debug_database_screen.dart';
+import 'location_debug_screen.dart';
 import 'triage_logic_screen.dart';
 
 const String backendSyncUrlPrefKey = 'suar_backend_sync_url';
@@ -119,6 +120,26 @@ class _DebugOptionsScreenState extends State<DebugOptionsScreen> {
             ),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const TriageLogicScreen()),
+            ),
+          ),
+          const Divider(
+            color: Colors.black12,
+            height: 1,
+            indent: 16,
+            endIndent: 16,
+          ),
+          ListTile(
+            leading: const Icon(Icons.location_on_outlined, color: Colors.black),
+            title: const Text(
+              'Location',
+              style: TextStyle(color: Colors.black),
+            ),
+            subtitle: const Text(
+              'Live GPS fix, accuracy and bundle values',
+              style: TextStyle(color: Colors.black54),
+            ),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const LocationDebugScreen()),
             ),
           ),
         ],

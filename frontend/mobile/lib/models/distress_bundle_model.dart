@@ -5,6 +5,13 @@ class DistressBundleModel {
   String priorityTier;
   double? estimatedLat;
   double? estimatedLng;
+  /// GPS-reported ± radius in metres for ([estimatedLat], [estimatedLng]) —
+  /// drawn as the uncertainty circle on the Helper map. Null when there's no
+  /// fix, or when the chip didn't report a usable accuracy.
+  double? accuracyMeters;
+  /// GPS altitude in metres — a coarse hint for victims stacked at the same
+  /// lat/lng but different floors (collapsed building). Null when unknown.
+  double? estimatedAltitude;
   int hopCount;
   bool isSynced;
   final DateTime createdAt;
@@ -22,6 +29,8 @@ class DistressBundleModel {
     required this.priorityTier,
     this.estimatedLat,
     this.estimatedLng,
+    this.accuracyMeters,
+    this.estimatedAltitude,
     this.hopCount = 0,
     this.isSynced = false,
     required this.createdAt,
@@ -38,6 +47,8 @@ class DistressBundleModel {
       'priorityTier': priorityTier,
       'estimatedLat': estimatedLat,
       'estimatedLng': estimatedLng,
+      'accuracyMeters': accuracyMeters,
+      'estimatedAltitude': estimatedAltitude,
       'hopCount': hopCount,
       'isSynced': isSynced,
       'createdAt': createdAt.toIso8601String(),
@@ -55,6 +66,8 @@ class DistressBundleModel {
       priorityTier: json['priorityTier'] as String,
       estimatedLat: (json['estimatedLat'] as num?)?.toDouble(),
       estimatedLng: (json['estimatedLng'] as num?)?.toDouble(),
+      accuracyMeters: (json['accuracyMeters'] as num?)?.toDouble(),
+      estimatedAltitude: (json['estimatedAltitude'] as num?)?.toDouble(),
       hopCount: json['hopCount'] as int,
       isSynced: json['isSynced'] as bool,
       createdAt: DateTime.parse(json['createdAt'] as String),
@@ -75,6 +88,8 @@ class DistressBundleModel {
       'PriorityTier': priorityTier,
       'EstimatedLat': estimatedLat,
       'EstimatedLng': estimatedLng,
+      'AccuracyMeters': accuracyMeters,
+      'EstimatedAltitude': estimatedAltitude,
       'HopCount': hopCount,
       'IsSynced': isSynced ? 1 : 0,
       'CreatedAt': createdAt.toIso8601String(),
@@ -91,6 +106,8 @@ class DistressBundleModel {
       priorityTier: map['PriorityTier'] as String,
       estimatedLat: (map['EstimatedLat'] as num?)?.toDouble(),
       estimatedLng: (map['EstimatedLng'] as num?)?.toDouble(),
+      accuracyMeters: (map['AccuracyMeters'] as num?)?.toDouble(),
+      estimatedAltitude: (map['EstimatedAltitude'] as num?)?.toDouble(),
       hopCount: map['HopCount'] as int,
       isSynced: (map['IsSynced'] as int) == 1,
       createdAt: DateTime.parse(map['CreatedAt'] as String),

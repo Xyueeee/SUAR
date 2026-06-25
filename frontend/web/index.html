@@ -3,7 +3,38 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SUAR — Command Console</title>
+  <title>SUAR</title>
+  <link id="favicon" rel="icon" type="image/png" href="assets/logo/suar_logo_black.png" />
+  <script>
+    // Favicon follows the browser's light/dark scheme (black on light, white on
+    // dark; red fallback). The logo is letterboxed onto a transparent square so
+    // it is never stretched — the extra space is left blank.
+    (function () {
+      var el = function () { return document.getElementById("favicon"); };
+      function draw(src) {
+        var img = new Image();
+        img.onload = function () {
+          var s = 64, cv = document.createElement("canvas"); cv.width = s; cv.height = s;
+          var ctx = cv.getContext("2d");
+          var r = Math.min(s / img.width, s / img.height);
+          var w = img.width * r, h = img.height * r;
+          ctx.drawImage(img, (s - w) / 2, (s - h) / 2, w, h);
+          if (el()) el().href = cv.toDataURL("image/png");
+        };
+        img.onerror = function () { if (el()) el().href = src; };
+        img.src = src;
+      }
+      function pick() {
+        if (!window.matchMedia) return "assets/logo/suar_logo_red.png";
+        return window.matchMedia("(prefers-color-scheme: dark)").matches
+          ? "assets/logo/suar_logo_white.png" : "assets/logo/suar_logo_black.png";
+      }
+      draw(pick());
+      if (window.matchMedia) {
+        try { window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () { draw(pick()); }); } catch (e) {}
+      }
+    })();
+  </script>
 
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -21,12 +52,14 @@
 
   <!-- ===================== LOGIN ===================== -->
   <div class="login-screen" id="login-screen">
-    <form class="login" id="login-form">
+    <form class="login" id="login-form" novalidate>
       <img class="login__logo" src="assets/logo/suar_logo_red.png" alt="SUAR" />
       <div class="login__wordmark">SUAR</div>
       <div class="login-note login-note--err" id="login-error" style="display:none"></div>
-      <input class="input" type="email" id="login-email" placeholder="Email" aria-label="Email" autocomplete="username" required />
-      <input class="input" type="password" id="login-password" placeholder="Password" aria-label="Password" autocomplete="current-password" required />
+      <input class="input" type="email" id="login-email" placeholder="Email" aria-label="Email" autocomplete="username" />
+      <div class="field-err" id="login-email-err" style="display:none"></div>
+      <input class="input" type="password" id="login-password" placeholder="Password" aria-label="Password" autocomplete="current-password" />
+      <div class="field-err" id="login-password-err" style="display:none"></div>
       <button class="btn btn--login btn--block" type="submit" id="login-submit">Sign in</button>
     </form>
 

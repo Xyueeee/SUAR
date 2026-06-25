@@ -47,6 +47,12 @@ const int dtnMaxHopCount = 12;
 const String deviceIdPrefKey = "suar_device_id";
 const String appVersion = "1.0.0";
 
+// Single backend base URL for the whole app — Helper sync (future) AND the
+// content/prep read channel (guides, prep-plans). Set via Settings > Debugging
+// Options. ngrok in dev, LAN otherwise; same URL the web console uses. Empty =
+// offline-only (app falls back to cached/seed content).
+const String backendSyncUrlPrefKey = "suar_backend_sync_url";
+
 /// A short, stable 4-character tag derived from a device's UUID — the
 /// human-readable suffix in the Wi-Fi Direct name shown on a peer's connection
 /// prompt (e.g. "Helper-1A2B"). Hex from the UUID is unique enough to tell two

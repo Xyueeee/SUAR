@@ -12,6 +12,7 @@ import '../controllers/helper_controller.dart';
 import '../map/map_constants.dart';
 import '../models/distress_bundle_model.dart';
 import '../sensing/location_estimator.dart';
+import '../services/geofence_service.dart';
 import '../sensing/triage_calculator.dart' show TriageFlag;
 import '../widgets/mesh_activity_card.dart';
 import '../widgets/radio_status_banner.dart';
@@ -54,6 +55,7 @@ class _HelperModeScreenState extends State<HelperModeScreen>
   LatLng? _userLocation;
   _PinPlacement? _selectedPin;
   bool _selfInfoOpen = false;
+  Map<String, dynamic>? _selectedZone;
   bool _mapMinimized = false;
   // User-actionable reason there's no GPS dot, distinct from a fix that's
   // simply still pending. Null while normally locating; set when the user
@@ -75,6 +77,12 @@ class _HelperModeScreenState extends State<HelperModeScreen>
   StreamSubscription<Position>? _positionSub;
   Timer? _staleCheckTimer;
 
+  // Admin-drawn danger zones (geofences) — fetched once on open, same source
+  // the background GeofenceService alerts use, so what's drawn here matches
+  // what would trigger a proximity notification.
+  final _geofenceService = GeofenceService();
+  List<Map<String, dynamic>> _geofences = const [];
+
   @override
   void initState() {
     super.initState();
@@ -93,6 +101,7 @@ class _HelperModeScreenState extends State<HelperModeScreen>
     });
     _controller.startHelperMode();
     _centerOnUserLocation();
+    unawaited(_loadGeofences());
     // _victimPins re-filters by age on every build, but a quiet Helper (no
     // nearby BLE/Wi-Fi activity) might not rebuild for a long time on its
     // own — without this, a pin could sit on the map well past
@@ -102,6 +111,168 @@ class _HelperModeScreenState extends State<HelperModeScreen>
     _staleCheckTimer = Timer.periodic(const Duration(minutes: 1), (_) {
       if (mounted) setState(() {});
     });
+  }
+
+  Future<void> _loadGeofences() async {
+    final zones = await _geofenceService.fetchZones();
+    if (!mounted) return;
+    setState(() => _geofences = zones);
+  }
+
+  Color _geofenceColor(Map z) {
+    switch ((z['severity'] ?? 'warning').toString()) {
+      case 'danger':
+        return const Color(0xFFD64545);
+      case 'info':
+        return const Color(0xFF3E6FA8);
+      default: // warning
+        return const Color(0xFFE0A800);
+    }
+  }
+
+  List<LatLng> _geofencePolygonPoints(Map z) {
+    final geom = z['geometry'];
+    if (geom is! List) return const [];
+    return geom
+        .whereType<List>()
+        .where((p) => p.length >= 2)
+        .map((p) => LatLng((p[0] as num).toDouble(), (p[1] as num).toDouble()))
+        .toList();
+  }
+
+  LatLng? _geofenceCircleCenter(Map z) {
+    final geom = z['geometry'];
+    if (geom is! Map) return null;
+    final c = geom['center'];
+    if (c is! List || c.length < 2) return null;
+    return LatLng((c[0] as num).toDouble(), (c[1] as num).toDouble());
+  }
+
+  double _geofenceCircleRadius(Map z) {
+    final geom = z['geometry'];
+    if (geom is! Map) return 0;
+    return (geom['radius_m'] as num?)?.toDouble() ?? 0;
+  }
+
+  LatLng? _geofenceLabelPoint(Map z) {
+    if (z['shape'] == 'circle') return _geofenceCircleCenter(z);
+    final pts = _geofencePolygonPoints(z);
+    if (pts.isEmpty) return null;
+    final lat = pts.map((p) => p.latitude).reduce((a, b) => a + b) / pts.length;
+    final lng = pts.map((p) => p.longitude).reduce((a, b) => a + b) / pts.length;
+    return LatLng(lat, lng);
+  }
+
+  /// Same card design as [_buildBundlePopup]/[_buildSelfPopup] — anchored
+  /// above the tapped marker, name + close X, one subtitle line, a "Details"
+  /// button into the same dark bottom-sheet pattern.
+  Widget _buildZonePopup(Map z, Size mapSize) {
+    final point = _geofenceLabelPoint(z);
+    if (point == null) return const SizedBox.shrink();
+    final screenPoint = _mapController.camera.latLngToScreenOffset(point);
+    final anchor = _popupAnchor(screenPoint, mapSize, _popupGap);
+    final name = (z['name'] ?? 'Hazard zone').toString();
+    return Positioned(
+      left: anchor.left,
+      bottom: anchor.bottom,
+      width: _popupWidth,
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        elevation: 6,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      name,
+                      style: const TextStyle(
+                        color: Colors.black,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () => setState(() => _selectedZone = null),
+                    child: const Icon(
+                      Icons.close,
+                      size: 16,
+                      color: Colors.black45,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '${(z['hazardtype'] ?? 'hazard').toString()} · '
+                '${(z['severity'] ?? 'warning').toString()}'
+                '${z['isactive'] == false ? ' · inactive' : ''}',
+                style: const TextStyle(color: Colors.black54, fontSize: 12),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                height: 30,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.grey.shade800,
+                    foregroundColor: Colors.white,
+                    padding: EdgeInsets.zero,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  onPressed: () {
+                    setState(() => _selectedZone = null);
+                    _showZoneDetail(z);
+                  },
+                  child: const Text('Details', style: TextStyle(fontSize: 12)),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showZoneDetail(Map z) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      builder: (context) => Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              (z['name'] ?? 'Hazard zone').toString(),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 12),
+            _DetailRow('Hazard type', (z['hazardtype'] ?? '—').toString()),
+            _DetailRow('Severity', (z['severity'] ?? '—').toString()),
+            _DetailRow('Shape', (z['shape'] ?? '—').toString()),
+            _DetailRow('Active', z['isactive'] == false ? 'No' : 'Yes'),
+            if (z['createdat'] != null)
+              _DetailRow('Created', z['createdat'].toString()),
+            if (z['updatedat'] != null)
+              _DetailRow('Updated', z['updatedat'].toString()),
+          ],
+        ),
+      ),
+    );
   }
 
   void _logLine(String line) {
@@ -1017,6 +1188,105 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                                               );
                                             },
                                       ),
+                                      // Admin-drawn danger zones — drawn right above
+                                      // tiles so victim pins/rings always stay on top.
+                                      PolygonLayer(
+                                        polygons: [
+                                          for (final z in _geofences)
+                                            if (z['isactive'] != false &&
+                                                z['shape'] == 'polygon')
+                                              Polygon(
+                                                points: _geofencePolygonPoints(
+                                                  z,
+                                                ),
+                                                color: _geofenceColor(
+                                                  z,
+                                                ).withValues(alpha: 0.18),
+                                                borderColor: _geofenceColor(
+                                                  z,
+                                                ).withValues(alpha: 0.8),
+                                                borderStrokeWidth: 2,
+                                              ),
+                                        ],
+                                      ),
+                                      CircleLayer(
+                                        circles: [
+                                          for (final z in _geofences)
+                                            if (z['isactive'] != false &&
+                                                z['shape'] == 'circle' &&
+                                                _geofenceCircleCenter(z) !=
+                                                    null)
+                                              CircleMarker(
+                                                point: _geofenceCircleCenter(
+                                                  z,
+                                                )!,
+                                                radius: _geofenceCircleRadius(
+                                                  z,
+                                                ),
+                                                useRadiusInMeter: true,
+                                                color: _geofenceColor(
+                                                  z,
+                                                ).withValues(alpha: 0.18),
+                                                borderStrokeWidth: 2,
+                                                borderColor: _geofenceColor(
+                                                  z,
+                                                ).withValues(alpha: 0.8),
+                                              ),
+                                        ],
+                                      ),
+                                      // Tappable hazard icon per zone (name/type/severity
+                                      // on tap) — a real tap-hit-test on the polygon/circle
+                                      // shape itself needs flutter_map's hitNotifier
+                                      // plumbing; a small marker at the zone's centre
+                                      // reuses the same Marker+GestureDetector pattern
+                                      // already used for victim/self dots below, for a
+                                      // fraction of the code.
+                                      MarkerLayer(
+                                        markers: [
+                                          for (final z in _geofences)
+                                            if (z['isactive'] != false &&
+                                                _geofenceLabelPoint(z) != null)
+                                              Marker(
+                                                point: _geofenceLabelPoint(
+                                                  z,
+                                                )!,
+                                                width: 26,
+                                                height: 26,
+                                                child: GestureDetector(
+                                                  onTap: () => setState(() {
+                                                    _selectedZone = z;
+                                                    // Same one-card-at-a-time
+                                                    // rule as self/victim.
+                                                    _selectedPin = null;
+                                                    _selfInfoOpen = false;
+                                                  }),
+                                                  child: Container(
+                                                    decoration: BoxDecoration(
+                                                      shape: BoxShape.circle,
+                                                      color: _geofenceColor(z),
+                                                      border: Border.all(
+                                                        color: Colors.white,
+                                                        width: 2,
+                                                      ),
+                                                      boxShadow: const [
+                                                        BoxShadow(
+                                                          color:
+                                                              Colors.black38,
+                                                          blurRadius: 3,
+                                                        ),
+                                                      ],
+                                                    ),
+                                                    child: const Icon(
+                                                      Icons
+                                                          .warning_amber_rounded,
+                                                      color: Colors.white,
+                                                      size: 15,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                        ],
+                                      ),
                                       // Translucent "zoning" rings for pins without a
                                       // real GPS fix. Drawn first — before BOTH marker
                                       // layers below — so every dot (self included)
@@ -1069,9 +1339,11 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                                                       !_selfInfoOpen;
                                                   // Only one info card open at
                                                   // a time — opening this one
-                                                  // dismisses any victim card.
+                                                  // dismisses any victim/zone
+                                                  // card.
                                                   if (_selfInfoOpen) {
                                                     _selectedPin = null;
+                                                    _selectedZone = null;
                                                   }
                                                 }),
                                                 child: Container(
@@ -1122,8 +1394,10 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                                                   _selectedPin = pin;
                                                   // Only one info card open at
                                                   // a time — opening this one
-                                                  // dismisses the self card.
+                                                  // dismisses the self/zone
+                                                  // card.
                                                   _selfInfoOpen = false;
+                                                  _selectedZone = null;
                                                 }),
                                                 // Selecting a pin focuses it — every
                                                 // other victim dot fades back a bit so
@@ -1327,6 +1601,8 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                                   if (selectedLivePin != null)
                                     _buildBundlePopup(selectedLivePin, mapSize),
                                   if (_selfInfoOpen) _buildSelfPopup(mapSize),
+                                  if (_selectedZone != null)
+                                    _buildZonePopup(_selectedZone!, mapSize),
                                 ],
                               );
                             },

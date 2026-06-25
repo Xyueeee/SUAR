@@ -1,0 +1,225 @@
+[
+  {
+    "docid": "seed-prep",
+    "category": "prep",
+    "title": "Disaster Preparation",
+    "version": 1,
+    "ispublished": true,
+    "updatedat": "2026-06-25T00:00:00Z",
+    "structure": {
+      "usePercent": true,
+      "percentText": "You are {p}% prepared for an emergency:",
+      "nodes": [
+        {
+          "title": "Emergency Supply Pack",
+          "subtitle": "A grab-bag to aid your survival.",
+          "kind": "section",
+          "weight": 3,
+          "usePercent": true,
+          "children": [
+            {
+              "title": "First Aid Kit",
+              "kind": "section",
+              "weight": 3,
+              "usePercent": true,
+              "children": [
+                { "title": "Elastic bandage", "kind": "check", "weight": 2 },
+                { "title": "Antiseptic wipes", "kind": "check", "weight": 2 },
+                { "title": "Gauze pads", "kind": "check", "weight": 2 },
+                { "title": "Adhesive plasters", "kind": "check", "weight": 1 }
+              ]
+            },
+            {
+              "title": "Tools",
+              "kind": "section",
+              "weight": 2,
+              "usePercent": true,
+              "children": [
+                { "title": "Flashlight", "kind": "check", "weight": 3 },
+                { "title": "Whistle", "kind": "check", "weight": 2 },
+                { "title": "Spare batteries", "kind": "check", "weight": 1 }
+              ]
+            },
+            {
+              "title": "Food & Supplies",
+              "kind": "section",
+              "weight": 3,
+              "usePercent": true,
+              "children": [
+                { "title": "Drinking water (3 days)", "kind": "check", "weight": 3 },
+                { "title": "Non-perishable food", "kind": "check", "weight": 3 },
+                { "title": "Can opener", "kind": "check", "weight": 1 }
+              ]
+            },
+            {
+              "title": "Identification",
+              "kind": "section",
+              "weight": 1,
+              "usePercent": true,
+              "children": [
+                { "title": "Copies of ID documents", "kind": "check", "weight": 2 },
+                { "title": "Emergency contact numbers", "kind": "text", "weight": 2 }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "Home Readiness",
+          "subtitle": "Know your plan before it happens.",
+          "kind": "section",
+          "weight": 2,
+          "usePercent": true,
+          "children": [
+            { "title": "Know two evacuation routes", "kind": "check", "weight": 3 },
+            { "title": "Family meeting point", "kind": "text", "weight": 3 },
+            { "title": "Smoke alarm tested", "kind": "check", "weight": 2 }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "docid": "seed-first-aid",
+    "category": "first_aid",
+    "title": "First Aid Tips",
+    "version": 1,
+    "ispublished": true,
+    "updatedat": "2026-06-25T00:00:00Z",
+    "structure": {
+      "usePercent": false,
+      "nodes": [
+        {
+          "title": "Basic First Aid",
+          "subtitle": "Everyday injuries.",
+          "kind": "section",
+          "children": [
+            {
+              "title": "Severe Bleeding",
+              "subtitle": "Stop heavy blood loss",
+              "kind": "guide",
+              "layout": "steps",
+              "pages": [
+                {
+                  "title": "Apply pressure",
+                  "blocks": [
+                    { "type": "paragraph", "runs": [
+                      { "text": "Press " }, { "text": "firmly", "bold": true },
+                      { "text": " on the wound with a clean cloth. " },
+                      { "text": "Do not wash a deep wound first.", "color": "#C0392B" } ] }
+                  ]
+                },
+                {
+                  "title": "Raise & secure",
+                  "blocks": [
+                    { "type": "paragraph", "runs": [{ "text": "Raise the injured part above the heart if no bone is broken, then bind firmly." }] },
+                    { "type": "bullets", "ordered": false, "items": [ [{ "text": "Keep pressing — don't lift to check." }], [{ "text": "Watch for shock (pale, cold, drowsy)." }] ] }
+                  ]
+                }
+              ]
+            },
+            {
+              "title": "Burns",
+              "subtitle": "Heat & scald injuries",
+              "kind": "guide",
+              "layout": "steps",
+              "pages": [
+                { "title": "Cool", "blocks": [ { "type": "paragraph", "runs": [
+                  { "text": "Cool under running water for " }, { "text": "20 minutes", "bold": true },
+                  { "text": ". Never use ice or butter.", "color": "#C0392B" } ] } ] },
+                { "title": "Cover", "blocks": [ { "type": "bullets", "ordered": false, "items": [
+                  [{ "text": "Remove jewellery before swelling." }], [{ "text": "Cover with cling film." }], [{ "text": "Do not burst blisters." }] ] } ] }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "Advanced",
+          "subtitle": "Life-threatening emergencies.",
+          "kind": "section",
+          "children": [
+            {
+              "title": "CPR (Adult)",
+              "subtitle": "When breathing stops",
+              "kind": "guide",
+              "layout": "steps",
+              "pages": [
+                { "title": "Check & call", "blocks": [ { "type": "paragraph", "runs": [{ "text": "Check response and breathing. If absent, get help and start compressions." }] } ] },
+                { "title": "Compressions", "blocks": [ { "type": "paragraph", "runs": [
+                  { "text": "Centre of chest, " }, { "text": "100–120/min", "bold": true }, { "text": ", about 5 cm deep." } ] } ] },
+                { "title": "Continue", "blocks": [ { "type": "bullets", "ordered": false, "items": [
+                  [{ "text": "30 compressions : 2 breaths if trained." }], [{ "text": "Don't stop until help/AED arrives." }] ] } ] }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "docid": "seed-survival",
+    "category": "survival",
+    "title": "Survival Tips",
+    "version": 1,
+    "ispublished": true,
+    "updatedat": "2026-06-25T00:00:00Z",
+    "structure": {
+      "usePercent": false,
+      "nodes": [
+        {
+          "title": "Natural Disasters",
+          "kind": "section",
+          "children": [
+            {
+              "title": "Flood Safety",
+              "subtitle": "Hidden dangers in water",
+              "kind": "guide",
+              "layout": "scroll",
+              "pages": [
+                { "title": "Hidden drops", "blocks": [ { "type": "paragraph", "runs": [
+                  { "text": "Murky water hides drains and steps. " },
+                  { "text": "Never walk through water you can't see the bottom of.", "bold": true } ] } ] },
+                { "title": "Electrical hazards", "blocks": [ { "type": "paragraph", "runs": [{ "text": "Stay away from fallen power lines and submerged outlets." }] } ] },
+                { "title": "Move up", "blocks": [ { "type": "bullets", "ordered": false, "items": [ [{ "text": "Go to higher floors, not open roads." }], [{ "text": "Take a phone and a whistle." }] ] } ] }
+              ]
+            },
+            {
+              "title": "Earthquake",
+              "subtitle": "Drop, cover, hold on",
+              "kind": "guide",
+              "layout": "scroll",
+              "pages": [
+                { "title": "During", "blocks": [ { "type": "paragraph", "runs": [{ "text": "Drop, take cover under sturdy furniture, and hold on until shaking stops." }] } ] },
+                { "title": "After", "blocks": [ { "type": "bullets", "ordered": false, "items": [ [{ "text": "Expect aftershocks." }], [{ "text": "Avoid damaged buildings and lifts." }] ] } ] }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "docid": "seed-preparation",
+    "category": "preparation",
+    "title": "Preparation",
+    "version": 1,
+    "ispublished": true,
+    "updatedat": "2026-06-25T00:00:00Z",
+    "structure": {
+      "usePercent": false,
+      "nodes": [
+        {
+          "title": "Why Prepare",
+          "subtitle": "Be ready before it happens",
+          "kind": "guide",
+          "layout": "scroll",
+          "pages": [
+            { "blocks": [
+              { "type": "paragraph", "runs": [{ "text": "Help may take hours or days to reach you. A small kit and a plan keep you safer until then." }] },
+              { "type": "paragraph", "runs": [{ "text": "Use the Disaster Preparation checklist to track your readiness.", "italic": true }] }
+            ] }
+          ]
+        }
+      ]
+    }
+  }
+]

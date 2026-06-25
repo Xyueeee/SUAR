@@ -114,7 +114,7 @@ SUAR.views.map = (function () {
 
   function renderList(zones) {
     const wrap = document.getElementById("zone-list");
-    if (!zones.length) { wrap.innerHTML = SUAR.ui.empty("No hazard zones", "Draw one on the map to warn nearby devices (app-side, later)."); return; }
+    if (!zones.length) { wrap.innerHTML = SUAR.ui.empty("No hazard zones yet", "Use the draw tools on the map (polygon, rectangle or circle) to add one."); return; }
     wrap.innerHTML =
       '<table class="data"><thead><tr><th>Name</th><th>Hazard</th><th>Severity</th><th>Shape</th><th>Active</th><th>Created</th><th></th></tr></thead><tbody>' +
       zones.map((z) =>
@@ -151,11 +151,14 @@ SUAR.views.map = (function () {
   }
 
   function zoneFormBody(z) {
+    const isCustom = z.hazardtype && !HAZARDS.includes(z.hazardtype);
+    const sel = isCustom ? "other" : (z.hazardtype || HAZARDS[0]);
     return (
       '<div class="field"><label>Name</label><input class="input" id="z-name" placeholder="e.g. Riverside flood area" value="' + SUAR.ui.esc(z.name || "") + '"></div>' +
       '<div class="form-row">' +
         '<div class="field"><label>Hazard type</label><select class="select" id="z-hazard">' +
-          HAZARDS.map((h) => '<option' + (z.hazardtype === h ? " selected" : "") + ">" + h + "</option>").join("") + "</select></div>" +
+          HAZARDS.map((h) => '<option' + (sel === h ? " selected" : "") + ">" + h + "</option>").join("") + "</select>" +
+          '<input class="input" id="z-hazard-custom" placeholder="Custom hazard type" style="margin-top:6px;' + (sel === "other" ? "" : "display:none") + '" value="' + SUAR.ui.esc(isCustom ? z.hazardtype : "") + '"></div>' +
         '<div class="field"><label>Severity</label><select class="select" id="z-sev">' +
           ["info", "warning", "danger"].map((sv) => '<option' + (z.severity === sv ? " selected" : "") + ">" + sv + "</option>").join("") + "</select></div>" +
       "</div>" +
@@ -163,10 +166,24 @@ SUAR.views.map = (function () {
     );
   }
 
+  // Reveal the custom-hazard input only when "other" is chosen.
+  function bindHazardToggle() {
+    const sel = document.getElementById("z-hazard");
+    if (!sel) return;
+    sel.addEventListener("change", (e) => {
+      document.getElementById("z-hazard-custom").style.display = e.target.value === "other" ? "" : "none";
+    });
+  }
+
   function readZoneForm() {
+    let hazardtype = document.getElementById("z-hazard").value;
+    if (hazardtype === "other") {
+      const custom = document.getElementById("z-hazard-custom").value.trim();
+      if (custom) hazardtype = custom;
+    }
     return {
       name: document.getElementById("z-name").value.trim(),
-      hazardtype: document.getElementById("z-hazard").value,
+      hazardtype: hazardtype,
       severity: document.getElementById("z-sev").value,
       isactive: document.getElementById("z-active").checked,
     };
@@ -191,7 +208,13 @@ SUAR.views.map = (function () {
           } },
       ],
     });
+    bindHazardToggle();
+    // Closing the form any way (X, Esc, backdrop) must remove the temp drawing,
+    // not leave an unsaved box on the map. onCancel is idempotent.
     m.overlay.addEventListener("click", (e) => { if (e.target === m.overlay) onCancel(); });
+    m.panel.querySelector("[data-close]").addEventListener("click", onCancel);
+    const escCancel = (e) => { if (e.key === "Escape") { onCancel(); document.removeEventListener("keydown", escCancel); } };
+    document.addEventListener("keydown", escCancel);
   }
 
   // Edit metadata only (not geometry).
@@ -212,6 +235,7 @@ SUAR.views.map = (function () {
           } },
       ],
     });
+    bindHazardToggle();
   }
 
   async function del(z) {

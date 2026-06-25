@@ -41,7 +41,7 @@ There's no sign-up screen in the console.
 ### 2. Run the backend
 ```bash
 cd backend
-venv/Scripts/python -m uvicorn main:app --port 8000   # Windows
+venv/Scripts/python -m uvicorn main:app --port 8000
 # or: uvicorn main:app --port 8000
 ```
 `backend/.env` must hold `SUPABASE_URL`, `SUPABASE_SECRET_KEY` (service role),

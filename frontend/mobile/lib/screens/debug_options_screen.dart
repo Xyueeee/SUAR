@@ -1,13 +1,15 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../constants.dart';
 import '../widgets/back_chevron.dart';
 import '../widgets/validated_text_dialog.dart';
 import 'debug_database_screen.dart';
 import 'location_debug_screen.dart';
 import 'triage_logic_screen.dart';
-
-const String backendSyncUrlPrefKey = 'suar_backend_sync_url';
 
 /// Settings > Debugging Options — dev-only tools that don't belong in front
 /// of an end user: the ngrok backend URL override, and a viewer for the
@@ -21,6 +23,7 @@ class DebugOptionsScreen extends StatefulWidget {
 
 class _DebugOptionsScreenState extends State<DebugOptionsScreen> {
   String? _backendUrl;
+  String _conn = 'checking'; // checking | connected | unreachable | unset
 
   @override
   void initState() {
@@ -32,6 +35,31 @@ class _DebugOptionsScreenState extends State<DebugOptionsScreen> {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
     setState(() => _backendUrl = prefs.getString(backendSyncUrlPrefKey));
+    _ping();
+  }
+
+  /// Lightweight reachability check against the backend's /health.
+  Future<void> _ping() async {
+    final url = _backendUrl?.trim();
+    if (url == null || url.isEmpty) {
+      if (mounted) setState(() => _conn = 'unset');
+      return;
+    }
+    if (mounted) setState(() => _conn = 'checking');
+    final base = url.endsWith('/') ? url.substring(0, url.length - 1) : url;
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 6);
+    var ok = false;
+    try {
+      final req = await client.getUrl(Uri.parse('$base/health'));
+      req.headers.set('ngrok-skip-browser-warning', 'true');
+      final resp = await req.close().timeout(const Duration(seconds: 8));
+      ok = resp.statusCode == 200;
+    } catch (_) {
+      ok = false;
+    } finally {
+      client.close(force: true);
+    }
+    if (mounted) setState(() => _conn = ok ? 'connected' : 'unreachable');
   }
 
   Future<void> _editBackendUrl() async {
@@ -54,6 +82,33 @@ class _DebugOptionsScreenState extends State<DebugOptionsScreen> {
     await prefs.setString(backendSyncUrlPrefKey, newUrl);
     if (!mounted) return;
     setState(() => _backendUrl = newUrl);
+    _ping();
+  }
+
+  String _connLabel() {
+    switch (_conn) {
+      case 'connected':
+        return 'Connected';
+      case 'unreachable':
+        return 'Not reachable — tap to fix';
+      case 'unset':
+        return 'Not set — tap to add';
+      default:
+        return 'Checking…';
+    }
+  }
+
+  Color _connColor() {
+    switch (_conn) {
+      case 'connected':
+        return const Color(0xFF2E9E3F);
+      case 'unreachable':
+        return const Color(0xFFD64545);
+      case 'unset':
+        return Colors.black45;
+      default:
+        return const Color(0xFFE0A800);
+    }
   }
 
   @override
@@ -74,11 +129,11 @@ class _DebugOptionsScreenState extends State<DebugOptionsScreen> {
               'Backend Sync URL',
               style: TextStyle(color: Colors.black),
             ),
-            subtitle: Text(
-              _backendUrl?.isNotEmpty == true
-                  ? _backendUrl!
-                  : 'Not set (dev/testing only)',
-              style: const TextStyle(color: Colors.black54),
+            subtitle: Text(_connLabel(), style: TextStyle(color: _connColor())),
+            trailing: Container(
+              width: 12,
+              height: 12,
+              decoration: BoxDecoration(color: _connColor(), shape: BoxShape.circle),
             ),
             onTap: _editBackendUrl,
           ),

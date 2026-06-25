@@ -26,6 +26,11 @@ SUAR.app = (function () {
   function showLogin(opts) {
     opts = opts || {};
     document.body.classList.remove("authed");
+    // Don't leave credentials sitting in the form after a sign-out.
+    const em = document.getElementById("login-email");
+    const pw = document.getElementById("login-password");
+    if (em) em.value = "";
+    if (pw) pw.value = "";
     if (connTimer) { clearInterval(connTimer); connTimer = null; }
     stopIdleWatch();
     const err = document.getElementById("login-error");
@@ -176,17 +181,31 @@ SUAR.app = (function () {
   }
 
   function init() {
+    const emailEl = document.getElementById("login-email");
+    const pwEl = document.getElementById("login-password");
+    const emailErr = document.getElementById("login-email-err");
+    const pwErr = document.getElementById("login-password-err");
+    const mark = (inp, errEl, msg) => {
+      if (msg) { inp.classList.add("invalid"); errEl.textContent = msg; errEl.style.display = "block"; return true; }
+      inp.classList.remove("invalid"); errEl.style.display = "none"; return false;
+    };
+    // Clear a field's error as soon as the user edits it.
+    emailEl.addEventListener("input", () => mark(emailEl, emailErr, ""));
+    pwEl.addEventListener("input", () => mark(pwEl, pwErr, ""));
+
     document.getElementById("login-form").addEventListener("submit", async (e) => {
       e.preventDefault();
       const btn = document.getElementById("login-submit");
       const err = document.getElementById("login-error");
       err.style.display = "none";
+      const email = emailEl.value.trim();
+      let bad = mark(emailEl, emailErr,
+        !email ? "Enter your email" : (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) ? "That doesn't look like an email" : ""));
+      bad = mark(pwEl, pwErr, !pwEl.value ? "Enter your password" : "") || bad;
+      if (bad) return;
       btn.disabled = true; btn.textContent = "Signing in…";
       try {
-        await SUAR.auth.signIn(
-          document.getElementById("login-email").value.trim(),
-          document.getElementById("login-password").value
-        );
+        await SUAR.auth.signIn(email, pwEl.value);
         await tryEnterApp();
       } catch (ex) {
         err.textContent = ex.message || "Sign-in failed";

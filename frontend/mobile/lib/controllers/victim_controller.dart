@@ -12,6 +12,7 @@ import '../permissions.dart';
 import '../sensing/location_estimator.dart';
 import '../sensing/sensor_fusion_engine.dart';
 import '../sensing/triage_config.dart';
+import '../sync/sync_service.dart';
 
 class VictimController {
   VictimController()
@@ -164,6 +165,14 @@ class VictimController {
   // HelperController's _pullInFlight.
   bool _pushInFlight = false;
 
+  // True once the first triage cycle has actually run (sensors sampled,
+  // location attempted). Before this, _bundle is the placeholder created in
+  // startVictimMode (score 0/None, zero sensor readings, no location) — real
+  // hardware showed this empty bundle going out over BLE/Wi-Fi Direct within
+  // the first RSSI window, often while the mic/location permission dialog
+  // was still up on screen. Gates every send/serve path below.
+  bool _sensorsReady = false;
+
   String? deviceId;
   DistressBundleModel? _bundle;
   final Map<String, int> _helperRssiMap = {};
@@ -195,6 +204,29 @@ class VictimController {
   // can have, so this periodically checks both and restarts whichever died.
   static const Duration _radioWatchdogInterval = Duration(seconds: 30);
   Timer? _radioWatchdog;
+
+  // Increment 5: opportunistic direct-to-backend push of this victim's own
+  // bundle whenever internet is available, so a far-away victim still surfaces
+  // on the dashboard without a Helper in radio range. No connectivity plugin —
+  // it just attempts the POST; dedup is by bundleId server-side.
+  final SyncService _sync = SyncService();
+  Timer? _syncTimer;
+  static const Duration _syncInterval = Duration(seconds: 45);
+  Future<void> _syncNow() async {
+    // Same reasoning as the WiFi Direct gates below — before the first triage
+    // cycle runs, _bundle is still the placeholder (score 0/None, no
+    // location). Pushing that to the backend put a no-priority, no-location
+    // ghost entry on the dashboard before any real data existed.
+    if (!_sensorsReady) return;
+    final id = deviceId;
+    final b = _bundle;
+    if (id == null || b == null) return;
+    try {
+      if (await _sync.pushBundles(id, 'victim', [b])) {
+        _emit('Pushed your bundle to the backend');
+      }
+    } catch (_) {/* offline — retry next tick */}
+  }
 
   // The RSSI-window retry loop and BLE ops keep running after stopVictimMode
   // resolves but before dispose() closes this stream — guard every emit so
@@ -316,7 +348,7 @@ class VictimController {
       // The fresh group's accept loop still needs the cached bundle to answer
       // pulls — disconnect() doesn't touch startServer()'s socket, but the
       // bundle cache is re-asserted here as cheap insurance.
-      if (_isAutonomousGroupOwner && _bundle != null) {
+      if (_isAutonomousGroupOwner && _sensorsReady && _bundle != null) {
         await wifiDirectManager.setLocalBundle(_bundle!.toJson());
       }
     } finally {
@@ -333,6 +365,7 @@ class VictimController {
       _stopped = false;
       _deliveredAtLeastOnce = false;
       _yieldingToHost = false;
+      _sensorsReady = false;
 
       deviceId = await _loadOrCreateDeviceId();
       _emit('Victim mode started (deviceId=$deviceId)');
@@ -364,15 +397,26 @@ class VictimController {
       // Starts at None/0 until the first triage cycle fills it in (see
       // _startTriage) — the sensor windows need a moment of data before a
       // score means anything.
+      final bundleInfo = await _loadOrCreateBundleId();
       _bundle = DistressBundleModel(
-        bundleId: const Uuid().v4(),
+        bundleId: bundleInfo.id,
         deviceId: deviceId!,
         priorityScore: 0.0,
         priorityTier: 'None',
-        createdAt: DateTime.now(),
+        createdAt: bundleInfo.createdAt,
         updatedAt: DateTime.now(),
         sensorReadings: const [],
       );
+
+      // Kick off sensor fusion + triage NOW, in parallel with the WiFi
+      // Direct/BLE setup below — not after it. It used to sit as the very
+      // last statement in this method; since every call above it is
+      // *awaited* in sequence (createGroup() alone can take seconds on real
+      // hardware), sensors didn't even start warming up until all of that
+      // finished, adding its own delay on top of theirs. Not awaited here —
+      // requesting mic permission pops a dialog, and the SOS broadcast must
+      // never wait behind it.
+      unawaited(_startTriage());
 
       await _loadInitiatorCapability();
       // Always run the server + keep the bundle cached natively, regardless
@@ -382,7 +426,15 @@ class VictimController {
       // this device's capability flips mid-session rather than only after
       // the next startVictimMode() call.
       await wifiDirectManager.startServer();
-      await wifiDirectManager.setLocalBundle(_bundle!.toJson());
+      // Don't cache the placeholder bundle yet — it's score 0/None with no
+      // sensor readings. _recomputeTriage() caches the real one once the
+      // first triage cycle actually runs (see _sensorsReady).
+
+      // Start opportunistic backend push (re-tries on a timer; the bundle's
+      // triage/location get refreshed in place by _recomputeTriage).
+      _syncTimer?.cancel();
+      _syncTimer = Timer.periodic(_syncInterval, (_) => _syncNow());
+      unawaited(_syncNow());
       // Victim never calls discoverPeers()/connect(), so logWifiState() on
       // the native side (which only fires from those two calls) never runs
       // for this role — meaning a Victim stuck associated to a regular AP
@@ -442,7 +494,12 @@ class VictimController {
       _connectionFormedSub = wifiDirectManager.connectionFormedStream.listen((
         info,
       ) async {
-        if (_stopped || _canInitiateWifiDirect || _pushInFlight) return;
+        if (_stopped ||
+            _canInitiateWifiDirect ||
+            _pushInFlight ||
+            !_sensorsReady) {
+          return;
+        }
         final isGroupOwner = info['isGroupOwner'] as bool? ?? false;
         if (isGroupOwner) return;
         final groupOwnerAddress = info['groupOwnerAddress'] as String?;
@@ -514,8 +571,10 @@ class VictimController {
           // The server's accept loop needs the cached bundle to still serve
           // pull requests — startServer() doesn't touch that cache, but
           // re-asserting it here is cheap insurance against any future
-          // change to that assumption silently breaking pull mode.
-          if (_bundle != null) {
+          // change to that assumption silently breaking pull mode. Skipped
+          // until the first real triage cycle has run — otherwise this would
+          // re-cache the empty placeholder bundle.
+          if (_sensorsReady && _bundle != null) {
             await wifiDirectManager.setLocalBundle(_bundle!.toJson());
           }
         }
@@ -534,11 +593,6 @@ class VictimController {
         // change mid-session (a network joins, drops, or is auto-disabled).
         await _publishAssociation();
       });
-
-      // Kick off sensor fusion + triage AFTER the mesh is live, and don't
-      // await it — requesting mic permission pops a dialog, and the SOS
-      // broadcast must never wait behind it.
-      unawaited(_startTriage());
     } catch (e) {
       _emit('Victim mode start failed: $e');
     }
@@ -603,6 +657,14 @@ class VictimController {
       bundle.estimatedAltitude = fix.altitude;
     }
     bundle.updatedAt = DateTime.now();
+    // The startup sync attempt (startVictimMode) fires once at t=0 and no-ops
+    // since sensors aren't ready yet — without this, nothing tries again until
+    // the periodic _syncTimer's FIRST tick, up to a full _syncInterval (45s)
+    // later. Firing right on the ready transition means the backend push
+    // happens within this triage cycle instead of waiting out that timer.
+    final justBecameReady = !_sensorsReady;
+    _sensorsReady = true;
+    if (justBecameReady) unawaited(_syncNow());
     triageStatus.value = (
       tier: outcome.result.tier,
       points: outcome.result.score.round(),
@@ -692,6 +754,10 @@ class VictimController {
   /// broadcasting (subject to the per-helper cooldown above) until the user
   /// manually leaves Victim mode.
   Future<bool> _tryDeliverBundle(String helperDeviceId) async {
+    if (!_sensorsReady) {
+      _emit('Sensors still initializing — holding bundle until ready');
+      return false;
+    }
     if (_isAutonomousGroupOwner) {
       // This device is a discoverable group owner — it must NOT run its own
       // discover/connect/disconnect (disconnect() would remove the group and
@@ -869,6 +935,49 @@ class VictimController {
     );
   }
 
+  // Same distress event should keep upserting ONE bundle row, not spawn a new
+  // one every time the app/Victim mode restarts — re-opening within a day is
+  // still "the same person still in trouble", not a new incident. This is an
+  // IDLE window measured from last use, not a fixed expiry from creation —
+  // someone actively using the app for days straight must never get rotated
+  // mid-emergency just because the clock hit 24h since the bundle was first
+  // created. Only 24h of silence (app not opened, no startVictimMode call)
+  // means the old event is presumed over and a fresh bundleId starts a new
+  // one.
+  static const Duration _bundleIdleWindow = Duration(hours: 24);
+  static const String _bundleIdPrefKey = 'suar_victim_bundle_id';
+  static const String _bundleCreatedAtPrefKey = 'suar_victim_bundle_created_at';
+  static const String _bundleLastUsedAtPrefKey =
+      'suar_victim_bundle_last_used_at';
+
+  Future<({String id, DateTime createdAt})> _loadOrCreateBundleId() async {
+    final prefs = await SharedPreferences.getInstance();
+    final existingId = prefs.getString(_bundleIdPrefKey);
+    final existingCreatedMs = prefs.getInt(_bundleCreatedAtPrefKey);
+    final existingUsedMs = prefs.getInt(_bundleLastUsedAtPrefKey);
+    final now = DateTime.now();
+    if (existingId != null &&
+        existingCreatedMs != null &&
+        existingUsedMs != null) {
+      final lastUsedAt = DateTime.fromMillisecondsSinceEpoch(existingUsedMs);
+      if (now.difference(lastUsedAt) < _bundleIdleWindow) {
+        await prefs.setInt(
+          _bundleLastUsedAtPrefKey,
+          now.millisecondsSinceEpoch,
+        );
+        return (
+          id: existingId,
+          createdAt: DateTime.fromMillisecondsSinceEpoch(existingCreatedMs),
+        );
+      }
+    }
+    final id = const Uuid().v4();
+    await prefs.setString(_bundleIdPrefKey, id);
+    await prefs.setInt(_bundleCreatedAtPrefKey, now.millisecondsSinceEpoch);
+    await prefs.setInt(_bundleLastUsedAtPrefKey, now.millisecondsSinceEpoch);
+    return (id: id, createdAt: now);
+  }
+
   Future<String> _loadOrCreateDeviceId() async {
     final prefs = await SharedPreferences.getInstance();
     final existing = prefs.getString(deviceIdPrefKey);
@@ -893,6 +1002,7 @@ class VictimController {
       _radioWatchdog?.cancel();
       _yieldFallbackTimer?.cancel();
       _triageTimer?.cancel();
+      _syncTimer?.cancel();
       await _sensorEngine.stop();
       await _locationEstimator.stop();
       await _cancelSubs();
@@ -912,6 +1022,7 @@ class VictimController {
     _radioWatchdog?.cancel();
     _yieldFallbackTimer?.cancel();
     _triageTimer?.cancel();
+    _syncTimer?.cancel();
     _sensorEngine.dispose();
     _locationEstimator.dispose();
     triageStatus.dispose();

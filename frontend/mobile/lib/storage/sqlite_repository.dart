@@ -9,7 +9,13 @@ class SQLiteRepository {
   // v2: added the SensorReading table. v3: added DistressBundle.Flags.
   // v4: added DistressBundle.AccuracyMeters (GPS ± radius).
   // v5: added DistressBundle.EstimatedAltitude (GPS altitude).
-  static const int _dbVersion = 5;
+  // v6: added Guide + PrepPlanT (admin content caches, JSON blobs) and
+  //     PrepProgress (per-user prep fill-state). Queried by ContentRepository.
+  // v7: added Guide.Section (groups guides into sections, e.g. Basic/Advanced).
+  // v8: added AppDoc + DocProgress — the unified content/prep model (one tree
+  //     per doc). Supersedes Guide/PrepPlanT/PrepProgress (kept but unused).
+  // v9: added AppDoc.OrderIndex — admin-controlled display order.
+  static const int _dbVersion = 9;
 
   Database? _db;
 
@@ -44,6 +50,65 @@ class SQLiteRepository {
     )
   ''';
 
+  // Content caches store the block-JSON / structure-JSON verbatim in a TEXT
+  // column (flexible, schema-light) — the tree shape lives inside the blob, not
+  // as normalised columns. PrepProgress keys fill-state by positional path.
+  static const String _createGuide = '''
+    CREATE TABLE IF NOT EXISTS Guide (
+      ContentId TEXT PRIMARY KEY,
+      Category TEXT NOT NULL,
+      Title TEXT NOT NULL,
+      Section TEXT,
+      Version INTEGER NOT NULL DEFAULT 1,
+      BodyJson TEXT NOT NULL,
+      UpdatedAt TEXT
+    )
+  ''';
+
+  static const String _createPrepPlan = '''
+    CREATE TABLE IF NOT EXISTS PrepPlanT (
+      PrepPlanId TEXT PRIMARY KEY,
+      Title TEXT NOT NULL,
+      Version INTEGER NOT NULL DEFAULT 1,
+      StructureJson TEXT NOT NULL,
+      UpdatedAt TEXT
+    )
+  ''';
+
+  static const String _createPrepProgress = '''
+    CREATE TABLE IF NOT EXISTS PrepProgress (
+      PrepPlanId TEXT NOT NULL,
+      Path TEXT NOT NULL,
+      Value TEXT NOT NULL,
+      UpdatedAt TEXT,
+      PRIMARY KEY (PrepPlanId, Path)
+    )
+  ''';
+
+  // Unified content/prep cache (one tree-JSON blob per doc) + per-user fill
+  // state keyed by positional node path.
+  static const String _createAppDoc = '''
+    CREATE TABLE IF NOT EXISTS AppDoc (
+      DocId TEXT PRIMARY KEY,
+      Category TEXT NOT NULL,
+      Title TEXT NOT NULL,
+      Version INTEGER NOT NULL DEFAULT 1,
+      StructureJson TEXT NOT NULL,
+      OrderIndex INTEGER NOT NULL DEFAULT 0,
+      UpdatedAt TEXT
+    )
+  ''';
+
+  static const String _createDocProgress = '''
+    CREATE TABLE IF NOT EXISTS DocProgress (
+      DocId TEXT NOT NULL,
+      Path TEXT NOT NULL,
+      Value TEXT NOT NULL,
+      UpdatedAt TEXT,
+      PRIMARY KEY (DocId, Path)
+    )
+  ''';
+
   Future<Database> _getDb() async {
     final existing = _db;
     if (existing != null) return existing;
@@ -54,6 +119,11 @@ class SQLiteRepository {
       onCreate: (db, version) async {
         await db.execute(_createDistressBundle);
         await db.execute(_createSensorReading);
+        await db.execute(_createGuide);
+        await db.execute(_createPrepPlan);
+        await db.execute(_createPrepProgress);
+        await db.execute(_createAppDoc);
+        await db.execute(_createDocProgress);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -72,11 +142,31 @@ class SQLiteRepository {
             'ALTER TABLE DistressBundle ADD COLUMN EstimatedAltitude REAL',
           );
         }
+        if (oldVersion < 6) {
+          await db.execute(_createGuide);
+          await db.execute(_createPrepPlan);
+          await db.execute(_createPrepProgress);
+        }
+        if (oldVersion >= 6 && oldVersion < 7) {
+          // Devices already on v6 have a Guide table without Section.
+          await db.execute('ALTER TABLE Guide ADD COLUMN Section TEXT');
+        }
+        if (oldVersion < 8) {
+          await db.execute(_createAppDoc);
+          await db.execute(_createDocProgress);
+        }
+        if (oldVersion >= 8 && oldVersion < 9) {
+          await db.execute('ALTER TABLE AppDoc ADD COLUMN OrderIndex INTEGER NOT NULL DEFAULT 0');
+        }
       },
     );
     _db = opened;
     return opened;
   }
+
+  /// Shared database handle. ContentRepository uses this instead of opening its
+  /// own connection so SQLiteRepository stays the single owner of versioning.
+  Future<Database> get database => _getDb();
 
   /// Saves a bundle and its sensor readings together — wherever a bundle is
   /// persisted, its readings follow, so callers don't have to remember both.

@@ -10,11 +10,12 @@ docs/superpowers/specs/2026-06-24-admin-web-design.md.
 """
 import logging
 import os
+import uuid
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
-from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import Client, create_client
 
@@ -143,6 +144,20 @@ def sync(payload: SyncRequest):
                 .execute()
             )
             if existing.data:
+                # Re-sync: a bundle's triage score, tier and GPS fix are refined
+                # over time, so UPDATE the existing row instead of dropping the
+                # newer data as a "duplicate" (that left bundles stuck at the
+                # first push's None / 0 / no-location values).
+                supabase.table("distressbundle").update(
+                    {
+                        "priorityscore": bundle.priorityScore,
+                        "prioritytier": bundle.priorityTier,
+                        "estimatedlat": bundle.estimatedLat,
+                        "estimatedlng": bundle.estimatedLng,
+                        "hopcount": bundle.hopCount,
+                        "updatedat": bundle.updatedAt.isoformat(),
+                    }
+                ).eq("bundleid", bundle.bundleId).execute()
                 supabase.table("syncrecord").upsert(
                     {"bundleid": bundle.bundleId, "syncedat": _now_iso(), "serverstatus": "duplicate"},
                     on_conflict="bundleid",
@@ -249,6 +264,19 @@ def public_prep_plans():
     return supabase.table("prepplan").select("*").eq("ispublished", True).order("updatedat", desc=True).execute().data
 
 
+@app.get("/appdocs")
+def public_docs(category: str | None = Query(None)):
+    """Unified content docs (guides + prep) — one tree structure per doc.
+
+    NOTE: must NOT be '/docs' — FastAPI reserves '/docs' for its Swagger UI,
+    which would shadow this route and return HTML instead of JSON.
+    """
+    q = supabase.table("appdoc").select("*").eq("ispublished", True)
+    if category:
+        q = q.eq("category", category)
+    return q.order("orderindex").order("updatedat", desc=True).execute().data
+
+
 # --------------------------------------------------------------------------- #
 # Admin: identity check (web re-validates the session against the allowlist)   #
 # --------------------------------------------------------------------------- #
@@ -310,8 +338,13 @@ def admin_stats(_=Depends(require_admin)):
         "sensorReadingCount": _count("sensorreading"),
         "geofenceCount": _count("geofence", "isactive", True),
         "noticeCount": _count("notice", "isactive", True),
-        "contentCount": _count("appcontent"),
-        "prepPlanCount": _count("prepplan"),
+        # Guides/tips + prep plans both moved to the unified "appdoc" table
+        # (one tree-structure editor for survival/first_aid/prep) — the old
+        # appcontent/prepplan tables are dead, always-empty leftovers from
+        # before that unification, so counting them always read 0.
+        "contentCount": _count("appdoc", "category", "survival")
+        + _count("appdoc", "category", "first_aid"),
+        "prepPlanCount": _count("appdoc", "category", "prep"),
         "activityByDay": activity,
         "topDevices": [{"deviceId": d, "count": c} for d, c in per_device.most_common(5)],
         "recentBundles": bundles[:8],
@@ -417,6 +450,41 @@ def admin_delete_device(device_id: str, _=Depends(require_admin)):
 
 
 # --------------------------------------------------------------------------- #
+# Admin: image upload for the content editor                                   #
+# --------------------------------------------------------------------------- #
+# Images for guide `image` blocks live in a public Supabase Storage bucket; the
+# editor uploads here and embeds the returned public URL. The app downloads +
+# caches it for offline viewing. Uploads use the service role (bypasses RLS);
+# the bucket is public-read so the app needs no auth to fetch.
+CONTENT_BUCKET = "content-images"
+_ALLOWED_IMG = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+_MAX_IMG_BYTES = 5 * 1024 * 1024
+
+
+@app.post("/admin/upload")
+async def admin_upload(file: UploadFile = File(...), _=Depends(require_admin)):
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(data) > _MAX_IMG_BYTES:
+        raise HTTPException(status_code=413, detail="Image too large (max 5 MB)")
+    ext = os.path.splitext(file.filename or "")[1].lower() or ".png"
+    if ext not in _ALLOWED_IMG:
+        raise HTTPException(status_code=400, detail=f"Unsupported image type: {ext}")
+    path = f"{uuid.uuid4().hex}{ext}"
+    try:
+        supabase.storage.from_(CONTENT_BUCKET).upload(
+            path,
+            data,
+            {"content-type": file.content_type or "image/png", "upsert": "false"},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Upload failed: {exc}")
+    url = supabase.storage.from_(CONTENT_BUCKET).get_public_url(path)
+    return {"url": url.rstrip("?")}
+
+
+# --------------------------------------------------------------------------- #
 # Admin: generic CRUD for the four simple admin-authored tables                #
 # --------------------------------------------------------------------------- #
 # geofence / notice / appcontent / prepplan share an identical CRUD shape, so
@@ -429,17 +497,22 @@ _ADMIN_RESOURCES = {
     ),
     "notices": dict(
         table="notice", pk="noticeid",
-        fields=["title", "body", "severity", "isactive", "expiresat"],
+        fields=["title", "subtitle", "body", "severity", "isactive", "expiresat", "structure"],
         versioned=False,
     ),
     "content": dict(
         table="appcontent", pk="contentid",
-        fields=["category", "title", "body", "ispublished"],
+        fields=["category", "title", "section", "body", "ispublished"],
         versioned=True,
     ),
     "prep-plans": dict(
         table="prepplan", pk="prepplanid",
         fields=["title", "structure", "ispublished"],
+        versioned=True,
+    ),
+    "docs": dict(
+        table="appdoc", pk="docid",
+        fields=["category", "title", "structure", "ispublished", "orderindex"],
         versioned=True,
     ),
 }

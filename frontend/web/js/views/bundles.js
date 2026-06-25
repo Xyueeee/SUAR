@@ -39,7 +39,7 @@ SUAR.views.bundles = (function () {
     const rows = await SUAR.api.get("/admin/bundles" + query());
     if (!rows.length) { wrap.innerHTML = SUAR.ui.empty("No bundles match", "Adjust the filters or wait for a sync."); return; }
     wrap.innerHTML =
-      '<table class="data"><thead><tr><th>Tier</th><th>Score</th><th>Device</th><th>Hops</th><th>Location</th><th>Synced</th><th>Created</th><th></th></tr></thead><tbody>' +
+      '<table class="data"><thead><tr><th>Tier</th><th>Score</th><th>Device</th><th>Hops</th><th>Location</th><th>Synced</th><th>Activity</th><th>Created</th><th></th></tr></thead><tbody>' +
       rows.map((b) =>
         '<tr class="clickable row-accent" data-id="' + SUAR.ui.esc(b.bundleid) + '" style="border-left-color:' + tierColor(b.prioritytier) + '">' +
         "<td>" + SUAR.ui.tierBadge(b.prioritytier) + "</td>" +
@@ -48,6 +48,7 @@ SUAR.views.bundles = (function () {
         '<td class="mono-cell">' + (b.hopcount ?? 0) + "</td>" +
         '<td class="mono-cell">' + SUAR.ui.fmtCoord(b.estimatedlat, b.estimatedlng) + "</td>" +
         "<td>" + (b.issynced ? '<span class="chip chip--on">synced</span>' : '<span class="chip chip--off">no</span>') + "</td>" +
+        "<td>" + activityChip(b.updatedat) + "</td>" +
         '<td class="muted">' + SUAR.ui.fmtRelative(b.createdat) + "</td>" +
         '<td class="cell-actions"><button class="btn btn--ghost btn--sm" data-view>View</button></td></tr>'
       ).join("") + "</tbody></table>";
@@ -59,6 +60,20 @@ SUAR.views.bundles = (function () {
 
   function tierColor(t) {
     return { Critical: "#d64545", High: "#ec7a1c", Moderate: "#e0a500", Low: "#3fb836" }[t] || "#cbd2db";
+  }
+
+  // Same distress event keeps upserting one bundle row as it goes — a row
+  // updated in the last 24h is still an ongoing situation; older means
+  // nothing new has come in (device gone quiet, situation likely resolved).
+  const ACTIVE_WINDOW_MS = 24 * 60 * 60 * 1000;
+  function isActive(updatedAt) {
+    const t = updatedAt ? new Date(updatedAt).getTime() : NaN;
+    return !isNaN(t) && (Date.now() - t) < ACTIVE_WINDOW_MS;
+  }
+  function activityChip(updatedAt) {
+    return isActive(updatedAt)
+      ? '<span class="chip chip--on">active</span>'
+      : '<span class="chip chip--off">inactive</span>';
   }
 
   async function openDetail(id) {
@@ -76,6 +91,7 @@ SUAR.views.bundles = (function () {
       former("Accuracy", b.accuracymeters != null ? '<span class="mono">±' + Math.round(b.accuracymeters) + " m</span>" : "—"),
       former("Hops", '<span class="mono">' + (b.hopcount ?? 0) + "</span>"),
       former("Synced", b.issynced ? '<span class="chip chip--on">yes</span>' : '<span class="chip chip--off">no</span>'),
+      former("Activity", activityChip(b.updatedat)),
       former("Created", SUAR.ui.fmtDate(b.createdat)),
     ].join("");
 

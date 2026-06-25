@@ -50,11 +50,38 @@ SUAR.api = (function () {
     return data;
   }
 
+  // Multipart upload (e.g. content images). Sends FormData with the JWT but no
+  // JSON Content-Type — the browser sets the multipart boundary itself.
+  async function upload(path, file) {
+    const base = SUAR.getBackendUrl();
+    if (!base) throw new SUAR.ApiError("Backend URL not set.", 0);
+    const token = await SUAR.auth.getToken();
+    const headers = { "ngrok-skip-browser-warning": "true" };
+    if (token) headers["Authorization"] = "Bearer " + token;
+    const fd = new FormData();
+    fd.append("file", file);
+    let res;
+    try {
+      res = await fetch(base + path, { method: "POST", headers, body: fd });
+    } catch (e) {
+      throw new SUAR.ApiError("Upload failed — can't reach the backend.", 0);
+    }
+    if (res.status === 401) { SUAR.auth.signOut(); throw new SUAR.ApiError("Session expired.", 401); }
+    let data = null; const text = await res.text();
+    if (text) { try { data = JSON.parse(text); } catch { data = text; } }
+    if (!res.ok) {
+      const detail = data && data.detail ? data.detail : ("Upload failed (" + res.status + ")");
+      throw new SUAR.ApiError(typeof detail === "string" ? detail : JSON.stringify(detail), res.status);
+    }
+    return data;
+  }
+
   return {
     get: (p) => request("GET", p),
     post: (p, b) => request("POST", p, b ?? {}),
     patch: (p, b) => request("PATCH", p, b ?? {}),
     del: (p) => request("DELETE", p),
+    upload,
     // Plain reachability ping (no auth) for the connection pill.
     async ping() {
       const base = SUAR.getBackendUrl();

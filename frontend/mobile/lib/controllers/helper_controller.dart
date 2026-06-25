@@ -12,6 +12,7 @@ import '../communication/wifi_direct_manager.dart';
 import '../constants.dart';
 import '../models/distress_bundle_model.dart';
 import '../storage/sqlite_repository.dart';
+import '../sync/sync_service.dart';
 
 class HelperController {
   HelperController()
@@ -25,6 +26,29 @@ class HelperController {
   final WiFiDirectManager wifiDirectManager;
   final SQLiteRepository repository;
   late final DTNManager dtnManager;
+
+  // Opportunistic cloud sync: push unsynced bundles + pull the last 2h when online.
+  final SyncService _sync = SyncService();
+  Timer? _syncTimer;
+  static const _syncInterval = Duration(seconds: 45);
+
+  Future<void> _syncNow() async {
+    final id = deviceId;
+    if (id == null) return;
+    try {
+      final unsynced = await repository.getUnsyncedBundles();
+      if (unsynced.isNotEmpty && await _sync.pushBundles(id, 'helper', unsynced)) {
+        for (final b in unsynced) {
+          await repository.markAsSynced(b.bundleId);
+        }
+        _emit('Synced ${unsynced.length} bundle(s) to backend');
+      }
+      final pulled = await _sync.pullRecent(repository);
+      if (pulled > 0) {
+        _emit('Pulled $pulled recent bundle(s) from backend');
+      }
+    } catch (_) {/* offline — try again next tick */}
+  }
 
   final _statusController = StreamController<String>.broadcast();
   Stream<String> get statusStream => _statusController.stream;
@@ -222,6 +246,9 @@ class HelperController {
 
       deviceId = await _loadOrCreateDeviceId();
       _emit('Helper mode started (deviceId=$deviceId)');
+      _syncTimer?.cancel();
+      _syncTimer = Timer.periodic(_syncInterval, (_) => _syncNow());
+      unawaited(_syncNow());
 
       _bleStatusSub = bleManager.statusStream.listen(_emit);
       _wifiStatusSub = wifiDirectManager.statusStream.listen(_emit);
@@ -950,6 +977,7 @@ class HelperController {
     try {
       _stopped = true;
       _radioWatchdog?.cancel();
+      _syncTimer?.cancel();
       for (final timer in _ackRetryTimers.values) {
         timer.cancel();
       }
@@ -977,6 +1005,7 @@ class HelperController {
 
   void dispose() {
     _radioWatchdog?.cancel();
+    _syncTimer?.cancel();
     _connectionFormedSub?.cancel();
     bleManager.dispose();
     wifiDirectManager.dispose();

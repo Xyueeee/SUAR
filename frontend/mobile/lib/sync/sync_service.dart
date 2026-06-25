@@ -1,0 +1,116 @@
+/// Opportunistic backend sync (Increment 5 / backlog #1). No connectivity
+/// plugin — it simply attempts the request; success means we were online.
+///   - Victim: pushes its own bundle so far-away victims surface on the
+///     dashboard even without a Helper in radio range.
+///   - Helper: pushes all unsynced bundles, then pulls bundles created in the
+///     last 2 hours so nearby Helpers converge on the same picture.
+/// Dedup is by bundleId server-side, so re-pushing the same bundle is harmless.
+library;
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../constants.dart';
+import '../models/distress_bundle_model.dart';
+import '../storage/sqlite_repository.dart';
+
+class SyncService {
+  Future<String?> _baseUrl() async {
+    final prefs = await SharedPreferences.getInstance();
+    final u = prefs.getString(backendSyncUrlPrefKey)?.trim();
+    if (u == null || u.isEmpty) return null;
+    return u.endsWith('/') ? u.substring(0, u.length - 1) : u;
+  }
+
+  // Sensor readings are omitted from v1 sync to avoid request-shape drift — the
+  // bundle's triage score + location are what the dashboard needs; readings can
+  // follow in a later increment.
+  Map<String, dynamic> _bundleJson(DistressBundleModel b) => {
+        'bundleId': b.bundleId,
+        'deviceId': b.deviceId,
+        'priorityScore': b.priorityScore,
+        'priorityTier': b.priorityTier,
+        'estimatedLat': b.estimatedLat,
+        'estimatedLng': b.estimatedLng,
+        'hopCount': b.hopCount,
+        'createdAt': b.createdAt.toUtc().toIso8601String(),
+        'updatedAt': b.updatedAt.toUtc().toIso8601String(),
+        'sensorReadings': const [],
+        'relayLogs': const [],
+      };
+
+  /// POSTs bundles to /sync. Returns true on HTTP 200. Swallows offline errors.
+  Future<bool> pushBundles(String deviceId, String mode, List<DistressBundleModel> bundles) async {
+    final base = await _baseUrl();
+    if (base == null || bundles.isEmpty) return false;
+    final payload = {
+      'device': {'deviceId': deviceId, 'applicationMode': mode, 'applicationVersion': appVersion},
+      'bundles': bundles.map(_bundleJson).toList(),
+    };
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+    try {
+      final req = await client.postUrl(Uri.parse('$base/sync'));
+      req.headers.set('content-type', 'application/json');
+      req.headers.set('ngrok-skip-browser-warning', 'true');
+      req.add(utf8.encode(jsonEncode(payload)));
+      final resp = await req.close().timeout(const Duration(seconds: 15));
+      await resp.drain();
+      return resp.statusCode == 200;
+    } catch (_) {
+      return false;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// Helper pull: stores bundles created within the last 2 hours. Returns count
+  /// stored. Backend rows use lowercase keys (Supabase), mapped here.
+  Future<int> pullRecent(SQLiteRepository repo) async {
+    final base = await _baseUrl();
+    if (base == null) return 0;
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+    List<dynamic> rows;
+    try {
+      final req = await client.getUrl(Uri.parse('$base/bundles'));
+      req.headers.set('ngrok-skip-browser-warning', 'true');
+      final resp = await req.close().timeout(const Duration(seconds: 12));
+      if (resp.statusCode != 200) return 0;
+      final body = await resp.transform(utf8.decoder).join();
+      final decoded = jsonDecode(body);
+      if (decoded is! List) return 0;
+      rows = decoded;
+    } catch (_) {
+      return 0;
+    } finally {
+      client.close(force: true);
+    }
+    final cutoff = DateTime.now().toUtc().subtract(const Duration(hours: 24));
+    var n = 0;
+    for (final r in rows) {
+      if (r is! Map) continue;
+      final created = DateTime.tryParse((r['createdat'] ?? '').toString());
+      if (created == null || created.toUtc().isBefore(cutoff)) continue;
+      try {
+        await repo.saveBundle(_fromBackend(r));
+        n++;
+      } catch (_) {/* skip malformed row */}
+    }
+    return n;
+  }
+
+  DistressBundleModel _fromBackend(Map r) => DistressBundleModel(
+        bundleId: (r['bundleid'] ?? '').toString(),
+        deviceId: (r['deviceid'] ?? '').toString(),
+        priorityScore: (r['priorityscore'] as num?)?.toDouble() ?? 0,
+        priorityTier: (r['prioritytier'] ?? 'None').toString(),
+        estimatedLat: (r['estimatedlat'] as num?)?.toDouble(),
+        estimatedLng: (r['estimatedlng'] as num?)?.toDouble(),
+        hopCount: (r['hopcount'] as num?)?.toInt() ?? 0,
+        isSynced: true,
+        createdAt: DateTime.tryParse((r['createdat'] ?? '').toString()) ?? DateTime.now().toUtc(),
+        updatedAt: DateTime.tryParse((r['updatedat'] ?? '').toString()) ?? DateTime.now().toUtc(),
+      );
+}

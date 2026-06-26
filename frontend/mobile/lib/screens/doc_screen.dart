@@ -9,7 +9,6 @@ import '../widgets/back_chevron.dart';
 const Color _green = Color(0xFF4CAF50);
 const Color _bar = Color(0xFF62E24B);
 const Color _panel = Color(0xFFEDEDED);
-const Color _cardBlue = Color(0xFFA7C7E7);
 const Color _accent = Color(0xFF3E6FA8);
 
 /// Unified renderer for any category (survival / first_aid / preparation /
@@ -83,28 +82,12 @@ class _DocScreenState extends State<DocScreen> {
           if (_ctrl.doc == null || _ctrl.doc!.nodes.isEmpty) {
             return _Empty(onRefresh: _refresh);
           }
-          return ListenableBuilder(
-            listenable: _ctrl,
-            builder: (context, _) {
-              final doc = _ctrl.doc!;
-              return RefreshIndicator(
-                onRefresh: _refresh,
-                child: ListView(
-                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
-                  children: [
-                    if (doc.usePercent) ...[
-                      _PercentCard(
-                        text: doc.percentText.replaceAll('{p}', _ctrl.overallPercent.round().toString()),
-                        value: _ctrl.overallPercent / 100,
-                      ),
-                      const SizedBox(height: 16),
-                    ],
-                    for (var i = 0; i < doc.nodes.length; i++)
-                      _TopNode(controller: _ctrl, node: doc.nodes[i], path: '$i'),
-                  ],
-                ),
-              );
-            },
+          return RefreshIndicator(
+            onRefresh: _refresh,
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+              children: [DocBody(controller: _ctrl)],
+            ),
           );
         },
       ),
@@ -112,31 +95,73 @@ class _DocScreenState extends State<DocScreen> {
   }
 }
 
-/// A top-level node on the category page: section → card; guide → blue card;
-/// field → a bare checkbox/input row.
-class _TopNode extends StatelessWidget {
+/// Renders a loaded [DocController]'s doc — optional overall % card, then its
+/// top-level nodes (sections/guides/fields) — with no Scaffold/AppBar of its
+/// own, so any screen with its own header can drop it straight into a
+/// ListView (the category page does; so does the notice detail screen, for
+/// the exact same section/checklist/guide rendering a notice's structure can
+/// carry, not just its plain-text blocks).
+class DocBody extends StatelessWidget {
   final DocController controller;
-  final DocNode node;
-  final String path;
-  const _TopNode({required this.controller, required this.node, required this.path});
+  const DocBody({super.key, required this.controller});
 
   @override
   Widget build(BuildContext context) {
-    if (node.isSection) {
-      return _SectionCard(controller: controller, node: node, path: path);
-    }
-    if (node.isGuide) {
-      return Padding(
-        padding: const EdgeInsets.only(bottom: 16),
-        child: _GuideCard(node: node),
-      );
-    }
-    return Container(
-      margin: const EdgeInsets.only(bottom: 16),
-      decoration: BoxDecoration(color: _panel, borderRadius: BorderRadius.circular(12)),
-      child: _FieldRow(controller: controller, node: node, path: path),
+    final doc = controller.doc;
+    if (doc == null || doc.nodes.isEmpty) return const SizedBox.shrink();
+    return ListenableBuilder(
+      listenable: controller,
+      builder: (context, _) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (doc.usePercent) ...[
+              _PercentCard(
+                text: doc.percentText.replaceAll('{p}', controller.overallPercent.round().toString()),
+                value: controller.overallPercent / 100,
+              ),
+              const SizedBox(height: 16),
+            ],
+            ..._topLevelWidgets(controller, doc.nodes),
+          ],
+        );
+      },
     );
   }
+}
+
+/// Top-level nodes used to render very differently depending on kind: a
+/// section got its own white bordered card, but a guide/field at the SAME
+/// top level got its own standalone treatment too (a big blue "guide" card,
+/// or its own little grey box) — one card style per sibling instead of the
+/// single shared grey panel-with-dividers that nested children inside a
+/// section get via [_ChildPanel]. A guide/field shouldn't look different
+/// just because it happens to sit at the root instead of one level deeper,
+/// so consecutive non-section siblings here are grouped into ONE shared
+/// panel, the exact same look [_ChildPanel] gives a section's children.
+/// Sections still get their own card (they're a container, not a leaf).
+List<Widget> _topLevelWidgets(DocController controller, List<DocNode> nodes) {
+  final out = <Widget>[];
+  var i = 0;
+  while (i < nodes.length) {
+    if (nodes[i].isSection) {
+      out.add(_SectionCard(controller: controller, node: nodes[i], path: '$i'));
+      out.add(const SizedBox(height: 16));
+      i++;
+      continue;
+    }
+    final runNodes = <DocNode>[];
+    final runPaths = <String>[];
+    while (i < nodes.length && !nodes[i].isSection) {
+      runNodes.add(nodes[i]);
+      runPaths.add('$i');
+      i++;
+    }
+    out.add(_ChildPanel(controller: controller, nodes: runNodes, paths: runPaths));
+    out.add(const SizedBox(height: 16));
+  }
+  return out;
 }
 
 class _SectionCard extends StatelessWidget {
@@ -172,7 +197,11 @@ class _SectionCard extends StatelessWidget {
             _ProgressBar(value: pct / 100),
           ],
           const SizedBox(height: 14),
-          _ChildPanel(controller: controller, parent: node, parentPath: path),
+          _ChildPanel(
+            controller: controller,
+            nodes: node.children,
+            paths: [for (var i = 0; i < node.children.length; i++) '$path.$i'],
+          ),
         ],
       ),
     );
@@ -214,7 +243,11 @@ class _SectionScreen extends StatelessWidget {
                 Text('${pct.round()}% complete', style: const TextStyle(color: Colors.black54, fontSize: 13)),
                 const SizedBox(height: 14),
               ],
-              _ChildPanel(controller: controller, parent: node, parentPath: path),
+              _ChildPanel(
+                controller: controller,
+                nodes: node.children,
+                paths: [for (var i = 0; i < node.children.length; i++) '$path.$i'],
+              ),
             ],
           );
         },
@@ -225,14 +258,13 @@ class _SectionScreen extends StatelessWidget {
 
 class _ChildPanel extends StatelessWidget {
   final DocController controller;
-  final DocNode parent;
-  final String parentPath;
-  const _ChildPanel({required this.controller, required this.parent, required this.parentPath});
+  final List<DocNode> nodes;
+  final List<String> paths;
+  const _ChildPanel({required this.controller, required this.nodes, required this.paths});
 
   @override
   Widget build(BuildContext context) {
-    final kids = parent.children;
-    if (kids.isEmpty) {
+    if (nodes.isEmpty) {
       return const Padding(
         padding: EdgeInsets.symmetric(vertical: 8),
         child: Text('Nothing here yet.', style: TextStyle(color: Colors.black45)),
@@ -242,9 +274,9 @@ class _ChildPanel extends StatelessWidget {
       decoration: BoxDecoration(color: _panel, borderRadius: BorderRadius.circular(12)),
       child: Column(
         children: [
-          for (var i = 0; i < kids.length; i++) ...[
+          for (var i = 0; i < nodes.length; i++) ...[
             if (i > 0) const Divider(height: 1, color: Colors.black12, indent: 14, endIndent: 14),
-            _ChildRow(controller: controller, node: kids[i], path: '$parentPath.$i'),
+            _ChildRow(controller: controller, node: nodes[i], path: paths[i]),
           ],
         ],
       ),
@@ -501,29 +533,6 @@ class _TitleSub extends StatelessWidget {
             child: Text(subtitle!, style: const TextStyle(color: Colors.black54, fontSize: 12, height: 1.3)),
           ),
       ],
-    );
-  }
-}
-
-class _GuideCard extends StatelessWidget {
-  final DocNode node;
-  const _GuideCard({required this.node});
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(14),
-      onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => _GuideViewer(node: node))),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(color: _cardBlue, borderRadius: BorderRadius.circular(14)),
-        child: Row(
-          children: [
-            Expanded(child: _TitleSub(title: node.title, subtitle: node.subtitle, big: true)),
-            const Icon(Icons.chevron_right, color: Colors.black54),
-          ],
-        ),
-      ),
     );
   }
 }

@@ -1,36 +1,70 @@
 import 'package:flutter/material.dart';
 
-import '../content/block_renderer.dart';
-import '../content/content_models.dart';
+import '../content/doc_controller.dart';
 import '../content/doc_models.dart';
 import '../content/doc_service.dart';
+import '../screens/doc_screen.dart' show DocBody;
 import '../widgets/back_chevron.dart';
 
-/// Flattens a notice's block-doc structure into a renderable block list (guide
-/// pages' blocks; sections recursed). Falls back to plain [body] text.
-List<Widget> noticeContent(Map<String, dynamic> notice, String body) {
-  final blocks = <Block>[];
-  final raw = notice['structure'];
-  if (raw != null) {
-    final doc = Doc.fromRow(docid: 'n', category: '', title: '', version: 0, updatedAt: '', structure: raw);
-    void walk(List<DocNode> ns) {
-      for (final n in ns) {
-        if (n.isGuide) {
-          for (final p in n.pages) {
-            blocks.addAll(p.blocks);
-          }
-        } else if (n.isSection) {
-          walk(n.children);
+/// Renders a notice's full structure — sections, checklist fields, guide
+/// pages, the lot — with the exact same widgets the survival/first_aid/prep
+/// pages use ([DocBody]), not just a flattened block list. Falls back to
+/// plain [body] text when there's no structure at all.
+class NoticeBody extends StatefulWidget {
+  final Map<String, dynamic> notice;
+  final String body;
+  const NoticeBody({super.key, required this.notice, required this.body});
+
+  @override
+  State<NoticeBody> createState() => _NoticeBodyState();
+}
+
+class _NoticeBodyState extends State<NoticeBody> {
+  late final DocController _ctrl = DocController(DocService().repo);
+  late final Future<void> _ready = _load();
+
+  Future<void> _load() async {
+    final raw = widget.notice['structure'];
+    if (raw == null) return;
+    final id = (widget.notice['noticeid'] ?? 'notice').toString();
+    final doc = Doc.fromRow(
+      docid: 'notice-$id',
+      category: '',
+      title: '',
+      version: 0,
+      updatedAt: '',
+      structure: raw,
+    );
+    await _ctrl.load(doc);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<void>(
+      future: _ready,
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return const SizedBox.shrink();
         }
-      }
-    }
-    walk(doc.nodes);
+        if (_ctrl.doc != null && _ctrl.doc!.nodes.isNotEmpty) {
+          return DocBody(controller: _ctrl);
+        }
+        if (widget.body.isNotEmpty) {
+          return Text(
+            widget.body,
+            style: const TextStyle(color: Colors.black87, fontSize: 15, height: 1.5),
+          );
+        }
+        return const SizedBox.shrink();
+      },
+    );
   }
-  if (blocks.isNotEmpty) return buildBlocks(blocks);
-  if (body.isNotEmpty) {
-    return [Text(body, style: const TextStyle(color: Colors.black87, fontSize: 15, height: 1.5))];
-  }
-  return const [];
 }
 
 String fmtNoticeTime(String? iso) {
@@ -177,7 +211,7 @@ class NoticeDetailScreen extends StatelessWidget {
             Text(stamp, style: const TextStyle(color: Colors.black38, fontSize: 12)),
           ],
           const SizedBox(height: 16),
-          ...noticeContent(notice, body),
+          NoticeBody(notice: notice, body: body),
         ],
       ),
     );

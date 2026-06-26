@@ -746,7 +746,6 @@ table.data tbody tr.clickable { cursor: pointer; }
 .pv-panel { background: #ededed; border-radius: 10px; margin-top: 10px; }
 .pv-row { display: flex; align-items: center; gap: 8px; padding: 11px 12px; border-bottom: 1px solid rgba(0,0,0,.06); font-size: 14px; color: #1a1a1a; }
 .pv-row:last-child { border-bottom: none; }
-.pv-guide { display: flex; align-items: center; background: #A7C7E7; border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .pv-tt { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .pv-t { font-size: 14px; }
 .pv-t--big { font-size: 16px; font-weight: 600; }

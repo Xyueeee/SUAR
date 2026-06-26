@@ -6,21 +6,28 @@ SUAR.views = SUAR.views || {};
 
 SUAR.views.dashboard = (function () {
   const TIERS = ["Critical", "High", "Moderate", "Low", "None"];
+  // Same colors the mobile Helper map uses for these exact tiers
+  // (_VictimMarker.colorForTier in helper_mode_screen.dart: Colors.redAccent /
+  // orangeAccent / amber / lightGreenAccent / grey) — app and admin now read
+  // the same severity at a glance instead of two different palettes.
   const TIER_COLORS = {
-    Critical: "#d64545", High: "#ec7a1c", Moderate: "#e0a500", Low: "#3fb836", None: "#9aa4b2",
+    Critical: "#FF5252", High: "#FFAB40", Moderate: "#FFC107", Low: "#B2FF59", None: "#9E9E9E",
   };
   let charts = [];
   let map = null;
 
   function tierBarHtml(counts) {
     const total = TIERS.reduce((a, t) => a + (counts[t] || 0), 0);
+    // Inline colors from TIER_COLORS (not the shared .seg-*/.sw-* CSS classes)
+    // so this recolor stays scoped to the dashboard's own tier bar + legend,
+    // not the tier badges used elsewhere (bundles table, etc).
     const segs = TIERS.map((t) => {
       const c = counts[t] || 0;
       if (!c) return "";
-      return '<div class="tierbar__seg seg-' + t.toLowerCase() + '" style="flex-grow:' + c + '" title="' + t + ": " + c + '"></div>';
+      return '<div class="tierbar__seg" style="flex-grow:' + c + ';background:' + TIER_COLORS[t] + '" title="' + t + ": " + c + '"></div>';
     }).join("");
     const legend = TIERS.map((t) =>
-      '<div class="tier-legend__item"><span class="tier-legend__swatch sw-' + t.toLowerCase() + '"></span>' +
+      '<div class="tier-legend__item"><span class="tier-legend__swatch" style="background:' + TIER_COLORS[t] + '"></span>' +
       '<span class="tier-legend__count">' + (counts[t] || 0) + '</span>' +
       '<span class="tier-legend__name">' + t + "</span></div>"
     ).join("");
@@ -52,7 +59,7 @@ SUAR.views.dashboard = (function () {
         statTile("Total bundles", s.totalBundles, s.locatedCount + " located", "var(--accent)") +
         statTile("Critical + High", (s.tierCounts.Critical + s.tierCounts.High), "need attention", "var(--critical)") +
         statTile("Devices seen", s.deviceCount, s.topDevices.length + " active", "var(--accent-soft)") +
-        statTile("Unsynced", s.unsyncedCount, s.syncedCount + " synced", s.unsyncedCount ? "var(--high)" : "var(--low)") +
+        statTile("Active (24h)", s.activeCount, s.inactiveCount + " gone quiet", "var(--accent)") +
       "</div>" +
       '<div style="margin-bottom:16px">' + tierBarHtml(s.tierCounts) + "</div>" +
       '<div class="grid grid--2" style="margin-bottom:16px">' +
@@ -82,7 +89,9 @@ SUAR.views.dashboard = (function () {
       type: "bar",
       data: {
         labels: act.map((d) => d.date.slice(5)),
-        datasets: [{ data: act.map((d) => d.count), backgroundColor: "#3e6fa8", borderRadius: 4, maxBarThickness: 22 }],
+        // No mobile-app equivalent for "activity over time" — pastel-ized
+        // version of the old solid accent blue (#3e6fa8) instead.
+        datasets: [{ data: act.map((d) => d.count), backgroundColor: "#A8BED8", borderRadius: 4, maxBarThickness: 22 }],
       },
       options: {
         plugins: { legend: { display: false } },

@@ -11,29 +11,42 @@ SUAR.ApiError = class extends Error {
 };
 
 SUAR.api = (function () {
-  async function request(method, path, body) {
+  async function doFetch(method, path, body, token) {
+    const base = SUAR.getBackendUrl();
+    const headers = { "ngrok-skip-browser-warning": "true" };
+    if (token) headers["Authorization"] = "Bearer " + token;
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    return fetch(base + path, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  }
+
+  async function request(method, path, body, _retried) {
     const base = SUAR.getBackendUrl();
     if (!base) {
       throw new SUAR.ApiError("Backend URL not set. Tap the gear on the login screen.", 0);
     }
     const token = await SUAR.auth.getToken();
-    const headers = { "ngrok-skip-browser-warning": "true" };
-    if (token) headers["Authorization"] = "Bearer " + token;
-    if (body !== undefined) headers["Content-Type"] = "application/json";
 
     let res;
     try {
-      res = await fetch(base + path, {
-        method,
-        headers,
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-      });
+      res = await doFetch(method, path, body, token);
     } catch (e) {
       throw new SUAR.ApiError("Can't reach the backend. Check the URL and that the server + ngrok are running.", 0);
     }
 
     if (res.status === 401) {
-      // Token expired/invalid — bounce to login.
+      // The JWT this request used may just be stale, not actually invalid —
+      // supabase-js's background auto-refresh timer gets throttled/paused on
+      // backgrounded or long-idle tabs, so the token can expire before that
+      // timer ever fires even with the console "in use". One explicit
+      // refresh + retry before treating this as a real session expiry.
+      if (!_retried) {
+        const fresh = await SUAR.auth.refreshToken();
+        if (fresh) return request(method, path, body, true);
+      }
       SUAR.auth.signOut();
       throw new SUAR.ApiError("Session expired. Please sign in again.", 401);
     }
@@ -52,7 +65,7 @@ SUAR.api = (function () {
 
   // Multipart upload (e.g. content images). Sends FormData with the JWT but no
   // JSON Content-Type — the browser sets the multipart boundary itself.
-  async function upload(path, file) {
+  async function upload(path, file, _retried) {
     const base = SUAR.getBackendUrl();
     if (!base) throw new SUAR.ApiError("Backend URL not set.", 0);
     const token = await SUAR.auth.getToken();
@@ -66,7 +79,14 @@ SUAR.api = (function () {
     } catch (e) {
       throw new SUAR.ApiError("Upload failed — can't reach the backend.", 0);
     }
-    if (res.status === 401) { SUAR.auth.signOut(); throw new SUAR.ApiError("Session expired.", 401); }
+    if (res.status === 401) {
+      if (!_retried) {
+        const fresh = await SUAR.auth.refreshToken();
+        if (fresh) return upload(path, file, true);
+      }
+      SUAR.auth.signOut();
+      throw new SUAR.ApiError("Session expired.", 401);
+    }
     let data = null; const text = await res.text();
     if (text) { try { data = JSON.parse(text); } catch { data = text; } }
     if (!res.ok) {

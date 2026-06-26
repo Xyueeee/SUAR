@@ -151,18 +151,23 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js"></script>
 
-  <!-- App (classic scripts, shared SUAR global; order matters) -->
-  <script src="js/config.js"></script>
-  <script src="js/auth.js"></script>
-  <script src="js/api.js"></script>
-  <script src="js/ui.js"></script>
-  <script src="js/views/dashboard.js"></script>
-  <script src="js/views/bundles.js"></script>
-  <script src="js/views/devices.js"></script>
-  <script src="js/views/map.js"></script>
-  <script src="js/views/notices.js"></script>
-  <script src="js/views/content.js"></script>
-  <script src="js/views/prep.js"></script>
-  <script src="js/app.js"></script>
+  <!-- App (classic scripts, shared SUAR global; order matters).
+       ?v= busts the browser's script cache — no build step here means the
+       browser otherwise keeps serving an old cached .js after an edit even
+       on a normal reload. Bump this number whenever a deployed edit doesn't
+       seem to show up (or just keep DevTools' Network "Disable cache" box
+       checked while developing — that skips the need to bump it at all). -->
+  <script src="js/config.js?v=3"></script>
+  <script src="js/auth.js?v=3"></script>
+  <script src="js/api.js?v=3"></script>
+  <script src="js/ui.js?v=3"></script>
+  <script src="js/views/dashboard.js?v=3"></script>
+  <script src="js/views/bundles.js?v=3"></script>
+  <script src="js/views/devices.js?v=3"></script>
+  <script src="js/views/map.js?v=3"></script>
+  <script src="js/views/notices.js?v=3"></script>
+  <script src="js/views/content.js?v=3"></script>
+  <script src="js/views/prep.js?v=3"></script>
+  <script src="js/app.js?v=3"></script>
 </body>
 </html>

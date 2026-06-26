@@ -95,9 +95,9 @@ SUAR.views._docsEditor = (function () {
           }
           const acts = (NOTICE ? "" : '<button class="icon-btn" data-up title="Move up">↑</button><button class="icon-btn" data-down title="Move down">↓</button>') +
             '<button class="btn btn--ghost btn--sm" data-edit>Edit</button><button class="btn btn--danger btn--sm" data-del>Delete</button>';
-          return "<tr>" +
+          return '<tr class="row-link" title="Click to view">' +
             '<td><input type="checkbox" class="d-sel"' + (selected.has(d[PK]) ? " checked" : "") + "></td>" +
-            '<td><b class="d-view">' + SUAR.ui.esc(d.title) + "</b></td>" +
+            '<td><b>' + SUAR.ui.esc(d.title) + "</b></td>" +
             mid +
             '<td class="muted">' + SUAR.ui.fmtRelative(d.updatedat) + "</td>" +
             '<td><label class="switch switch--sm"><input type="checkbox" class="d-pubsw"' + (d[STATUS] ? " checked" : "") + '><span class="switch__track"></span></label></td>' +
@@ -106,17 +106,25 @@ SUAR.views._docsEditor = (function () {
       const trs = wrap.querySelectorAll("tbody tr");
       rows.forEach((d, i) => {
         const tr = trs[i];
-        const view = tr.querySelector(".d-view"); view.classList.add("row-link"); view.title = "Click to view"; view.addEventListener("click", () => openViewer(d));
+        // Whole row opens the viewer EXCEPT its interactive controls — each of
+        // those stops the click from bubbling up to the row instead of the row
+        // listener trying to guess which child was the "real" target.
+        tr.addEventListener("click", () => openViewer(d));
+        const stopAnd = (fn) => (e) => { e.stopPropagation(); return fn(e); };
+        tr.querySelector(".d-sel").addEventListener("click", (e) => e.stopPropagation());
         tr.querySelector(".d-sel").addEventListener("change", (e) => { e.target.checked ? selected.add(d[PK]) : selected.delete(d[PK]); updateBulkBar(); syncSelAll(); });
+        // Stop on the <label> (the switch's actual click target — the input
+        // itself is visually replaced by .switch__track), not the checkbox.
+        tr.querySelector(".switch--sm").addEventListener("click", (e) => e.stopPropagation());
         tr.querySelector(".d-pubsw").addEventListener("change", async (e) => {
           const want = e.target.checked; const patch = {}; patch[STATUS] = want;
           try { await SUAR.api.patch(EP + "/" + encodeURIComponent(d[PK]), patch); d[STATUS] = want; SUAR.ui.toast("Saved", "ok"); SUAR.app.refreshCounts(); }
           catch (err) { e.target.checked = !want; SUAR.ui.toast(err.message, "err"); }
         });
-        tr.querySelector("[data-edit]").addEventListener("click", () => openEditor(d, active));
-        tr.querySelector("[data-del]").addEventListener("click", () => del(d));
-        const up = tr.querySelector("[data-up]"); if (up) up.addEventListener("click", () => reorder(d, -1));
-        const dn = tr.querySelector("[data-down]"); if (dn) dn.addEventListener("click", () => reorder(d, 1));
+        tr.querySelector("[data-edit]").addEventListener("click", stopAnd(() => openEditor(d, active)));
+        tr.querySelector("[data-del]").addEventListener("click", stopAnd(() => del(d)));
+        const up = tr.querySelector("[data-up]"); if (up) up.addEventListener("click", stopAnd(() => reorder(d, -1)));
+        const dn = tr.querySelector("[data-down]"); if (dn) dn.addEventListener("click", stopAnd(() => reorder(d, 1)));
       });
       const selall = wrap.querySelector("#d-selall");
       selall.addEventListener("change", (e) => { rows.forEach((d) => e.target.checked ? selected.add(d.docid) : selected.delete(d.docid)); updateBulkBar(); renderTable(); });
@@ -268,6 +276,16 @@ SUAR.views._docsEditor = (function () {
         const bar = btn.closest(".minibar");
         // Only act if the focused editable belongs to this toolbar's block.
         if (!activeCe || bar.dataset.owner !== activeCe.dataset.owner) { e.preventDefault(); return; }
+        // A color swatch with no text selected (just a blinking cursor) has
+        // nothing to wrap in a colored span — execCommand silently no-ops,
+        // which reads exactly like a dead button. Bold/italic/etc still work
+        // fine on a collapsed selection (they set the typing state for
+        // whatever's typed next), so only color needs this guard.
+        if (btn.dataset.color && (!window.getSelection() || window.getSelection().isCollapsed)) {
+          e.preventDefault();
+          SUAR.ui.toast("Select some text first, then pick a color", "err");
+          return;
+        }
         e.preventDefault(); activeCe.focus();
         document.execCommand("styleWithCSS", false, true);
         if (btn.dataset.color) document.execCommand("foreColor", false, btn.dataset.color);
@@ -402,7 +420,14 @@ SUAR.views._docsEditor = (function () {
         const title = overlay.querySelector("#d-title").value.trim();
         if (!title) { SUAR.ui.toast("Title required", "err"); return; }
         const structure = { usePercent: state.usePercent, percentText: state.percentText, nodes: clean(state.nodes) };
-        const level = overlay.querySelector("#d-cat").value;
+        // #d-cat only exists when there's an actual dropdown to show — NOTICE
+        // always has one (severity), but a single-category editor (Prep
+        // Plans: just "prep") renders a static chip instead (see catControl
+        // above), so the selector returns null. Reading .value off that null
+        // threw here uncaught — Create/Save did nothing, no toast, no error
+        // the user could see, just a silently-failed click handler.
+        const catSel = overlay.querySelector("#d-cat");
+        const level = catSel ? catSel.value : state.category;
         let payload;
         // structure is the raw object, NOT stringified — SUAR.api.post/patch
         // JSON.stringify()s the whole payload once already (api.js); doing it
@@ -446,10 +471,35 @@ SUAR.views._docsEditor = (function () {
     const absPath = (idx) => pv.path.concat(idx).join(".");
     const pvTitle = (n, big) => '<span class="pv-tt"><span class="pv-t' + (big ? " pv-t--big" : "") + '">' + SUAR.ui.esc(n.title || "Untitled") + "</span>" + (n.subtitle ? '<span class="pv-sub">' + SUAR.ui.esc(n.subtitle) + "</span>" : "") + "</span>";
 
-    function pvTop(n, ap) {
-      if (n.kind === "section") { const rows = (n.children || []).map((c, i) => pvRow(c, ap + "." + i)).join(""); const p = n.usePercent ? Math.round(jsNodePct(n, ap, pv.checks, pv.fields)) : null; return '<div class="pv-card"><div class="pv-cardhead">' + pvTitle(n, true) + (p !== null ? '<span class="pv-pctnum">' + p + "%</span>" : "") + '</div>' + (p !== null ? '<div class="pv-pbar"><i style="width:' + p + '%"></i></div>' : "") + '<div class="pv-panel">' + (rows || '<div class="pv-row pv-muted">empty</div>') + "</div></div>"; }
-      if (n.kind === "guide") return '<div class="pv-guide" data-pvguide="' + ap + '">' + pvTitle(n, true) + '<span class="pv-chev">›</span></div>';
-      return '<div class="pv-panel">' + pvRow(n, ap) + "</div>";
+    function pvSectionCard(n, ap) {
+      const rows = (n.children || []).map((c, i) => pvRow(c, ap + "." + i)).join("");
+      const p = n.usePercent ? Math.round(jsNodePct(n, ap, pv.checks, pv.fields)) : null;
+      return '<div class="pv-card"><div class="pv-cardhead">' + pvTitle(n, true) + (p !== null ? '<span class="pv-pctnum">' + p + "%</span>" : "") + '</div>' + (p !== null ? '<div class="pv-pbar"><i style="width:' + p + '%"></i></div>' : "") + '<div class="pv-panel">' + (rows || '<div class="pv-row pv-muted">empty</div>') + "</div></div>";
+    }
+    // Top-level guide/field siblings used to each get their own standalone
+    // treatment (a big blue card for a guide, its own mini single-row panel
+    // for a field) instead of the one-shared-panel-with-dividers look a
+    // section's children get — a "Content" item looked different depending
+    // on whether it happened to sit at the root or one level deeper. Group
+    // consecutive non-section top-level nodes into ONE shared pv-panel built
+    // from the exact same pvRow() nested children use, same as sec's branch
+    // below; only an actual section still gets its own card.
+    function pvTopLevel(nodes) {
+      let html = "", i = 0;
+      while (i < nodes.length) {
+        if (nodes[i].kind === "section") {
+          html += pvSectionCard(nodes[i], absPath(i));
+          i++;
+          continue;
+        }
+        let rows = "";
+        while (i < nodes.length && nodes[i].kind !== "section") {
+          rows += pvRow(nodes[i], absPath(i));
+          i++;
+        }
+        html += '<div class="pv-panel">' + rows + "</div>";
+      }
+      return html;
     }
     function pvRow(n, ap) {
       if (n.kind === "section") { const p = n.usePercent ? Math.round(jsNodePct(n, ap, pv.checks, pv.fields)) : null; return '<div class="pv-row pv-tap" data-pvsec="' + ap + '">' + pvTitle(n) + (p !== null ? '<span class="pv-pctnum">' + p + "%</span>" : "") + '<span class="pv-chev">›</span></div>'; }
@@ -494,7 +544,7 @@ SUAR.views._docsEditor = (function () {
       if (sec && sec.usePercent) { const p = Math.round(jsNodePct(sec, pv.path.join("."), pv.checks, pv.fields)); body += '<div class="pv-pbar pv-pbar--lg"><i style="width:' + p + '%"></i></div><div class="pv-pnote">' + p + "% complete</div>"; }
       const nodes = levelNodes();
       body += sec ? '<div class="pv-panel">' + (nodes.length ? nodes.map((n, i) => pvRow(n, absPath(i))).join("") : '<div class="pv-row pv-muted">empty</div>') + "</div>"
-                  : (nodes.length ? nodes.map((n, i) => pvTop(n, absPath(i))).join("") : '<p class="pv-empty">Nothing to preview yet.</p>');
+                  : (nodes.length ? pvTopLevel(nodes) : '<p class="pv-empty">Nothing to preview yet.</p>');
       previewEl.innerHTML = '<div class="pv-status"><span>9:41</span><span class="pv-batt" aria-hidden="true"></span></div><div class="pv-appbar">' + back + "<span>" + SUAR.ui.esc(appbar) + "</span></div><div class=\"pv-body\">" + body + "</div>";
       bind();
     }
@@ -518,12 +568,17 @@ SUAR.views._docsEditor = (function () {
   // Read-only viewer (opened by clicking a list row).
   function openViewer(doc) {
     const struct = parseStruct(doc.structure);
-    const pv = { path: [], guide: null, gpage: 0, checks: new Set() };
+    const pv = { path: [], guide: null, gpage: 0, checks: new Set(), fields: new Map() };
     const overlay = document.createElement("div");
     overlay.className = "editor-overlay";
+    // A notice row has no `category` (it has `severity` instead) — show
+    // whichever applies instead of falling through to an empty/odd chip.
+    const tag = doc.severity != null
+      ? SUAR.ui.severityBadge(doc.severity)
+      : '<span class="chip">' + SUAR.ui.esc(CAT_LABELS[doc.category] || doc.category) + "</span>";
     overlay.innerHTML =
       '<div class="viewer"><div class="viewer__bar"><span class="viewer__title">' + SUAR.ui.esc(doc.title) + '</span>' +
-      '<span class="chip">' + SUAR.ui.esc(CAT_LABELS[doc.category] || doc.category) + '</span><span class="spacer"></span>' +
+      tag + '<span class="spacer"></span>' +
       '<button class="btn btn--ghost btn--sm" id="v-close">Close</button></div>' +
       '<div class="viewer__body"><div class="phone-wrap"><div class="phone" id="v-phone"></div></div>' +
       '<div class="phone-note">Read-only preview — what the app shows</div></div></div>';

@@ -32,6 +32,21 @@ SUAR.auth = (function () {
       return session ? session.access_token : null;
     },
 
+    // supabase-js's autoRefreshToken runs on a background timer that browsers
+    // throttle/pause for backgrounded or long-idle tabs — leave the console
+    // open in a background tab past the JWT's expiry and the token goes stale
+    // before that timer ever fires. One explicit refresh attempt, used by
+    // api.js right before it would otherwise sign out on a 401.
+    async refreshToken() {
+      try {
+        const { data, error } = await client.auth.refreshSession();
+        if (error || !data.session) return null;
+        return data.session.access_token;
+      } catch (_) {
+        return null;
+      }
+    },
+
     async getUserEmail() {
       const session = await this.getSession();
       return session && session.user ? session.user.email : null;

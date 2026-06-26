@@ -292,14 +292,27 @@ def admin_me(user=Depends(require_admin)):
 def admin_stats(_=Depends(require_admin)):
     bundles = (
         supabase.table("distressbundle")
-        .select("bundleid,deviceid,prioritytier,priorityscore,issynced,createdat,estimatedlat,estimatedlng")
+        .select("bundleid,deviceid,prioritytier,priorityscore,createdat,updatedat,estimatedlat,estimatedlng")
         .order("createdat", desc=True)
         .execute()
         .data
     )
 
     tiers = Counter(b["prioritytier"] for b in bundles)
-    synced = sum(1 for b in bundles if b["issynced"])
+    # issynced is hard-coded True on every insert (see /sync) and never
+    # flipped back — a row can't exist here unless it already synced, so
+    # counting "unsynced" rows always returns 0. "Active" (touched in the
+    # last 24h, the same idle window the bundle-reuse logic uses) is the
+    # actually meaningful freshness signal — whether this event is still
+    # ongoing or has gone quiet.
+    now = datetime.now(timezone.utc)
+    active = 0
+    for b in bundles:
+        try:
+            if (now - datetime.fromisoformat(b["updatedat"])) < timedelta(hours=24):
+                active += 1
+        except (ValueError, TypeError, KeyError):
+            continue
     located = sum(1 for b in bundles if b.get("estimatedlat") is not None and b.get("estimatedlng") is not None)
 
     # Activity over the last 14 days, keyed by UTC date.
@@ -331,8 +344,8 @@ def admin_stats(_=Depends(require_admin)):
             "Low": tiers.get("Low", 0),
             "None": tiers.get("None", 0),
         },
-        "syncedCount": synced,
-        "unsyncedCount": len(bundles) - synced,
+        "activeCount": active,
+        "inactiveCount": len(bundles) - active,
         "locatedCount": located,
         "deviceCount": _count("device"),
         "sensorReadingCount": _count("sensorreading"),

@@ -9,6 +9,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../communication/wifi_direct_manager.dart';
+import '../theme.dart' show kPanelDark;
 import '../map/map_constants.dart';
 import '../permissions.dart';
 import '../sensing/device_sensor_probe.dart';
@@ -210,8 +211,8 @@ class _DeviceTestScreenState extends State<DeviceTestScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Scaffold(
-      backgroundColor: Colors.white,
       body: SafeArea(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -222,12 +223,12 @@ class _DeviceTestScreenState extends State<DeviceTestScreen> {
                 children: [
                   IconButton(
                     onPressed: () => Navigator.of(context).pop(),
-                    icon: const Icon(Icons.chevron_left, color: Colors.black),
+                    icon: Icon(Icons.chevron_left, color: cs.onSurface),
                   ),
-                  const Text(
+                  Text(
                     'Device Test',
                     style: TextStyle(
-                      color: Colors.black,
+                      color: cs.onSurface,
                       fontSize: 20,
                       fontWeight: FontWeight.bold,
                     ),
@@ -235,12 +236,12 @@ class _DeviceTestScreenState extends State<DeviceTestScreen> {
                 ],
               ),
             ),
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 23),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 23),
               child: Text(
                 "Test your device's sensors to know if it's reliable for an "
                 'emergency.',
-                style: TextStyle(color: Colors.black, fontSize: 15),
+                style: TextStyle(color: cs.onSurface, fontSize: 15),
               ),
             ),
             const SizedBox(height: 16),
@@ -312,12 +313,13 @@ class _SensorCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border.all(color: Colors.black.withValues(alpha: 0.5)),
+        color: cs.surface,
+        border: Border.all(color: cs.onSurface.withValues(alpha: 0.5)),
         borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
@@ -325,8 +327,8 @@ class _SensorCard extends StatelessWidget {
         children: [
           Text(
             category.title,
-            style: const TextStyle(
-              color: Colors.black,
+            style: TextStyle(
+              color: cs.onSurface,
               fontSize: 15,
               fontWeight: FontWeight.w600,
             ),
@@ -335,14 +337,16 @@ class _SensorCard extends StatelessWidget {
           Text(
             category.description,
             style: TextStyle(
-              color: Colors.black.withValues(alpha: 0.6),
+              color: cs.onSurface.withValues(alpha: 0.6),
               fontSize: 13,
             ),
           ),
           const SizedBox(height: 12),
           Container(
             decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.06),
+              color: Theme.of(context).brightness == Brightness.dark
+                  ? kPanelDark
+                  : cs.onSurface.withValues(alpha: 0.06),
               borderRadius: BorderRadius.circular(15),
             ),
             child: Column(
@@ -354,7 +358,7 @@ class _SensorCard extends StatelessWidget {
                       thickness: 1,
                       indent: 14,
                       endIndent: 14,
-                      color: Colors.black.withValues(alpha: 0.10),
+                      color: cs.onSurface.withValues(alpha: 0.10),
                     ),
                   _SensorRow(
                     sensor: sensors[i],
@@ -407,8 +411,8 @@ class _SensorRow extends StatelessWidget {
                 children: [
                   Text(
                     sensor.label,
-                    style: const TextStyle(
-                      color: Colors.black,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurface,
                       fontSize: _titleSize,
                       fontWeight: FontWeight.w500,
                     ),
@@ -417,11 +421,11 @@ class _SensorRow extends StatelessWidget {
                   Text(
                     sensor.description,
                     style: TextStyle(
-                      color: Colors.black.withValues(alpha: 0.5),
+                      color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
                       fontSize: _descSize,
                     ),
                   ),
-                  if (expanded) _buildExpanded(),
+                  if (expanded) _buildExpanded(context),
                 ],
               ),
             ),
@@ -435,22 +439,23 @@ class _SensorRow extends StatelessWidget {
     );
   }
 
-  Widget _buildExpanded() {
+  Widget _buildExpanded(BuildContext context) {
     if (sensor == DeviceSensor.gps) {
       return const Padding(
         padding: EdgeInsets.only(top: 10),
         child: _GpsExpanded(),
       );
     }
+    final cs = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.only(top: 8),
       child: Text(
         _expandedDetail(),
-        style: const TextStyle(
-          color: Colors.black87,
+        style: TextStyle(
+          color: cs.onSurface.withValues(alpha: 0.87),
           fontSize: _valueSize,
           fontWeight: FontWeight.w600,
-          fontFeatures: [FontFeature.tabularFigures()],
+          fontFeatures: const [FontFeature.tabularFigures()],
         ),
       ),
     );
@@ -539,11 +544,14 @@ class _GpsExpandedState extends State<_GpsExpanded> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     if (_blocked != null) {
       return Text(
         _blocked!,
-        style: const TextStyle(
-            color: Colors.black87, fontSize: _valueSize, fontWeight: FontWeight.w600),
+        style: TextStyle(
+            color: cs.onSurface.withValues(alpha: 0.87),
+            fontSize: _valueSize,
+            fontWeight: FontWeight.w600),
       );
     }
     final p = _pos;
@@ -557,11 +565,11 @@ class _GpsExpandedState extends State<_GpsExpanded> {
               ? 'Acquiring fix…'
               : '${p.latitude.toStringAsFixed(5)}, '
                   '${p.longitude.toStringAsFixed(5)}  ·  ±${p.accuracy.round()} m',
-          style: const TextStyle(
-            color: Colors.black87,
+          style: TextStyle(
+            color: cs.onSurface.withValues(alpha: 0.87),
             fontSize: _valueSize,
             fontWeight: FontWeight.w600,
-            fontFeatures: [FontFeature.tabularFigures()],
+            fontFeatures: const [FontFeature.tabularFigures()],
           ),
         ),
         const SizedBox(height: 8),

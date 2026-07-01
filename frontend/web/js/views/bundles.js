@@ -93,7 +93,7 @@ SUAR.views.bundles = (function () {
     const rows = visibleRows();
     if (!rows.length) { wrap.innerHTML = SUAR.ui.empty(search ? "No matches" : "No bundles match", search ? "Try a different search." : "Adjust the filters or wait for a sync."); return; }
     wrap.innerHTML =
-      '<table class="data"><thead><tr><th style="width:34px"><input type="checkbox" id="b-selall"></th><th>Tier</th><th>Score</th><th>Device</th><th>Hops</th><th>Location</th><th>Activity</th><th>Created</th><th></th></tr></thead><tbody>' +
+      '<table class="data"><thead><tr><th style="width:34px"><input type="checkbox" id="b-selall"></th><th>Tier</th><th>Score</th><th>Device</th><th>Hops</th><th>Location</th><th>Activity</th><th>Created</th></tr></thead><tbody>' +
       rows.map((b) =>
         '<tr class="clickable row-accent" data-id="' + SUAR.ui.esc(b.bundleid) + '" style="border-left-color:' + tierColor(b.prioritytier) + '">' +
         '<td><input type="checkbox" class="b-sel"' + (selected.has(b.bundleid) ? " checked" : "") + "></td>" +
@@ -104,7 +104,7 @@ SUAR.views.bundles = (function () {
         '<td class="mono-cell">' + SUAR.ui.fmtCoord(b.estimatedlat, b.estimatedlng) + "</td>" +
         "<td>" + activityChip(b.updatedat) + "</td>" +
         '<td class="muted">' + SUAR.ui.fmtRelative(b.createdat) + "</td>" +
-        '<td class="cell-actions"><button class="btn btn--ghost btn--sm" data-view>View</button></td></tr>'
+        "</tr>"
       ).join("") + "</tbody></table>";
 
     wrap.querySelectorAll("tr[data-id]").forEach((tr) => {

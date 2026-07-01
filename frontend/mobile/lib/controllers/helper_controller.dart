@@ -27,6 +27,11 @@ class HelperController {
   final SQLiteRepository repository;
   late final DTNManager dtnManager;
 
+  /// Live radio status shown in the Helper screen header pill.
+  /// 'Searching' → BLE scan idle; 'BT Link' → GATT ACK in progress;
+  /// 'Connecting' → Wi-Fi Direct handshake; 'Receiving' → pulling bundle.
+  final ValueNotifier<String> radioLabel = ValueNotifier('Searching');
+
   // Opportunistic cloud sync: push unsynced bundles + pull the last 2h when online.
   final SyncService _sync = SyncService();
   Timer? _syncTimer;
@@ -327,7 +332,7 @@ class HelperController {
         final groupOwnerAddress = info['groupOwnerAddress'] as String?;
         if (groupOwnerAddress == null) return;
         _emit(
-          'Connection formed unexpectedly — pulling from $groupOwnerAddress',
+          'Connection formed unexpectedly. Pulling from $groupOwnerAddress.',
         );
         final json = await wifiDirectManager.requestBundle(groupOwnerAddress);
         await wifiDirectManager.disconnect();
@@ -351,18 +356,18 @@ class HelperController {
       _radioWatchdog = Timer.periodic(_radioWatchdogInterval, (_) async {
         if (_stopped) return;
         if (!bleManager.isScanning) {
-          _emit('BLE scan found stopped unexpectedly — restarting it');
+          _emit('BLE scan found stopped unexpectedly. Restarting it.');
           await bleManager.startScanning(_onPeerDetected);
         }
         if (_stopped) return;
         if (!await bleManager.isAdvertising()) {
-          _emit('BLE advertising found stopped unexpectedly — restarting it');
+          _emit('BLE advertising found stopped unexpectedly. Restarting it.');
           await bleManager.startAdvertising(deviceId!);
         }
         if (_stopped) return;
         if (!await wifiDirectManager.isServerRunning()) {
           _emit(
-            'Wi-Fi Direct server found stopped unexpectedly — restarting it',
+            'Wi-Fi Direct server found stopped unexpectedly. Restarting it.',
           );
           await wifiDirectManager.startServer();
         }
@@ -403,8 +408,9 @@ class HelperController {
     if (_stopped) return;
     _detectedVictims[peerDeviceId] = device;
     final ackedAt = _ackedAt[peerDeviceId];
-    if (ackedAt != null && DateTime.now().difference(ackedAt) < _ackedCooldown)
+    if (ackedAt != null && DateTime.now().difference(ackedAt) < _ackedCooldown) {
       return;
+    }
     unawaited(_attemptAck(peerDeviceId, device, rssi));
   }
 
@@ -429,12 +435,14 @@ class HelperController {
     // run the association-aware group-owner decision, and reused locally below.
     final myAssociated =
         (await WiFiDirectManager.getStaInfo())?['associated'] as bool? ?? false;
+    radioLabel.value = 'BT Link';
     final result = await bleManager.sendRssiAck(
       device,
       rssi,
       myAssociated: myAssociated,
     );
     _ackInFlight.remove(victimDeviceId);
+    if (!_stopped) radioLabel.value = 'Searching';
     if (_stopped) return;
 
     if (result.success) {
@@ -473,7 +481,7 @@ class HelperController {
     }
     if (attempt >= _maxAckAttempts) {
       _emit(
-        'Giving up on GATT ACK to $victimDeviceId after $attempt attempts — will retry if it is seen again.',
+        'Giving up on GATT ACK to $victimDeviceId after $attempt attempts. Will retry if it is seen again.',
       );
       _ackAttempts.remove(victimDeviceId);
       return;
@@ -557,6 +565,7 @@ class HelperController {
       // connect() call itself, and this is the only path that runs whether the
       // connect succeeds or times out below. See _attemptCooldown.
       _attemptedRecentlyAt[victimDeviceId] = DateTime.now();
+      radioLabel.value = 'Connecting';
       final connectionInfo = await wifiDirectManager.connectToHelper(
         peerAddress,
         myDeviceId: deviceId ?? '',
@@ -574,6 +583,7 @@ class HelperController {
         // next retry instead of leaving that for the next attempt to collide
         // with.
         await wifiDirectManager.disconnect();
+        if (!_stopped) radioLabel.value = 'Searching';
         return;
       }
       // Connection formed — peer is reachable, reset its backoff and mark its
@@ -599,8 +609,8 @@ class HelperController {
         final streak = (_pullEndedAsOwnerStreak[victimDeviceId] ?? 0) + 1;
         _pullEndedAsOwnerStreak[victimDeviceId] = streak;
         _emit(
-          'Could not join $victimDeviceId — both ended up as hosts; will '
-          'retry on the next contact',
+          'Could not join $victimDeviceId. Both ended up as hosts; will '
+          'retry on the next contact.',
         );
         if (streak == _pullOwnerHintAfterStreak) {
           // Plain words on purpose — this shows in the user-facing activity
@@ -623,8 +633,10 @@ class HelperController {
         return;
       }
       final groupOwnerAddress = connectionInfo['groupOwnerAddress'] as String;
+      radioLabel.value = 'Receiving';
       final json = await wifiDirectManager.requestBundle(groupOwnerAddress);
       await wifiDirectManager.disconnect();
+      if (!_stopped) radioLabel.value = 'Searching';
       if (_stopped) return;
       if (json == null || json.isEmpty) {
         _emit('Pull from $victimDeviceId returned nothing');
@@ -667,8 +679,8 @@ class HelperController {
     _wifiRecovering = true;
     try {
       _emit(
-        'Wi-Fi Direct stuck after $_wifiStuckStreak attempts — resetting the '
-        'radio stack (same as reopening this screen)',
+        'Wi-Fi Direct stuck after $_wifiStuckStreak attempts. Resetting the '
+        'radio stack (same as reopening this screen).',
       );
       await wifiDirectManager.stopServer();
       await wifiDirectManager.disconnect();
@@ -680,7 +692,7 @@ class HelperController {
       if (_stopped) return;
       await wifiDirectManager.startServer();
       _wifiStuckStreak = 0;
-      _emit('Wi-Fi Direct stack reset — ready to retry on the next contact');
+      _emit('Wi-Fi Direct stack reset. Ready to retry on the next contact.');
     } finally {
       _wifiRecovering = false;
     }
@@ -709,10 +721,10 @@ class HelperController {
       final ok = await wifiDirectManager.createGroup();
       _emit(
         ok
-            ? 'On Wi-Fi, so hosting the nearby connection for $victimDeviceId — '
-                  'waiting for it to send'
-            : 'Could not start hosting for $victimDeviceId — will retry on the '
-                  'next contact',
+            ? 'On Wi-Fi, so hosting the nearby connection for $victimDeviceId. '
+                  'Waiting for it to send.'
+            : 'Could not start hosting for $victimDeviceId. Will retry on the '
+                  'next contact.',
       );
     } finally {
       // Released after the group is up. The autonomous group persists in the
@@ -796,9 +808,9 @@ class HelperController {
         _emit(
           ok
               ? 'Elected Wi-Fi Direct group owner for relay with '
-                    '$peerHelperDeviceId — waiting for it to sync'
-              : 'createGroup failed for relay with $peerHelperDeviceId — '
-                    'will retry on next contact',
+                    '$peerHelperDeviceId. Waiting for it to sync.'
+              : 'createGroup failed for relay with $peerHelperDeviceId. '
+                    'Will retry on next contact.',
         );
         return;
       }
@@ -827,8 +839,8 @@ class HelperController {
       // contact, worth doing even with nothing of our own to push.
       if (electionPossible) {
         _emit(
-          'Found peer Helper $peerHelperDeviceId — connecting as client '
-          '(group-owner election: peer is the group owner)',
+          'Found peer Helper $peerHelperDeviceId. Connecting as client '
+          '(group-owner election: peer is the group owner).',
         );
         // The elected client must own NO P2P group before it dials in. If this
         // device is still a stale group owner (a Victim-era autonomous group,
@@ -847,7 +859,7 @@ class HelperController {
       } else {
         // No UUID to elect on — legacy mutually-active path. The deterministic
         // connect jitter in connectToHelper is the only glare mitigation here.
-        _emit('Found peer Helper $peerHelperDeviceId — attempting DTN relay');
+        _emit('Found peer Helper $peerHelperDeviceId. Attempting DTN relay.');
       }
       final peers = await wifiDirectManager.discoverPeers();
       if (_stopped) return;
@@ -908,7 +920,7 @@ class HelperController {
         // server on its own next contact, and its sync() call covers both
         // directions, so nothing is lost by this device doing nothing here.
         _emit(
-          'Connected to $peerHelperDeviceId as group owner — will relay once it contacts this device first',
+          'Connected to $peerHelperDeviceId as group owner. Will relay once it contacts this device first.',
         );
         return;
       }
@@ -1007,6 +1019,7 @@ class HelperController {
     _radioWatchdog?.cancel();
     _syncTimer?.cancel();
     _connectionFormedSub?.cancel();
+    radioLabel.dispose();
     bleManager.dispose();
     wifiDirectManager.dispose();
     dtnManager.dispose();

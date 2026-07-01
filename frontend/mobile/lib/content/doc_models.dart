@@ -109,6 +109,7 @@ class Doc {
     required int version,
     required String updatedAt,
     required dynamic structure,
+    bool? usePercent,
   }) {
     dynamic d = structure;
     if (structure is String) {
@@ -125,7 +126,7 @@ class Doc {
       title: title,
       version: version,
       updatedAt: updatedAt,
-      usePercent: m['usePercent'] == true,
+      usePercent: usePercent ?? (m['usePercent'] == true),
       percentText: (m['percentText'] ?? 'You are {p}% prepared for an emergency:').toString(),
       nodes: DocNode.listFrom(m['nodes']),
       structureJson: structure is String ? structure : jsonEncode(structure),

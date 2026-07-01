@@ -31,6 +31,7 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
   Timer? _tick;
   TriageInputs? _inputs;
   TriageResult? _live;
+  bool _disposed = false;
 
   @override
   void initState() {
@@ -40,10 +41,11 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
 
   Future<void> _boot() async {
     await TriageConfig.load();
-    if (!mounted) return;
+    if (_disposed || !mounted) return;
     setState(() => _cfg = TriageConfig.active);
     final mic = await Permission.microphone.isGranted; // no prompt here
     await _engine.start(withMic: mic);
+    if (_disposed) return;
     _tick = Timer.periodic(const Duration(milliseconds: 1200), (_) {
       if (!mounted) return;
       setState(() {
@@ -55,6 +57,7 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
 
   @override
   void dispose() {
+    _disposed = true;
     _tick?.cancel();
     _engine.dispose();
     super.dispose();
@@ -62,6 +65,8 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
 
   void _onChange(VoidCallback mutate) => setState(mutate);
   Future<void> _persist() => _cfg.save();
+
+  ColorScheme get _cs => Theme.of(context).colorScheme;
 
   Future<void> _resetAll() async {
     if (await _confirm('Reset all triage values?',
@@ -96,10 +101,7 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
       colorScheme: Theme.of(context).colorScheme.copyWith(primary: _accent),
     );
     return Scaffold(
-      backgroundColor: Colors.white,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
         leading: const BackChevron(),
         title: const Text('Triage Logic'),
         actions: [
@@ -269,7 +271,7 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
                 Text(
                   'Battery rules only fire while discharging.',
                   style: TextStyle(
-                      color: Colors.black.withValues(alpha: 0.5),
+                      color: _cs.onSurface.withValues(alpha: 0.5),
                       fontSize: 12,
                       fontStyle: FontStyle.italic),
                 ),
@@ -346,12 +348,13 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
     final live = _live;
     final tier = live?.tier ?? '—';
     final color = _tierColor(tier);
+    final cs = _cs;
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: cs.surface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.black.withValues(alpha: 0.4)),
+        border: Border.all(color: cs.onSurface.withValues(alpha: 0.4)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -361,19 +364,19 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
               Container(width: 12, height: 12,
                   decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
               const SizedBox(width: 8),
-              const Text('Live triage',
+              Text('Live triage',
                   style: TextStyle(
-                      color: Colors.black54,
+                      color: cs.onSurface.withValues(alpha: 0.54),
                       fontSize: 12,
                       fontWeight: FontWeight.w600)),
               const Spacer(),
               Text(
                 live == null ? '' : '${live.score.round()} / ${_cfg.scoreCap.round()} pts',
-                style: const TextStyle(
-                    color: Colors.black87,
+                style: TextStyle(
+                    color: cs.onSurface.withValues(alpha: 0.87),
                     fontSize: 13,
                     fontWeight: FontWeight.w700,
-                    fontFeatures: [FontFeature.tabularFigures()]),
+                    fontFeatures: const [FontFeature.tabularFigures()]),
               ),
             ],
           ),
@@ -385,12 +388,12 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
           ),
           if (live != null)
             Text(_startLabel(tier),
-                style: const TextStyle(color: Colors.black54, fontSize: 12)),
+                style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54), fontSize: 12)),
           if (live?.note != null)
             Padding(
               padding: const EdgeInsets.only(top: 2),
               child: Text(live!.note!,
-                  style: const TextStyle(color: Colors.black54, fontSize: 12)),
+                  style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54), fontSize: 12)),
             ),
           if (live != null && live.breakdown.isNotEmpty) ...[
             const Divider(height: 18),
@@ -402,15 +405,15 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
                     Expanded(
                       child: RichText(
                         text: TextSpan(
-                          style: const TextStyle(
-                              color: Colors.black87, fontSize: 13),
+                          style: TextStyle(
+                              color: cs.onSurface.withValues(alpha: 0.87), fontSize: 13),
                           children: [
                             TextSpan(text: part.label),
                             if (part.detail.isNotEmpty)
                               TextSpan(
                                 text: '  ${part.detail}',
-                                style: const TextStyle(
-                                    color: Colors.black45, fontSize: 12),
+                                style: TextStyle(
+                                    color: cs.onSurface.withValues(alpha: 0.45), fontSize: 12),
                               ),
                           ],
                         ),
@@ -419,7 +422,7 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
                     Text(
                       '+${part.points.toStringAsFixed(part.points < 10 ? 1 : 0)}',
                       style: TextStyle(
-                          color: part.points > 0 ? _accentInk : Colors.black38,
+                          color: part.points > 0 ? _accentInk : cs.onSurface.withValues(alpha: 0.38),
                           fontSize: 13,
                           fontWeight: FontWeight.w700,
                           fontFeatures: const [FontFeature.tabularFigures()]),
@@ -435,7 +438,7 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
 
   String _startLabel(String tier) => switch (tier) {
         'Critical' => 'START: Immediate (Red)',
-        'High' => 'START: urgent — Delayed',
+        'High' => 'START: urgent (Delayed)',
         'Moderate' => 'START: Delayed (Yellow)',
         'Low' => 'START: Minor (Green)',
         _ => '',
@@ -446,7 +449,7 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
         'High' => const Color(0xFFEC7A1C),
         'Moderate' => const Color(0xFFE0A500),
         'Low' => const Color(0xFF3FB836),
-        _ => Colors.black54,
+        _ => _cs.onSurface.withValues(alpha: 0.54),
       };
 
   Widget _methodologyNote() => Container(
@@ -457,12 +460,12 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
         ),
         child: Text(
           'Tiers follow START rapid-triage categories. Phone sensors only '
-          'approximate the assessment — a fall followed by no movement stands '
+          'approximate the assessment. A fall followed by no movement stands '
           'in for "unresponsive / not walking" (Immediate), while battery is a '
           'comms-survival signal for the offline mesh, not a medical vital. '
           'This is a screening aid, not a medical diagnosis.',
           style: TextStyle(
-              color: Colors.black.withValues(alpha: 0.6),
+              color: _cs.onSurface.withValues(alpha: 0.6),
               fontSize: 12,
               height: 1.4),
         ),
@@ -485,14 +488,14 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(title,
-                        style: const TextStyle(
-                            color: Colors.black,
+                        style: TextStyle(
+                            color: _cs.onSurface,
                             fontSize: 16,
                             fontWeight: FontWeight.bold)),
                     const SizedBox(height: 2),
                     Text(subtitle,
                         style: TextStyle(
-                            color: Colors.black.withValues(alpha: 0.55),
+                            color: _cs.onSurface.withValues(alpha: 0.55),
                             fontSize: 12)),
                   ],
                 ),
@@ -535,7 +538,7 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
             children: [
               Expanded(
                 child: Text(label,
-                    style: const TextStyle(color: Colors.black87, fontSize: 14)),
+                    style: TextStyle(color: _cs.onSurface.withValues(alpha: 0.87), fontSize: 14)),
               ),
               // Tap the value to type it directly.
               InkWell(
@@ -581,74 +584,17 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
 
   Future<double?> _promptNumber(
       String label, double current, double min, double max, int decimals) {
-    final controller = TextEditingController(
-        text: decimals > 0
-            ? current.toStringAsFixed(decimals)
-            : current.round().toString());
-    String? error;
     return showDialog<double>(
       context: context,
-      builder: (c) => StatefulBuilder(
-        builder: (c, setLocal) => AlertDialog(
-          title: Text(label),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            keyboardType: TextInputType.numberWithOptions(decimal: decimals > 0),
-            inputFormatters: [
-              FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
-            ],
-            // Same rounded grey box + blue focus as showValidatedTextDialog.
-            decoration: InputDecoration(
-              helperText:
-                  'Allowed: ${_fmt(min, decimals)} – ${_fmt(max, decimals)}',
-              errorText: error,
-              filled: true,
-              fillColor: const Color(0xFFF0F0F0),
-              contentPadding:
-                  const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(color: Colors.transparent),
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(color: Colors.transparent),
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(color: _accent, width: 1.5),
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(c),
-                child: const Text('Cancel')),
-            TextButton(
-              onPressed: () {
-                final parsed = double.tryParse(controller.text.trim());
-                if (parsed == null) {
-                  setLocal(() => error = 'Enter a number');
-                  return;
-                }
-                if (parsed < min || parsed > max) {
-                  setLocal(() =>
-                      error = 'Must be ${_fmt(min, decimals)}–${_fmt(max, decimals)}');
-                  return;
-                }
-                Navigator.pop(c, parsed);
-              },
-              child: const Text('Set'),
-            ),
-          ],
-        ),
+      builder: (c) => _PromptNumberDialog(
+        label: label,
+        current: current,
+        min: min,
+        max: max,
+        decimals: decimals,
       ),
     );
   }
-
-  String _fmt(double v, int decimals) =>
-      decimals > 0 ? v.toStringAsFixed(decimals) : v.round().toString();
 
   Widget _overrideCard({
     required String title,
@@ -664,7 +610,7 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.fromLTRB(14, 6, 6, 8),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.04),
+        color: _cs.onSurface.withValues(alpha: 0.04),
         borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
@@ -674,8 +620,8 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
             children: [
               Expanded(
                 child: Text(title,
-                    style: const TextStyle(
-                        color: Colors.black,
+                    style: TextStyle(
+                        color: _cs.onSurface,
                         fontSize: 15,
                         fontWeight: FontWeight.w600)),
               ),
@@ -705,9 +651,9 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
                 children: [
                   const Icon(Icons.bolt, size: 16, color: _accentInk),
                   const SizedBox(width: 4),
-                  const Expanded(
+                  Expanded(
                     child: Text('Simulate trigger (for testing)',
-                        style: TextStyle(color: Colors.black54, fontSize: 13)),
+                        style: TextStyle(color: _cs.onSurface.withValues(alpha: 0.54), fontSize: 13)),
                   ),
                   SizedBox(
                     height: 28,
@@ -719,9 +665,9 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
                       style: OutlinedButton.styleFrom(
                         backgroundColor:
                             simulated ? _accentInk.withValues(alpha: 0.12) : null,
-                        foregroundColor: simulated ? _accentInk : Colors.black54,
+                        foregroundColor: simulated ? _accentInk : _cs.onSurface.withValues(alpha: 0.54),
                         side: BorderSide(
-                            color: simulated ? _accentInk : Colors.black26),
+                            color: simulated ? _accentInk : _cs.onSurface.withValues(alpha: 0.26)),
                         padding: const EdgeInsets.symmetric(horizontal: 10),
                         minimumSize: const Size(0, 28),
                         visualDensity: VisualDensity.compact,
@@ -739,13 +685,115 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
   }
 }
 
+String _fmtNum(double v, int decimals) =>
+    decimals > 0 ? v.toStringAsFixed(decimals) : v.round().toString();
+
+/// Numeric override dialog used by [_TriageLogicScreenState._promptNumber].
+/// Owns its [TextEditingController] as a State field (not disposed manually
+/// after `showDialog` resolves) — the dialog route keeps rebuilding for
+/// several frames during its exit transition, so disposing the controller
+/// right after `await showDialog` returns crashes mid-animation.
+class _PromptNumberDialog extends StatefulWidget {
+  const _PromptNumberDialog({
+    required this.label,
+    required this.current,
+    required this.min,
+    required this.max,
+    required this.decimals,
+  });
+
+  final String label;
+  final double current;
+  final double min;
+  final double max;
+  final int decimals;
+
+  @override
+  State<_PromptNumberDialog> createState() => _PromptNumberDialogState();
+}
+
+class _PromptNumberDialogState extends State<_PromptNumberDialog> {
+  late final TextEditingController _ctrl = TextEditingController(
+    text: widget.decimals > 0
+        ? widget.current.toStringAsFixed(widget.decimals)
+        : widget.current.round().toString(),
+  );
+  String? _error;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final parsed = double.tryParse(_ctrl.text.trim());
+    if (parsed == null) {
+      setState(() => _error = 'Enter a number');
+      return;
+    }
+    if (parsed < widget.min || parsed > widget.max) {
+      setState(() =>
+          _error = 'Must be ${_fmtNum(widget.min, widget.decimals)}–${_fmtNum(widget.max, widget.decimals)}');
+      return;
+    }
+    Navigator.pop(context, parsed);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return AlertDialog(
+      title: Text(widget.label),
+      content: TextField(
+        controller: _ctrl,
+        autofocus: true,
+        keyboardType: TextInputType.numberWithOptions(decimal: widget.decimals > 0),
+        inputFormatters: [
+          FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+        ],
+        // Same rounded grey box + blue focus as showValidatedTextDialog.
+        decoration: InputDecoration(
+          helperText:
+              'Allowed: ${_fmtNum(widget.min, widget.decimals)} – ${_fmtNum(widget.max, widget.decimals)}',
+          errorText: _error,
+          filled: true,
+          fillColor: cs.onSurface.withValues(alpha: 0.06),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Colors.transparent),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Colors.transparent),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: _accent, width: 1.5),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        TextButton(onPressed: _submit, child: const Text('Set')),
+      ],
+    );
+  }
+}
+
 class _TriggerBadge extends StatelessWidget {
   const _TriggerBadge({required this.triggered});
   final bool triggered;
 
   @override
   Widget build(BuildContext context) {
-    final color = triggered ? const Color(0xFFD64545) : Colors.black38;
+    final color = triggered
+        ? const Color(0xFFD64545)
+        : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.38);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(

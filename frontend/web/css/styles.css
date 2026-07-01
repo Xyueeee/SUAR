@@ -442,6 +442,13 @@ table.data tbody tr.clickable { cursor: pointer; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+.skel {
+  background: linear-gradient(90deg, var(--faint) 25%, var(--line) 50%, var(--faint) 75%);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.4s infinite;
+}
+@keyframes skel-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
 /* --------------------------------------------------------------------------- */
 /* Modal & drawer                                                              */
 /* --------------------------------------------------------------------------- */

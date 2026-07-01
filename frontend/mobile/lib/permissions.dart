@@ -66,6 +66,20 @@ Future<bool> requestMeshPermissions() async {
   return recheck.every((s) => s.isGranted);
 }
 
+/// Returns true if any of the mesh permissions are permanently denied —
+/// meaning the OS will never show a dialog on retry, so the app must direct
+/// the user to App Settings instead.
+Future<bool> meshPermsPermanentlyDenied() async {
+  final statuses = await Future.wait([
+    Permission.bluetoothScan.status,
+    Permission.bluetoothAdvertise.status,
+    Permission.bluetoothConnect.status,
+    Permission.nearbyWifiDevices.status,
+    Permission.locationWhenInUse.status,
+  ]);
+  return statuses.any((s) => s.isPermanentlyDenied);
+}
+
 /// Requests microphone access for ambient-sound triage / the Device Test page.
 ///
 /// Deliberately separate from [requestMeshPermissions]: the mic is OPTIONAL.

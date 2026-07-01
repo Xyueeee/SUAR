@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 import 'package:geolocator/geolocator.dart';
@@ -9,6 +10,8 @@ import 'package:latlong2/latlong.dart';
 
 import '../constants.dart';
 import '../controllers/helper_controller.dart';
+import '../log_translator.dart';
+import '../theme.dart';
 import '../map/map_constants.dart';
 import '../models/distress_bundle_model.dart';
 import '../sensing/location_estimator.dart';
@@ -50,7 +53,9 @@ class _HelperModeScreenState extends State<HelperModeScreen>
     with WidgetsBindingObserver {
   final HelperController _controller = HelperController();
   final MapController _mapController = MapController();
-  final List<LogEntry> _log = [];
+  final List<LogEntry> _rawLog = [];
+  final List<LogEntry> _displayLog = [];
+  String? _lastDisplayedTriage;
   List<DistressBundleModel> _bundles = const [];
   LatLng? _userLocation;
   _PinPlacement? _selectedPin;
@@ -76,12 +81,15 @@ class _HelperModeScreenState extends State<HelperModeScreen>
   StreamSubscription<List<DistressBundleModel>>? _bundleSub;
   StreamSubscription<Position>? _positionSub;
   Timer? _staleCheckTimer;
+  Timer? _scanHeartbeatTimer;
+  DateTime _lastActivityTime = DateTime.now();
 
   // Admin-drawn danger zones (geofences) — fetched once on open, same source
   // the background GeofenceService alerts use, so what's drawn here matches
   // what would trigger a proximity notification.
   final _geofenceService = GeofenceService();
   List<Map<String, dynamic>> _geofences = const [];
+  bool _disposed = false;
 
   @override
   void initState() {
@@ -91,10 +99,8 @@ class _HelperModeScreenState extends State<HelperModeScreen>
     // returns, instead of staying stuck on the reason badge until the screen
     // is reopened.
     WidgetsBinding.instance.addObserver(this);
-    _statusSub = _controller.statusStream.listen((line) {
-      if (!mounted) return;
-      setState(() => _log.add(LogEntry(line)));
-    });
+    unawaited(WakelockPlus.enable());
+    _statusSub = _controller.statusStream.listen(_addLogLine);
     _bundleSub = _controller.bundleStream.listen((bundles) {
       if (!mounted) return;
       setState(() => _bundles = bundles);
@@ -111,11 +117,22 @@ class _HelperModeScreenState extends State<HelperModeScreen>
     _staleCheckTimer = Timer.periodic(const Duration(minutes: 1), (_) {
       if (mounted) setState(() {});
     });
+    // Heartbeat: if no real activity for 25 s, add a "still scanning" entry
+    // to the display log only — keeps the card from looking frozen during
+    // quiet periods when no victims or helpers are nearby.
+    _scanHeartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (!mounted) return;
+      if (DateTime.now().difference(_lastActivityTime).inSeconds < 12) return;
+      setState(() {
+        _displayLog.add(LogEntry('Still scanning for people who need help…'));
+        _lastActivityTime = DateTime.now();
+      });
+    });
   }
 
   Future<void> _loadGeofences() async {
     final zones = await _geofenceService.fetchZones();
-    if (!mounted) return;
+    if (_disposed || !mounted) return;
     setState(() => _geofences = zones);
   }
 
@@ -275,13 +292,28 @@ class _HelperModeScreenState extends State<HelperModeScreen>
     );
   }
 
+  void _addLogLine(String raw) {
+    if (!mounted) return;
+    setState(() {
+      _rawLog.add(LogEntry(raw));
+      final translated = translateLog(raw);
+      if (translated == null) return;
+      // Suppress repeated same-tier health-check lines.
+      if (translated.startsWith('Triage updated:')) {
+        if (translated == _lastDisplayedTriage) return;
+        _lastDisplayedTriage = translated;
+      }
+      _displayLog.add(LogEntry(translated));
+      _lastActivityTime = DateTime.now();
+    });
+  }
+
   void _logLine(String line) {
     // GPS/location lines originate here, not in a controller — mirror to
     // logcat the same way controllers do, otherwise a logcat-only capture
     // (no screenshot of the in-app activity card) can never show them.
     debugPrint('[HelperScreen] $line');
-    if (!mounted) return;
-    setState(() => _log.add(LogEntry(line)));
+    _addLogLine(line);
   }
 
   Future<void> _centerOnUserLocation() async {
@@ -439,12 +471,15 @@ class _HelperModeScreenState extends State<HelperModeScreen>
 
   @override
   void dispose() {
+    _disposed = true;
     WidgetsBinding.instance.removeObserver(this);
     _statusSub?.cancel();
     _bundleSub?.cancel();
     _positionSub?.cancel();
     _staleCheckTimer?.cancel();
+    _scanHeartbeatTimer?.cancel();
     _mapController.dispose();
+    unawaited(WakelockPlus.disable());
     // See VictimModeScreen.dispose: stopHelperMode is async and still
     // emits to statusStream while stopping, so dispose() must wait for it.
     unawaited(_controller.stopHelperMode().whenComplete(_controller.dispose));
@@ -836,16 +871,25 @@ class _HelperModeScreenState extends State<HelperModeScreen>
     );
   }
 
+
   void _showBundleDetail(DistressBundleModel bundle) {
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: const Color(0xFF1A1A1A),
-      builder: (context) => Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.6,
+        minChildSize: 0.4,
+        maxChildSize: 0.92,
+        expand: false,
+        builder: (_, scrollCtrl) => SingleChildScrollView(
+          controller: scrollCtrl,
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
             Text(
               'Bundle ${bundle.bundleId}',
               style: const TextStyle(
@@ -870,14 +914,13 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                   ? '${bundle.estimatedLat!.toStringAsFixed(5)}, '
                       '${bundle.estimatedLng!.toStringAsFixed(5)}'
                       '${bundle.accuracyMeters != null ? ' (±${bundle.accuracyMeters!.round()} m)' : ''}'
-                  : 'Approximate (no GPS fix) — shown near this Helper',
+                  : 'Approximate (no GPS fix). Shown near this Helper.',
             ),
             if (bundle.estimatedAltitude != null)
               _DetailRow(
                 'Altitude',
-                '~${bundle.estimatedAltitude!.round()} m — GPS estimate, '
-                    'uncalibrated. Coarse floor hint only, not a reliable '
-                    'height.',
+                '~${bundle.estimatedAltitude!.round()} m (GPS estimate, '
+                    'uncalibrated. Coarse floor hint only, not a reliable height).',
               ),
             _DetailRow('Hop count', '${bundle.hopCount}'),
             _DetailRow('Created', bundle.createdAt.toLocal().toString()),
@@ -916,6 +959,7 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                     'device, may already be resolved.',
               ),
           ],
+        ),
         ),
       ),
     );
@@ -995,26 +1039,35 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                       ),
                     ],
                   ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.2),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.circle, size: 8, color: Colors.greenAccent),
-                        SizedBox(width: 6),
-                        Text(
-                          'Searching',
-                          style: TextStyle(color: Colors.white, fontSize: 14),
+                  ValueListenableBuilder<String>(
+                    valueListenable: _controller.radioLabel,
+                    builder: (ctx, status, _) {
+                      final dotColor = switch (status) {
+                        'Receiving'  => Colors.amber,
+                        'Connecting' => const Color(0xFF4CAF50),
+                        'BT Link'    => const Color(0xFF6AA8D5),
+                        _            => const Color(0xFFE05555),
+                      };
+                      final label = status == 'BT Link' ? 'Connecting' : status;
+                      return Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(14),
                         ),
-                      ],
-                    ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 7, height: 7,
+                              decoration: BoxDecoration(shape: BoxShape.circle, color: dotColor),
+                            ),
+                            const SizedBox(width: 5),
+                            Text(label, style: const TextStyle(color: Colors.white, fontSize: 13)),
+                          ],
+                        ),
+                      );
+                    },
                   ),
                 ],
               ),
@@ -1612,7 +1665,15 @@ class _HelperModeScreenState extends State<HelperModeScreen>
               ),
               const SizedBox(height: 16),
               const RadioStatusBanner(),
-              Expanded(child: MeshActivityCard(lines: _log, fontSize: 12)),
+              Expanded(
+                child: ValueListenableBuilder<bool>(
+                  valueListenable: detailedLogging,
+                  builder: (_, detailed, x) => MeshActivityCard(
+                    lines: detailed ? _rawLog : _displayLog,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
             ],
           ),
         ),
@@ -1686,8 +1747,9 @@ class _RadarGridPainter extends CustomPainter {
       156543.03392 * math.cos(latitude * math.pi / 180) / math.pow(2, zoom);
 
   String _formatDistance(double meters) {
-    if (meters >= 1000)
+    if (meters >= 1000) {
       return '${(meters / 1000).toStringAsFixed(meters % 1000 == 0 ? 0 : 1)}km';
+    }
     return '${meters.round()}m';
   }
 

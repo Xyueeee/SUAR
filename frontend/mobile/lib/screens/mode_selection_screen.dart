@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../permissions.dart';
 import 'helper_mode_screen.dart';
@@ -38,14 +39,47 @@ class _ModeSelectionScreenState extends State<ModeSelectionScreen> {
     if (!mounted) return;
 
     if (!granted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Bluetooth and Wi-Fi Direct permissions are required. '
-            'Tap again to retry.',
+      final permanent = await meshPermsPermanentlyDenied();
+      if (!mounted) return;
+      if (permanent) {
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1A1A),
+            title: const Text(
+              'Permissions Required',
+              style: TextStyle(color: Colors.white),
+            ),
+            content: const Text(
+              'Bluetooth and nearby device permissions were permanently denied. '
+              'Please enable them in App Settings to continue.',
+              style: TextStyle(color: Colors.white70),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  openAppSettings();
+                },
+                child: const Text('Open Settings'),
+              ),
+            ],
           ),
-        ),
-      );
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Bluetooth and Wi-Fi Direct permissions are required. '
+              'Tap again to retry.',
+            ),
+          ),
+        );
+      }
       return;
     }
     Navigator.of(

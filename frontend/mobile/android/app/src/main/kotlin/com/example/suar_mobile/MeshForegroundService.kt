@@ -28,7 +28,17 @@ class MeshForegroundService : Service() {
         val statusText = intent?.getStringExtra(EXTRA_STATUS_TEXT) ?: "SUAR Mesh Active"
         val detailText = intent?.getStringExtra(EXTRA_DETAIL_TEXT)
         val wifiAction = intent?.getBooleanExtra(EXTRA_WIFI_ACTION, false) ?: false
-        startForeground(NOTIFICATION_ID, buildNotification(statusText, detailText, wifiAction))
+        // On API 34+, startForeground() throws StartForegroundException if the
+        // connectedDevice precondition (active BT/WiFi Direct) is no longer met —
+        // this happens in a stop-race where startForegroundService() was queued
+        // just before the radios were torn down. Catch it and stop cleanly instead
+        // of letting the uncaught exception cause ForegroundServiceDidNotStartInTimeException.
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification(statusText, detailText, wifiAction))
+        } catch (e: Exception) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         // This service owns nothing but the notification — the actual BLE
         // advertiser/GATT server and Wi-Fi Direct server live in
         // MainActivity's helpers, a completely separate component. If the

@@ -222,7 +222,7 @@ class TriageCalculator {
         normalised: {},
         breakdown: [],
         flags: [],
-        note: 'No sensors available — triage running blind.',
+        note: 'No sensors available. Triage running blind.',
       );
     }
     return TriageResult(

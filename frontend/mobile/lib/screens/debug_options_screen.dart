@@ -90,22 +90,22 @@ class _DebugOptionsScreenState extends State<DebugOptionsScreen> {
       case 'connected':
         return 'Connected';
       case 'unreachable':
-        return 'Not reachable — tap to fix';
+        return 'Not reachable. Tap to fix.';
       case 'unset':
-        return 'Not set — tap to add';
+        return 'Not set. Tap to add.';
       default:
         return 'Checking…';
     }
   }
 
-  Color _connColor() {
+  Color _connColor(ColorScheme cs) {
     switch (_conn) {
       case 'connected':
         return const Color(0xFF2E9E3F);
       case 'unreachable':
         return const Color(0xFFD64545);
       case 'unset':
-        return Colors.black45;
+        return cs.onSurface.withValues(alpha: 0.45);
       default:
         return const Color(0xFFE0A800);
     }
@@ -113,86 +113,52 @@ class _DebugOptionsScreenState extends State<DebugOptionsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final connColor = _connColor(cs);
     return Scaffold(
-      backgroundColor: Colors.white,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
         leading: const BackChevron(),
         title: const Text('Debugging Options'),
       ),
       body: ListView(
         children: [
           ListTile(
-            leading: const Icon(Icons.cloud_outlined, color: Colors.black),
-            title: const Text(
-              'Backend Sync URL',
-              style: TextStyle(color: Colors.black),
-            ),
-            subtitle: Text(_connLabel(), style: TextStyle(color: _connColor())),
+            leading: Icon(Icons.cloud_outlined, color: cs.onSurface),
+            title: Text('Backend Sync URL', style: TextStyle(color: cs.onSurface)),
+            subtitle: Text(_connLabel(), style: TextStyle(color: connColor)),
             trailing: Container(
               width: 12,
               height: 12,
-              decoration: BoxDecoration(color: _connColor(), shape: BoxShape.circle),
+              decoration: BoxDecoration(color: connColor, shape: BoxShape.circle),
             ),
             onTap: _editBackendUrl,
           ),
-          const Divider(
-            color: Colors.black12,
-            height: 1,
-            indent: 16,
-            endIndent: 16,
-          ),
+          Divider(color: cs.onSurface.withValues(alpha: 0.12), height: 1, indent: 16, endIndent: 16),
           ListTile(
-            leading: const Icon(Icons.storage_outlined, color: Colors.black),
-            title: const Text(
-              'Local Database',
-              style: TextStyle(color: Colors.black),
-            ),
-            subtitle: const Text(
-              'View or clear the on-device SQLite store',
-              style: TextStyle(color: Colors.black54),
-            ),
+            leading: Icon(Icons.storage_outlined, color: cs.onSurface),
+            title: Text('Local Database', style: TextStyle(color: cs.onSurface)),
+            subtitle: Text('View or clear the on-device SQLite store',
+                style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54))),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const DebugDatabaseScreen()),
             ),
           ),
-          const Divider(
-            color: Colors.black12,
-            height: 1,
-            indent: 16,
-            endIndent: 16,
-          ),
+          Divider(color: cs.onSurface.withValues(alpha: 0.12), height: 1, indent: 16, endIndent: 16),
           ListTile(
-            leading: const Icon(Icons.tune_outlined, color: Colors.black),
-            title: const Text(
-              'Triage Logic',
-              style: TextStyle(color: Colors.black),
-            ),
-            subtitle: const Text(
-              'Sensor weights, tiers and override rules',
-              style: TextStyle(color: Colors.black54),
-            ),
+            leading: Icon(Icons.tune_outlined, color: cs.onSurface),
+            title: Text('Triage Logic', style: TextStyle(color: cs.onSurface)),
+            subtitle: Text('Sensor weights, tiers and override rules',
+                style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54))),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const TriageLogicScreen()),
             ),
           ),
-          const Divider(
-            color: Colors.black12,
-            height: 1,
-            indent: 16,
-            endIndent: 16,
-          ),
+          Divider(color: cs.onSurface.withValues(alpha: 0.12), height: 1, indent: 16, endIndent: 16),
           ListTile(
-            leading: const Icon(Icons.location_on_outlined, color: Colors.black),
-            title: const Text(
-              'Location',
-              style: TextStyle(color: Colors.black),
-            ),
-            subtitle: const Text(
-              'Live GPS fix, accuracy and bundle values',
-              style: TextStyle(color: Colors.black54),
-            ),
+            leading: Icon(Icons.location_on_outlined, color: cs.onSurface),
+            title: Text('Location', style: TextStyle(color: cs.onSurface)),
+            subtitle: Text('Live GPS fix, accuracy and bundle values',
+                style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54))),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const LocationDebugScreen()),
             ),

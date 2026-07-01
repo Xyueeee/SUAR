@@ -73,6 +73,7 @@ class DocRepository {
         'StructureJson':
             r['structure'] is String ? r['structure'] : jsonEncode(r['structure'] ?? {}),
         'OrderIndex': (r['orderindex'] as num?)?.toInt() ?? 0,
+        'UsePercent': (r['usepercent'] == true) ? 1 : 0,
         'UpdatedAt': (r['updatedat'] ?? '').toString(),
       });
     }
@@ -91,6 +92,7 @@ class DocRepository {
               version: m['Version'] as int,
               updatedAt: (m['UpdatedAt'] as String?) ?? '',
               structure: m['StructureJson'] as String,
+              usePercent: (m['UsePercent'] as int? ?? 0) != 0,
             ))
         .toList();
   }

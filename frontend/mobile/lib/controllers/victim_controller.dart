@@ -41,6 +41,12 @@ class VictimController {
   final ValueNotifier<({String tier, int points, List<String> flags})?>
       triageStatus = ValueNotifier(null);
 
+  /// Current radio activity label shown in the Victim screen and in content
+  /// screens opened from Victim mode via the VictimRadioStatus ThemeExtension.
+  /// 'Broadcasting' → BLE advertising + idle; 'Connecting' → Wi-Fi Direct
+  /// handshake in progress; 'Sending' → active bundle transfer.
+  final ValueNotifier<String> radioLabel = ValueNotifier('Broadcasting');
+
   final _statusController = StreamController<String>.broadcast();
   Stream<String> get statusStream => _statusController.stream;
 
@@ -248,7 +254,7 @@ class VictimController {
     final associated = info?['associated'] as bool? ?? false;
     if (associated) {
       _emit(
-        'WARNING: this device is connected to Wi-Fi "${info?['ssid']}" — '
+        'WARNING: this device is connected to Wi-Fi "${info?['ssid']}". '
         'Wi-Fi Direct discovery/group formation is unreliable while '
         'associated to a regular access point on most chipsets.',
       );
@@ -285,7 +291,7 @@ class VictimController {
     }
     _yieldingToHost = true;
     _emit(
-      'A nearby helper is on Wi-Fi and will host the connection — sending to it',
+      'A nearby helper is on Wi-Fi and will host the connection. Sending to it.',
     );
     _isAutonomousGroupOwner = false;
     _canInitiateWifiDirect = true;
@@ -296,7 +302,7 @@ class VictimController {
     _yieldFallbackTimer = Timer(_yieldFallback, () {
       unawaited(
         _revertHostYield(
-          'No nearby helper completed the transfer — back to wait mode',
+          'No nearby helper completed the transfer. Back to wait mode.',
         ),
       );
     });
@@ -333,8 +339,8 @@ class VictimController {
     _refreshingGroup = true;
     try {
       _emit(
-        'Nearby helpers keep checking in but nothing was picked up — '
-        'refreshing the Wi-Fi Direct group',
+        'Nearby helpers keep checking in but nothing was picked up. '
+        'Refreshing the Wi-Fi Direct group.',
       );
       _acksSinceDelivery = 0;
       _isAutonomousGroupOwner = false;
@@ -387,7 +393,7 @@ class VictimController {
           _deliveredAtLeastOnce = true;
           _emit(
             'A nearby helper picked up your information. Stay where you '
-            'are if you can — keep this running.',
+            'are if you can. Keep this running.',
           );
         } else {
           _emit('Another nearby helper picked up your information.');
@@ -507,8 +513,9 @@ class VictimController {
         _pushInFlight = true;
         try {
           _emit(
-            'Connection formed (pull mode) — pushing bundle to $groupOwnerAddress',
+            'Connection formed (pull mode). Pushing bundle to $groupOwnerAddress.',
           );
+          radioLabel.value = 'Sending';
           final sent = await wifiDirectManager.sendBundle(
             groupOwnerAddress,
             _bundle!.toJson(),
@@ -517,6 +524,7 @@ class VictimController {
             _emit('Bundle ${_bundle!.bundleId} transmitted (pull mode)');
           }
           await wifiDirectManager.disconnect();
+          radioLabel.value = 'Broadcasting';
         } finally {
           _pushInFlight = false;
         }
@@ -548,6 +556,7 @@ class VictimController {
       });
 
       await bleManager.startAdvertising(deviceId!);
+      radioLabel.value = 'Broadcasting';
 
       _rssiWindowTimer?.cancel();
       _rssiWindowTimer = Timer(
@@ -559,13 +568,13 @@ class VictimController {
       _radioWatchdog = Timer.periodic(_radioWatchdogInterval, (_) async {
         if (_stopped) return;
         if (!await bleManager.isAdvertising()) {
-          _emit('BLE advertising found stopped unexpectedly — restarting it');
+          _emit('BLE advertising found stopped unexpectedly. Restarting it.');
           await bleManager.startAdvertising(deviceId!);
         }
         if (_stopped) return;
         if (!await wifiDirectManager.isServerRunning()) {
           _emit(
-            'Wi-Fi Direct server found stopped unexpectedly — restarting it',
+            'Wi-Fi Direct server found stopped unexpectedly. Restarting it.',
           );
           await wifiDirectManager.startServer();
           // The server's accept loop needs the cached bundle to still serve
@@ -615,12 +624,12 @@ class VictimController {
       _emit(
         located
             ? 'Location tracking started'
-            : 'Location unavailable — bundle will be placed approximately',
+            : 'Location unavailable. Bundle will be placed approximately.',
       );
       _emit(
         micGranted
             ? 'Sensor triage started (microphone enabled)'
-            : 'Sensor triage started (microphone unavailable — using other sensors)',
+            : 'Sensor triage started (microphone unavailable, using other sensors)',
       );
       _triageTimer?.cancel();
       _triageTimer = Timer.periodic(_triageInterval, (_) => _recomputeTriage());
@@ -676,7 +685,7 @@ class VictimController {
     _emit(
       'Triage updated: ${outcome.result.tier} '
       '(${outcome.result.score.round()} pts)'
-      '${note != null ? ' — $note' : ''}',
+      '${note != null ? '. $note' : ''}',
     );
   }
 
@@ -694,7 +703,7 @@ class VictimController {
         // permanently, leaving the Victim stuck broadcasting with nothing
         // ever acting on a late-arriving ACK. Re-arm and keep trying for as
         // long as Victim mode stays active.
-        _emit('No Helper ACKs received in RSSI window — still listening…');
+        _emit('No Helper ACKs received in RSSI window. Still listening…');
         _rearm();
         return;
       }
@@ -704,6 +713,11 @@ class VictimController {
       _emit('Selected Helper ${bestHelper.key} (rssi=${bestHelper.value})');
 
       final sent = await _tryDeliverBundle(bestHelper.key);
+      // Catch-all: active-push paths that enter discoverPeers but then fail
+      // (no peers, became-GO) set 'BT Link' inside _tryDeliverBundle and may
+      // not reset it. GO-passive / pull-mode / cooldown paths never touch the
+      // label, so this is a no-op for them.
+      if (!sent) radioLabel.value = 'Broadcasting';
       if (sent) {
         _deliveredTo[bestHelper.key] = DateTime.now();
         _helperRssiMap.remove(bestHelper.key);
@@ -711,7 +725,7 @@ class VictimController {
         // discoverable group-owner state so other (free) Helpers can still pull.
         if (_yieldingToHost) {
           unawaited(
-            _revertHostYield('Sent to the nearby helper — back to wait mode'),
+            _revertHostYield('Sent to the nearby helper. Back to wait mode.'),
           );
         }
       } else {
@@ -755,7 +769,7 @@ class VictimController {
   /// manually leaves Victim mode.
   Future<bool> _tryDeliverBundle(String helperDeviceId) async {
     if (!_sensorsReady) {
-      _emit('Sensors still initializing — holding bundle until ready');
+      _emit('Sensors still initializing. Holding bundle until ready.');
       return false;
     }
     if (_isAutonomousGroupOwner) {
@@ -764,7 +778,7 @@ class VictimController {
       // make it invisible again). The Helper discovers this GO, joins as
       // client, and pulls from the already-running server. Nothing to do here
       // but stay advertised and keep serving.
-      _emit('Waiting for a Helper to pull the bundle (group owner — passive)');
+      _emit('Waiting for a Helper to pull the bundle (group owner, passive).');
       return false;
     }
     if (!_canInitiateWifiDirect) {
@@ -791,6 +805,10 @@ class VictimController {
       return false;
     }
 
+    // Only enter BT Link state here — past all early exits (GO-passive,
+    // pull-mode, cooldown) — so the pill only transitions when we actually
+    // start Wi-Fi Direct discovery.
+    radioLabel.value = 'BT Link';
     final peers = await wifiDirectManager.discoverPeers();
     if (peers.isEmpty) {
       await _recordDiscoveryOutcome(succeeded: false);
@@ -813,6 +831,7 @@ class VictimController {
     // can't pair with isn't re-dialled/re-prompted every ~8s RSSI window. See
     // _attemptCooldown.
     _connectedRecentlyAt[helperDeviceId] = DateTime.now();
+    radioLabel.value = 'Connecting';
     final connectionInfo = await wifiDirectManager.connectToHelper(
       peerAddress,
       myDeviceId: deviceId ?? '',
@@ -828,6 +847,7 @@ class VictimController {
       // Only the success path used to clean up; do it here too so the next
       // retry starts from an actually-clean slate instead of colliding.
       await wifiDirectManager.disconnect();
+      radioLabel.value = 'Broadcasting';
       return false;
     }
     // Connection formed — Helper is reachable, reset its backoff.
@@ -847,11 +867,12 @@ class VictimController {
       // notices it unexpectedly became a client and pulls from this
       // already-running, already-cached server instead.
       _emit(
-        'Connected as group owner instead of $helperDeviceId — waiting for it to pull',
+        'Connected as group owner instead of $helperDeviceId. Waiting for it to pull.',
       );
       return false;
     }
     final groupOwnerAddress = connectionInfo['groupOwnerAddress'] as String;
+    radioLabel.value = 'Sending';
     final sent = await wifiDirectManager.sendBundle(
       groupOwnerAddress,
       _bundle!.toJson(),
@@ -864,6 +885,7 @@ class VictimController {
     // (a likely contributor to the groupFormed=false races seen on retry).
     // Each delivery attempt now starts from a clean slate.
     await wifiDirectManager.disconnect();
+    radioLabel.value = 'Broadcasting';
     return sent;
   }
 
@@ -877,8 +899,8 @@ class VictimController {
         _canInitiateWifiDirect = false;
         _emit(
           'Learned this device cannot initiate Wi-Fi Direct (last confirmed '
-          '${DateTime.now().difference(testedAt).inHours}h ago) — will wait '
-          'for Helpers to pull instead',
+          '${DateTime.now().difference(testedAt).inHours}h ago). Will wait '
+          'for Helpers to pull instead.',
         );
         return;
       }
@@ -912,7 +934,7 @@ class VictimController {
         await prefs.remove(_capabilityTestedAtKey);
         await bleManager.setNeedsPull(false);
         _emit(
-          'Wi-Fi Direct initiation works again — cleared the cannot-initiate flag',
+          'Wi-Fi Direct initiation works again. Cleared the cannot-initiate flag.',
         );
       }
       return;
@@ -931,7 +953,7 @@ class VictimController {
     await bleManager.setNeedsPull(true);
     _emit(
       'This device cannot initiate Wi-Fi Direct discovery ($_consecutiveGenuineFailures '
-      'consecutive empty results) — flagged to Helpers, switching to pull mode',
+      'consecutive empty results). Flagged to Helpers, switching to pull mode.',
     );
   }
 
@@ -1011,6 +1033,7 @@ class VictimController {
       await wifiDirectManager.setLocalBundle(null);
       await wifiDirectManager.stopServer();
       await wifiDirectManager.disconnect();
+      radioLabel.value = 'Broadcasting';
       _emit('Victim mode stopped');
     } catch (e) {
       _emit('Victim mode stop failed: $e');
@@ -1026,6 +1049,7 @@ class VictimController {
     _sensorEngine.dispose();
     _locationEstimator.dispose();
     triageStatus.dispose();
+    radioLabel.dispose();
     _ackSub?.cancel();
     _bleStatusSub?.cancel();
     _wifiStatusSub?.cancel();

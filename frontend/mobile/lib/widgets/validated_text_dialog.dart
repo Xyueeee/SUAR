@@ -94,6 +94,7 @@ class _ValidatedTextDialogState extends State<_ValidatedTextDialog> {
   @override
   Widget build(BuildContext context) {
     final hasError = _error != null;
+    final cs = Theme.of(context).colorScheme;
     return AlertDialog(
       title: Text(widget.title),
       content: Column(
@@ -110,7 +111,9 @@ class _ValidatedTextDialogState extends State<_ValidatedTextDialog> {
             decoration: InputDecoration(
               hintText: widget.hintText,
               filled: true,
-              fillColor: _grey,
+              fillColor: cs.brightness == Brightness.dark
+                  ? cs.onSurface.withValues(alpha: 0.08)
+                  : _grey,
               contentPadding: const EdgeInsets.symmetric(
                 horizontal: 14,
                 vertical: 12,

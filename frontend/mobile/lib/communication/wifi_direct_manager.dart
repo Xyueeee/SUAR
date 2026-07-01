@@ -193,7 +193,7 @@ class WiFiDirectManager {
         // this device at all (one-sided negotiation, not a collision) —
         // a known flaky-discovery limitation on the budget test chipset.
         _emit(
-          'Could not pair with the peer in time — Wi-Fi Direct negotiation '
+          'Could not pair with the peer in time. Wi-Fi Direct negotiation '
           'did not complete (either a connect() collision or one-sided '
           'discovery flakiness). The next contact attempt will retry.',
         );

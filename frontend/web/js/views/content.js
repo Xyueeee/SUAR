@@ -24,6 +24,7 @@ SUAR.views._docsEditor = (function () {
     const lvlLabel = (v) => v ? v.charAt(0).toUpperCase() + v.slice(1) : "";
     let active = categories[0];
     let allRows = [], search = "", sortKey = NOTICE ? "updated" : "order";
+    let catUsePercent = false;
     const selected = new Set();
 
     async function render(container) {
@@ -41,7 +42,7 @@ SUAR.views._docsEditor = (function () {
           '<input class="input" id="d-search" placeholder="Search title…" value="' + SUAR.ui.esc(search) + '" style="max-width:240px">' +
           '<select class="select" id="d-sort" style="max-width:175px">' +
             sortOpts.map((o) => { const p = o.split("|"); return '<option value="' + p[0] + '"' + (sortKey === p[0] ? " selected" : "") + ">" + p[1] + "</option>"; }).join("") +
-          '</select><span class="spacer"></span>' +
+          '</select>' + (!NOTICE ? '<label class="switch switch--inline" id="d-pct-label" title="Show overall % progress card in the app for this category" style="margin-left:8px"><input type="checkbox" id="d-pct-cat"><span class="switch__track"></span> Show % card</label>' : "") + '<span class="spacer"></span>' +
           '<div class="bulkbar" id="d-bulk" style="display:none"><span class="muted" id="d-selcount"></span><button class="btn btn--ghost btn--sm" data-bulk="pub">Publish</button><button class="btn btn--ghost btn--sm" data-bulk="unpub">Unpublish</button><button class="btn btn--danger btn--sm" data-bulk="del">Delete</button></div>' +
         "</div>" +
         '<div class="card"><div class="table-wrap" id="d-table">' + SUAR.ui.spinner() + "</div></div>";
@@ -50,6 +51,11 @@ SUAR.views._docsEditor = (function () {
       document.getElementById("d-search").addEventListener("input", (e) => { search = e.target.value; renderTable(); });
       document.getElementById("d-sort").addEventListener("change", (e) => { sortKey = e.target.value; renderTable(); });
       document.querySelectorAll("[data-bulk]").forEach((b) => b.addEventListener("click", () => bulkAction(b.dataset.bulk)));
+      const pctCatEl = document.getElementById("d-pct-cat");
+      if (pctCatEl) pctCatEl.addEventListener("change", async (e) => {
+        catUsePercent = e.target.checked; e.target.disabled = true;
+        await toggleCategoryPercent(catUsePercent); e.target.disabled = false;
+      });
       await load();
     }
 
@@ -59,6 +65,7 @@ SUAR.views._docsEditor = (function () {
       const all = await SUAR.api.get(EP);
       allRows = NOTICE ? all.slice() : all.filter((d) => d.category === active);
       selected.clear(); updateBulkBar();
+      syncPctToggle();
       renderTable();
     }
 
@@ -91,7 +98,7 @@ SUAR.views._docsEditor = (function () {
             mid = '<td>' + SUAR.ui.severityBadge(d.severity || "info") + "</td>";
           } else {
             const s = parseStruct(d.structure); const c = countNodes(s.nodes);
-            mid = '<td class="muted">' + c.sections + " sec / " + c.items + " items" + (s.usePercent ? " · %" : "") + "</td>";
+            mid = '<td class="muted">' + c.sections + " sec / " + c.items + " items" + (d.usepercent ? " · %" : "") + "</td>";
           }
           const acts = (NOTICE ? "" : '<button class="icon-btn" data-up title="Move up">↑</button><button class="icon-btn" data-down title="Move down">↓</button>') +
             '<button class="btn btn--ghost btn--sm" data-edit>Edit</button><button class="btn btn--danger btn--sm" data-del>Delete</button>';
@@ -168,6 +175,22 @@ SUAR.views._docsEditor = (function () {
       catch (e) { SUAR.ui.toast(e.message, "err"); }
     }
 
+    function syncPctToggle() {
+      const el = document.getElementById("d-pct-cat");
+      if (!el) return;
+      catUsePercent = allRows.some((r) => r.usepercent === true);
+      el.checked = catUsePercent;
+    }
+
+    async function toggleCategoryPercent(val) {
+      for (const row of allRows) {
+        try { await SUAR.api.patch(EP + "/" + encodeURIComponent(row[PK]), { usepercent: val }); row.usepercent = val; }
+        catch (e) { SUAR.ui.toast(e.message, "err"); return; }
+      }
+      catUsePercent = val;
+      SUAR.ui.toast("% card " + (val ? "on" : "off"), "ok");
+    }
+
     function countNodes(nodes, acc) {
       acc = acc || { sections: 0, items: 0 };
       (nodes || []).forEach((n) => { if (n.kind === "section") { acc.sections++; countNodes(n.children, acc); } else acc.items++; });
@@ -184,10 +207,18 @@ SUAR.views._docsEditor = (function () {
         title: (d && d.title) || "",
         subtitle: (d && d.subtitle) || "",
         ispublished: NOTICE ? (d ? d.isactive !== false : true) : (d ? !!d.ispublished : false),
-        usePercent: s.usePercent, percentText: s.percentText, nodes: s.nodes,
+        usePercent: d ? !!d.usepercent : catUsePercent, percentText: s.percentText, nodes: s.nodes,
       };
-      // A brand-new prep plan shows the overall % card by default.
-      if (!d && !NOTICE && category === "prep") state.usePercent = true;
+      const _snapTitle = state.title, _snapCat = state.category, _snapSub = state.subtitle, _snapPub = state.ispublished;
+      const _snapNodes = JSON.stringify(state.nodes);
+      function isDirty() {
+        const catEl = overlay.querySelector("#d-cat");
+        return overlay.querySelector("#d-title").value !== _snapTitle
+          || overlay.querySelector("#d-pub").checked !== _snapPub
+          || (NOTICE ? (overlay.querySelector("#d-sub").value || "") !== _snapSub : false)
+          || (catEl ? catEl.value : state.category) !== _snapCat
+          || JSON.stringify(state.nodes) !== _snapNodes;
+      }
       let activeCe = null;
       const pv = { path: [], guide: null, gpage: 0, checks: new Set(), fields: new Map() }; // preview nav state
 
@@ -210,9 +241,6 @@ SUAR.views._docsEditor = (function () {
           '<button class="btn btn--primary btn--sm" id="d-save">' + (editing ? "Save changes" : "Create") + "</button>" +
         '</div><div class="editor__main"><div class="editor__left">' +
           '<div class="docset">' +
-            (NOTICE ? "" :
-              '<label class="switch switch--inline"><input type="checkbox" id="d-pct"' + (state.usePercent ? " checked" : "") + '><span class="switch__track"></span> Show overall % card</label>' +
-              '<input class="input" id="d-pcttext" placeholder="You are {p}% prepared:" value="' + SUAR.ui.esc(state.percentText) + '"' + (state.usePercent ? "" : ' style="display:none"') + ">") +
             '<span class="spacer"></span><button class="btn btn--ghost btn--sm" id="d-raw" title="Edit / copy the raw JSON">Raw JSON</button>' +
           '</div><div class="tree" id="d-tree"></div></div>' +
           '<div class="editor__right"><div class="phone-wrap"><div class="phone" id="d-preview"></div></div><div class="phone-note">Live preview — what the app shows</div></div>' +
@@ -231,19 +259,20 @@ SUAR.views._docsEditor = (function () {
       const actuallyClose = () => { if (closed) return; closed = true; overlay.classList.remove("open"); setTimeout(() => overlay.remove(), 180); document.removeEventListener("keydown", onKey); window.removeEventListener("popstate", onPop); };
       const onPop = () => actuallyClose();
       const close = () => { if (closed) return; history.back(); }; // -> popstate -> actuallyClose
-      const onKey = (e) => { if (e.key === "Escape" && !activeCe) close(); };
+      const onKey = async (e) => {
+        if (e.key !== "Escape" || activeCe) return;
+        if (!isDirty()) { close(); return; }
+        const ok = await SUAR.ui.confirm({ title: "Discard changes?", message: "Any unsaved edits will be lost.", confirmLabel: "Discard", danger: true });
+        if (ok) close();
+      };
       document.addEventListener("keydown", onKey);
       history.pushState({ suarEditor: true }, "");
       window.addEventListener("popstate", onPop);
       overlay.querySelector("#d-cancel").addEventListener("click", async () => {
-        if (await SUAR.ui.confirm({ title: "Discard changes?", message: "Any unsaved edits will be lost.", confirmLabel: "Discard", danger: true })) close();
+        if (!isDirty() || await SUAR.ui.confirm({ title: "Discard changes?", message: "Any unsaved edits will be lost.", confirmLabel: "Discard", danger: true })) close();
       });
       overlay.querySelector("#d-save").addEventListener("click", save);
       overlay.querySelector("#d-title").addEventListener("input", renderPreview);
-      const pctEl = overlay.querySelector("#d-pct");
-      if (pctEl) pctEl.addEventListener("change", (e) => { state.usePercent = e.target.checked; overlay.querySelector("#d-pcttext").style.display = state.usePercent ? "" : "none"; renderPreview(); });
-      const pctTextEl = overlay.querySelector("#d-pcttext");
-      if (pctTextEl) pctTextEl.addEventListener("input", (e) => { state.percentText = e.target.value; renderPreview(); });
 
       // Advanced: edit / copy the raw JSON in place of the visual tree.
       let rawMode = false;
@@ -252,16 +281,13 @@ SUAR.views._docsEditor = (function () {
         if (!rawMode) {
           rawMode = true;
           treeEl.innerHTML = '<textarea class="raw-editor" id="d-rawta" spellcheck="false"></textarea>';
-          document.getElementById("d-rawta").value = JSON.stringify({ usePercent: state.usePercent, percentText: state.percentText, nodes: clean(state.nodes) }, null, 2);
+          document.getElementById("d-rawta").value = JSON.stringify({ nodes: clean(state.nodes) }, null, 2);
           overlay.querySelector("#d-raw").textContent = "Apply & visual";
         } else {
           let parsed;
           try { parsed = JSON.parse(document.getElementById("d-rawta").value); }
           catch (e) { SUAR.ui.toast("Invalid JSON: " + e.message, "err"); return; }
-          const s2 = parseStruct(parsed);
-          state.usePercent = s2.usePercent; state.percentText = s2.percentText; state.nodes = s2.nodes;
-          if (pctEl) pctEl.checked = state.usePercent;
-          if (pctTextEl) { pctTextEl.style.display = state.usePercent ? "" : "none"; pctTextEl.value = state.percentText; }
+          state.nodes = parseStruct(parsed).nodes;
           rawMode = false;
           overlay.querySelector("#d-raw").textContent = "Raw JSON";
           renderTree();
@@ -359,7 +385,7 @@ SUAR.views._docsEditor = (function () {
         return '<div class="minibar" data-owner="' + owner + '">' +
           '<button class="mb" data-cmd="bold"><b>B</b></button><button class="mb" data-cmd="italic"><i>I</i></button><button class="mb" data-cmd="underline"><u>U</u></button><button class="mb" data-cmd="strikeThrough"><s>S</s></button>' +
           SWATCHES.map((c) => '<button class="mb mb-sw" data-color="' + c + '" style="background:' + c + '"></button>').join("") +
-          '<button class="mb" data-cmd="removeFormat" title="clear">⌫</button></div>';
+          '<button class="mb" data-cmd="removeFormat" title="Clear formatting"><i style="text-decoration:line-through;font-style:italic">T</i>x</button></div>';
       }
       function ce(path, pi, bi, ii, runs, ph, owner) {
         return '<div class="ce" contenteditable="true" data-owner="' + owner + '" data-p="' + path + '" data-pi="' + pi + '" data-bi="' + bi + '"' + (ii !== null ? ' data-ii="' + ii + '"' : "") + ' data-ph="' + SUAR.ui.esc(ph) + '">' + runsToHtml(runs) + "</div>";
@@ -419,20 +445,10 @@ SUAR.views._docsEditor = (function () {
         const btn = e.target;
         const title = overlay.querySelector("#d-title").value.trim();
         if (!title) { SUAR.ui.toast("Title required", "err"); return; }
-        const structure = { usePercent: state.usePercent, percentText: state.percentText, nodes: clean(state.nodes) };
-        // #d-cat only exists when there's an actual dropdown to show — NOTICE
-        // always has one (severity), but a single-category editor (Prep
-        // Plans: just "prep") renders a static chip instead (see catControl
-        // above), so the selector returns null. Reading .value off that null
-        // threw here uncaught — Create/Save did nothing, no toast, no error
-        // the user could see, just a silently-failed click handler.
+        const structure = { nodes: clean(state.nodes) };
         const catSel = overlay.querySelector("#d-cat");
         const level = catSel ? catSel.value : state.category;
         let payload;
-        // structure is the raw object, NOT stringified — SUAR.api.post/patch
-        // JSON.stringify()s the whole payload once already (api.js); doing it
-        // here too double-encoded it, so the jsonb column ended up holding a
-        // JSON *string* instead of a real object/array.
         if (NOTICE) {
           payload = {
             title,
@@ -448,11 +464,19 @@ SUAR.views._docsEditor = (function () {
             title, structure,
             ispublished: overlay.querySelector("#d-pub").checked,
           };
+          if (!editing) payload.usepercent = catUsePercent;
         }
         btn.disabled = true;
+        // Semi-transparent blocker so the user can't edit or cancel mid-save.
+        const blocker = document.createElement("div");
+        Object.assign(blocker.style, { position: "absolute", inset: "0", background: "rgba(255,255,255,0.55)", zIndex: "20", cursor: "wait", borderRadius: "inherit" });
+        const mainEl = overlay.querySelector(".editor__main");
+        mainEl.style.position = "relative";
+        mainEl.appendChild(blocker);
+        const cleanup = () => { btn.disabled = false; blocker.remove(); };
         (editing ? SUAR.api.patch(EP + "/" + encodeURIComponent(state.id), payload) : SUAR.api.post(EP, payload))
           .then(() => { SUAR.ui.toast(editing ? "Saved" : "Created", "ok"); close(); load(); SUAR.app.refreshCounts(); })
-          .catch((err) => { SUAR.ui.toast(err.message, "err"); btn.disabled = false; });
+          .catch((err) => { SUAR.ui.toast(err.message, "err"); cleanup(); });
       }
 
       renderTree();
@@ -568,6 +592,7 @@ SUAR.views._docsEditor = (function () {
   // Read-only viewer (opened by clicking a list row).
   function openViewer(doc) {
     const struct = parseStruct(doc.structure);
+    struct.usePercent = !!doc.usepercent;
     const pv = { path: [], guide: null, gpage: 0, checks: new Set(), fields: new Map() };
     const overlay = document.createElement("div");
     overlay.className = "editor-overlay";

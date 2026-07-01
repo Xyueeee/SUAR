@@ -78,7 +78,10 @@ class _MeshActivityCardState extends State<MeshActivityCard> {
   // lines. Both controllers already emit this exact line on every
   // start*Mode() call; reusing it (no controller changes needed) to render
   // it in bold, same row style as everything else.
-  bool _isSessionStart(String line) => line.contains('mode started (deviceId=');
+  bool _isSessionStart(String line) =>
+      line.contains('mode started (deviceId=') || // raw
+      (line.contains('mode started.') &&
+          (line.startsWith('Victim') || line.startsWith('Helper')));
 
   /// Red = something actually went wrong. Amber = working as designed but
   /// worth a second look (retries, capability flags, TTL/dedupe). Green =
@@ -96,7 +99,12 @@ class _MeshActivityCardState extends State<MeshActivityCard> {
         lower.contains('no helper acks') ||
         lower.contains('already has everything') ||
         lower.contains('ttl exceeded') ||
-        lower.contains('skipping')) {
+        lower.contains('skipping') ||
+        lower.contains('could not') ||
+        lower.contains('restarting') ||
+        lower.contains('resetting') ||
+        lower.contains('no helpers detected') ||
+        lower.contains('received nothing')) {
       return Colors.amber;
     }
     if (lower.contains('received') ||
@@ -107,7 +115,8 @@ class _MeshActivityCardState extends State<MeshActivityCard> {
         lower.contains('pulled') ||
         lower.contains('pushed') ||
         lower.contains('connected') ||
-        lower.contains('written')) {
+        lower.contains('written') ||
+        lower.contains('downloaded')) {
       return Colors.greenAccent;
     }
     return Colors.lightBlueAccent;

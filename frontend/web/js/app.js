@@ -19,6 +19,8 @@ SUAR.app = (function () {
   };
   const ROUTES = Object.keys(TITLES);
   const IDLE_MS = 20 * 60 * 1000; // auto sign-out after 20 min of inactivity
+  const TAB_EXPIRY_MS = 10 * 1000; // sign out if tab was closed for >10 s
+  const TAB_CLOSED_KEY = "suar_tab_closed_at";
 
   let connTimer = null;
   let idleTimer = null;
@@ -44,6 +46,15 @@ SUAR.app = (function () {
 
   // Single entry gate: session -> backend URL set -> /admin/me passes -> show app.
   async function tryEnterApp() {
+    // If tab was closed and enough time elapsed, treat as a new session.
+    const closedAt = localStorage.getItem(TAB_CLOSED_KEY);
+    localStorage.removeItem(TAB_CLOSED_KEY);
+    if (closedAt && (Date.now() - Number(closedAt)) > TAB_EXPIRY_MS) {
+      await SUAR.auth.signOut(true);
+      showLogin({ hint: "Signed out — please sign in again." });
+      return;
+    }
+
     const session = await SUAR.auth.getSession();
     if (!session) { showLogin(); return; }
     if (!SUAR.getBackendUrl()) { showLogin({ hint: "Set the backend URL (gear, bottom-right) to continue." }); return; }
@@ -225,6 +236,11 @@ SUAR.app = (function () {
     );
     window.addEventListener("hashchange", () => {
       if (document.body.classList.contains("authed")) route(currentRoute());
+    });
+
+    // Record when the tab closes so tryEnterApp can detect a >10s gap on reopen.
+    window.addEventListener("beforeunload", () => {
+      localStorage.setItem(TAB_CLOSED_KEY, String(Date.now()));
     });
 
     updateUrlDot();

@@ -1,15 +1,95 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../content/block_renderer.dart';
 import '../content/doc_controller.dart';
 import '../content/doc_models.dart';
 import '../content/doc_service.dart';
+import '../theme.dart' show kPanelDark;
 import '../widgets/back_chevron.dart';
 
 const Color _green = Color(0xFF4CAF50);
 const Color _bar = Color(0xFF62E24B);
-const Color _panel = Color(0xFFEDEDED);
 const Color _accent = Color(0xFF3E6FA8);
+
+/// Carries the victim mode's live radio status into content screens opened
+/// from victim mode. Injected via ThemeData.copyWith when navigating so every
+/// sub-screen in the stack can show the live pill without prop drilling.
+@immutable
+class VictimRadioStatus extends ThemeExtension<VictimRadioStatus> {
+  final ValueListenable<String> listenable;
+  const VictimRadioStatus(this.listenable);
+
+  @override
+  VictimRadioStatus copyWith({ValueListenable<String>? listenable}) =>
+      VictimRadioStatus(listenable ?? this.listenable);
+
+  @override
+  ThemeExtension<VictimRadioStatus> lerp(
+      ThemeExtension<VictimRadioStatus>? other, double t) =>
+      this;
+}
+
+/// Live pill shown in AppBar actions when [VictimRadioStatus] is in the theme.
+/// Returns [SizedBox.shrink] when navigated from a non-victim screen.
+/// Text color inherits from the AppBar's foreground so it works on both
+/// dark (victim doc screens) and light (medical info) AppBars; only the
+/// dot changes color to reflect the current radio state.
+class RadioPill extends StatelessWidget {
+  const RadioPill({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final ext = Theme.of(context).extension<VictimRadioStatus>();
+    if (ext == null) return const SizedBox.shrink();
+    return ValueListenableBuilder<String>(
+      valueListenable: ext.listenable,
+      builder: (ctx, status, _) {
+        final dotColor = switch (status) {
+          'Sending'    => Colors.amber,
+          'Connecting' => const Color(0xFF4CAF50),
+          'BT Link'    => const Color(0xFF6AA8D5),
+          _            => const Color(0xFFE05555),
+        };
+        final label = status == 'BT Link' ? 'Connecting' : status;
+        return Padding(
+          padding: const EdgeInsets.only(right: 12),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 7, height: 7,
+                  decoration: BoxDecoration(shape: BoxShape.circle, color: dotColor),
+                ),
+                const SizedBox(width: 5),
+                // Text color intentionally unset — inherits AppBar foreground color.
+                Text(label, style: const TextStyle(fontSize: 12)),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+// Navigator.push exits the current Theme InheritedWidget subtree — new routes
+// get the app-level theme, not any Theme wrapper around the calling widget.
+// Capture the current theme and re-wrap so the entire pushed sub-tree
+// (including any further pushes that _SectionScreen / _GuideViewer make) stays
+// in whatever theme was active when the user tapped.
+void _pushWithTheme(BuildContext context, Widget screen) {
+  final theme = Theme.of(context);
+  Navigator.of(context).push(
+    MaterialPageRoute(builder: (_) => Theme(data: theme, child: screen)),
+  );
+}
 
 /// Unified renderer for any category (survival / first_aid / preparation /
 /// prep). Renders the most-recent published doc: an optional overall % card,
@@ -66,12 +146,10 @@ class _DocScreenState extends State<DocScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
         leading: const BackChevron(),
         title: Text(widget.title),
+        actions: const [RadioPill()],
       ),
       body: FutureBuilder<void>(
         future: _ready,
@@ -172,14 +250,15 @@ class _SectionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     final pct = controller.rollup.nodePercent(node, path);
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.only(bottom: 16),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border.all(color: Colors.black.withValues(alpha: 0.4)),
+        color: cs.surface,
+        border: Border.all(color: cs.onSurface.withValues(alpha: 0.4)),
         borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
@@ -189,7 +268,8 @@ class _SectionCard extends StatelessWidget {
             children: [
               Expanded(child: _TitleSub(title: node.title, subtitle: node.subtitle, big: true)),
               if (node.usePercent)
-                Text('${pct.round()}%', style: const TextStyle(color: Colors.black54, fontSize: 14)),
+                Text('${pct.round()}%',
+                    style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54), fontSize: 14)),
             ],
           ),
           if (node.usePercent) ...[
@@ -218,16 +298,15 @@ class _SectionScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
         leading: const BackChevron(),
         title: Text(node.title.isEmpty ? 'Section' : node.title),
+        actions: const [RadioPill()],
       ),
       body: ListenableBuilder(
         listenable: controller,
         builder: (context, _) {
+          final cs = Theme.of(context).colorScheme;
           final pct = controller.rollup.nodePercent(node, path);
           return ListView(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
@@ -235,12 +314,14 @@ class _SectionScreen extends StatelessWidget {
               if (node.subtitle != null && node.subtitle!.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 12),
-                  child: Text(node.subtitle!, style: const TextStyle(color: Colors.black54, fontSize: 14)),
+                  child: Text(node.subtitle!,
+                      style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54), fontSize: 14)),
                 ),
               if (node.usePercent) ...[
                 _ProgressBar(value: pct / 100),
                 const SizedBox(height: 6),
-                Text('${pct.round()}% complete', style: const TextStyle(color: Colors.black54, fontSize: 13)),
+                Text('${pct.round()}% complete',
+                    style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54), fontSize: 13)),
                 const SizedBox(height: 14),
               ],
               _ChildPanel(
@@ -264,18 +345,30 @@ class _ChildPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     if (nodes.isEmpty) {
-      return const Padding(
-        padding: EdgeInsets.symmetric(vertical: 8),
-        child: Text('Nothing here yet.', style: TextStyle(color: Colors.black45)),
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Text('Nothing here yet.',
+            style: TextStyle(color: cs.onSurface.withValues(alpha: 0.45))),
       );
     }
+    final dark = Theme.of(context).brightness == Brightness.dark;
     return Container(
-      decoration: BoxDecoration(color: _panel, borderRadius: BorderRadius.circular(12)),
+      decoration: BoxDecoration(
+        color: dark ? kPanelDark : cs.onSurface.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(12),
+      ),
       child: Column(
         children: [
           for (var i = 0; i < nodes.length; i++) ...[
-            if (i > 0) const Divider(height: 1, color: Colors.black12, indent: 14, endIndent: 14),
+            if (i > 0)
+              Divider(
+                height: 1,
+                color: cs.onSurface.withValues(alpha: 0.12),
+                indent: 14,
+                endIndent: 14,
+              ),
             _ChildRow(controller: controller, node: nodes[i], path: paths[i]),
           ],
         ],
@@ -292,12 +385,14 @@ class _ChildRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     if (node.isSection) {
       final pct = controller.rollup.nodePercent(node, path);
       return InkWell(
-        onTap: () => Navigator.of(context).push(MaterialPageRoute(
-          builder: (_) => _SectionScreen(controller: controller, node: node, path: path),
-        )),
+        onTap: () => _pushWithTheme(
+          context,
+          _SectionScreen(controller: controller, node: node, path: path),
+        ),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
           child: Row(
@@ -308,11 +403,11 @@ class _ChildRow extends StatelessWidget {
                   padding: const EdgeInsets.only(right: 6),
                   child: Text('${pct.round()}%',
                       style: TextStyle(
-                          color: pct >= 99.95 ? _green : Colors.black54,
+                          color: pct >= 99.95 ? _green : cs.onSurface.withValues(alpha: 0.54),
                           fontSize: 13,
                           fontWeight: FontWeight.w600)),
                 ),
-              const Icon(Icons.chevron_right, color: Colors.black38),
+              Icon(Icons.chevron_right, color: cs.onSurface.withValues(alpha: 0.38)),
             ],
           ),
         ),
@@ -320,15 +415,13 @@ class _ChildRow extends StatelessWidget {
     }
     if (node.isGuide) {
       return InkWell(
-        onTap: () => Navigator.of(context).push(MaterialPageRoute(
-          builder: (_) => _GuideViewer(node: node),
-        )),
+        onTap: () => _pushWithTheme(context, _GuideViewer(node: node)),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
           child: Row(
             children: [
               Expanded(child: _TitleSub(title: node.title, subtitle: node.subtitle)),
-              const Icon(Icons.chevron_right, color: Colors.black38),
+              Icon(Icons.chevron_right, color: cs.onSurface.withValues(alpha: 0.38)),
             ],
           ),
         ),
@@ -361,12 +454,14 @@ class _FieldRowState extends State<_FieldRow> {
 
   @override
   void dispose() {
+    FocusManager.instance.primaryFocus?.unfocus();
     _tc?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     final node = widget.node;
     if (node.kind == 'text' || node.kind == 'number') {
       return Padding(
@@ -403,7 +498,7 @@ class _FieldRowState extends State<_FieldRow> {
               value: checked,
               activeColor: _green,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-              side: const BorderSide(color: Colors.black38, width: 2),
+              side: BorderSide(color: cs.onSurface.withValues(alpha: 0.38), width: 2),
               materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
               visualDensity: VisualDensity.compact,
               onChanged: (v) => widget.controller.toggle(widget.path, v ?? false),
@@ -437,74 +532,90 @@ class _GuideViewerState extends State<_GuideViewer> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     final pages = widget.node.pages;
     return Scaffold(
-      backgroundColor: Colors.white,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
         leading: const BackChevron(),
         title: Text(widget.node.title),
+        actions: const [RadioPill()],
       ),
       body: pages.isEmpty
-          ? const Center(child: Text('No content yet.', style: TextStyle(color: Colors.black54)))
-          : (widget.node.layout == 'scroll' ? _scroll(pages) : _paged(pages)),
+          ? Center(
+              child: Text('No content yet.',
+                  style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54))))
+          : (widget.node.layout == 'scroll' ? _scroll(context, pages) : _paged(context, pages)),
     );
   }
 
-  Widget _pageContent(DocPage page) => SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (page.title != null && page.title!.isNotEmpty)
-              Text(page.title!, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-            if (page.subtitle != null && page.subtitle!.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Text(page.subtitle!, style: const TextStyle(color: Colors.black54, fontSize: 13)),
-              ),
-            const SizedBox(height: 12),
-            ...buildBlocks(page.blocks),
-          ],
-        ),
-      );
-
-  Widget _scroll(List<DocPage> pages) => ListView.separated(
-        itemCount: pages.length,
-        separatorBuilder: (context, index) =>
-            const Divider(height: 1, thickness: 6, color: Color(0xFFF2F2F2)),
-        itemBuilder: (context, i) => _pageContent(pages[i]),
-      );
-
-  Widget _paged(List<DocPage> pages) => Column(
+  Widget _pageContent(BuildContext context, DocPage page) {
+    final cs = Theme.of(context).colorScheme;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          LinearProgressIndicator(
-            value: pages.isEmpty ? 0 : (_page + 1) / pages.length,
-            minHeight: 3,
-            backgroundColor: Colors.black12,
-            valueColor: const AlwaysStoppedAnimation(_accent),
-          ),
-          Expanded(
-            child: PageView.builder(
-              controller: _pageCtrl,
-              onPageChanged: (i) => setState(() => _page = i),
-              itemCount: pages.length,
-              itemBuilder: (context, i) => _pageContent(pages[i]),
+          if (page.title != null && page.title!.isNotEmpty)
+            Text(page.title!, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+          if (page.subtitle != null && page.subtitle!.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(page.subtitle!,
+                  style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54), fontSize: 13)),
             ),
-          ),
-          _StepNav(
-            page: _page,
-            total: pages.length,
-            onPrev: _page > 0
-                ? () => _pageCtrl.previousPage(duration: const Duration(milliseconds: 250), curve: Curves.easeOut)
-                : null,
-            onNext: _page < pages.length - 1
-                ? () => _pageCtrl.nextPage(duration: const Duration(milliseconds: 250), curve: Curves.easeOut)
-                : null,
-          ),
+          const SizedBox(height: 12),
+          ...buildBlocks(page.blocks, textColor: cs.onSurface, brightness: cs.brightness),
         ],
+      ),
+    );
+  }
+
+  Widget _scroll(BuildContext context, List<DocPage> pages) => ListView.separated(
+        itemCount: pages.length,
+        separatorBuilder: (ctx, _) => Divider(
+          height: 1,
+          thickness: 6,
+          color: Theme.of(ctx).brightness == Brightness.dark
+              ? kPanelDark
+              : Theme.of(ctx).colorScheme.onSurface.withValues(alpha: 0.07),
+        ),
+        itemBuilder: (ctx, i) => _pageContent(ctx, pages[i]),
       );
+
+  Widget _paged(BuildContext context, List<DocPage> pages) {
+    final cs = Theme.of(context).colorScheme;
+    return Column(
+      children: [
+        LinearProgressIndicator(
+          value: pages.isEmpty ? 0 : (_page + 1) / pages.length,
+          minHeight: 3,
+          backgroundColor: cs.onSurface.withValues(
+              alpha: Theme.of(context).brightness == Brightness.dark ? 0.24 : 0.12),
+          valueColor: const AlwaysStoppedAnimation(_accent),
+        ),
+        Expanded(
+          child: PageView.builder(
+            controller: _pageCtrl,
+            onPageChanged: (i) => setState(() => _page = i),
+            itemCount: pages.length,
+            itemBuilder: (ctx, i) => _pageContent(ctx, pages[i]),
+          ),
+        ),
+        _StepNav(
+          page: _page,
+          total: pages.length,
+          onPrev: _page > 0
+              ? () => _pageCtrl.previousPage(
+                  duration: const Duration(milliseconds: 250), curve: Curves.easeOut)
+              : null,
+          onNext: _page < pages.length - 1
+              ? () => _pageCtrl.nextPage(
+                  duration: const Duration(milliseconds: 250), curve: Curves.easeOut)
+              : null,
+        ),
+      ],
+    );
+  }
 }
 
 // --------------------------------------------------------------------------- //
@@ -519,18 +630,24 @@ class _TitleSub extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(title.isEmpty ? 'Untitled' : title,
-            style: TextStyle(
-                color: Colors.black,
-                fontSize: big ? 18 : 16,
-                fontWeight: big ? FontWeight.w600 : FontWeight.normal)),
+        Text(
+          title.isEmpty ? 'Untitled' : title,
+          style: TextStyle(
+            color: cs.onSurface,
+            fontSize: big ? 18 : 16,
+            fontWeight: big ? FontWeight.w600 : FontWeight.normal,
+          ),
+        ),
         if (subtitle != null && subtitle!.isNotEmpty)
           Padding(
             padding: const EdgeInsets.only(top: 2),
-            child: Text(subtitle!, style: const TextStyle(color: Colors.black54, fontSize: 12, height: 1.3)),
+            child: Text(subtitle!,
+                style: TextStyle(
+                    color: cs.onSurface.withValues(alpha: 0.54), fontSize: 12, height: 1.3)),
           ),
       ],
     );
@@ -543,23 +660,26 @@ class _PercentCard extends StatelessWidget {
   const _PercentCard({required this.text, required this.value});
 
   @override
-  Widget build(BuildContext context) => Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          border: Border.all(color: Colors.black.withValues(alpha: 0.4)),
-          borderRadius: BorderRadius.circular(14),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(text, style: const TextStyle(color: Colors.black, fontSize: 13)),
-            const SizedBox(height: 10),
-            _ProgressBar(value: value),
-          ],
-        ),
-      );
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        border: Border.all(color: cs.onSurface.withValues(alpha: 0.4)),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(text, style: TextStyle(color: cs.onSurface, fontSize: 13)),
+          const SizedBox(height: 10),
+          _ProgressBar(value: value),
+        ],
+      ),
+    );
+  }
 }
 
 class _ProgressBar extends StatelessWidget {
@@ -572,15 +692,22 @@ class _ProgressBar extends StatelessWidget {
         child: LinearProgressIndicator(
           value: value.clamp(0.0, 1.0),
           minHeight: 11,
-          backgroundColor: Colors.black12,
+          backgroundColor: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.12),
           valueColor: const AlwaysStoppedAnimation(_bar),
         ),
       );
 }
 
-Widget _navPill(IconData icon, String label, VoidCallback? onTap, {bool iconLeading = true}) {
+Widget _navPill(
+  BuildContext context,
+  IconData icon,
+  String label,
+  VoidCallback? onTap, {
+  bool iconLeading = true,
+}) {
+  final cs = Theme.of(context).colorScheme;
   final enabled = onTap != null;
-  final color = enabled ? _accent : Colors.black26;
+  final color = enabled ? _accent : cs.onSurface.withValues(alpha: 0.26);
   final row = <Widget>[
     Icon(icon, size: 18, color: color),
     const SizedBox(width: 2),
@@ -611,45 +738,51 @@ class _StepNav extends StatelessWidget {
   const _StepNav({required this.page, required this.total, this.onPrev, this.onNext});
 
   @override
-  Widget build(BuildContext context) => SafeArea(
-        top: false,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            border: Border(top: BorderSide(color: Colors.black12)),
-          ),
-          child: Row(
-            children: [
-              _navPill(Icons.chevron_left, 'Prev', onPrev),
-              Expanded(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text('Step ${page + 1} of $total',
-                        style: const TextStyle(fontSize: 13, color: Colors.black54)),
-                    const SizedBox(height: 6),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        for (var i = 0; i < total; i++)
-                          Container(
-                            width: 7,
-                            height: 7,
-                            margin: const EdgeInsets.symmetric(horizontal: 3),
-                            decoration: BoxDecoration(
-                                shape: BoxShape.circle, color: i == page ? _accent : Colors.black26),
-                          ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              _navPill(Icons.chevron_right, 'Next', onNext, iconLeading: false),
-            ],
-          ),
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return SafeArea(
+      top: false,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: cs.surface,
+          border: Border(top: BorderSide(color: cs.onSurface.withValues(alpha: 0.12))),
         ),
-      );
+        child: Row(
+          children: [
+            _navPill(context, Icons.chevron_left, 'Prev', onPrev),
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('Step ${page + 1} of $total',
+                      style: TextStyle(
+                          fontSize: 13, color: cs.onSurface.withValues(alpha: 0.54))),
+                  const SizedBox(height: 6),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      for (var i = 0; i < total; i++)
+                        Container(
+                          width: 7,
+                          height: 7,
+                          margin: const EdgeInsets.symmetric(horizontal: 3),
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: i == page ? _accent : cs.onSurface.withValues(alpha: 0.26),
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            _navPill(context, Icons.chevron_right, 'Next', onNext, iconLeading: false),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _Empty extends StatelessWidget {
@@ -657,20 +790,25 @@ class _Empty extends StatelessWidget {
   const _Empty({required this.onRefresh});
 
   @override
-  Widget build(BuildContext context) => RefreshIndicator(
-        onRefresh: onRefresh,
-        child: ListView(
-          children: const [
-            SizedBox(height: 120),
-            Icon(Icons.inbox_outlined, size: 48, color: Colors.black26),
-            SizedBox(height: 12),
-            Center(child: Text("It's empty here", style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600))),
-            SizedBox(height: 6),
-            Center(
-              child: Text('Pull down to refresh.',
-                  style: TextStyle(color: Colors.black54, fontSize: 13)),
-            ),
-          ],
-        ),
-      );
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return RefreshIndicator(
+      onRefresh: onRefresh,
+      child: ListView(
+        children: [
+          const SizedBox(height: 120),
+          Icon(Icons.inbox_outlined, size: 48, color: cs.onSurface.withValues(alpha: 0.26)),
+          const SizedBox(height: 12),
+          const Center(
+              child: Text("It's empty here",
+                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600))),
+          const SizedBox(height: 6),
+          Center(
+            child: Text('Pull down to refresh.',
+                style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54), fontSize: 13)),
+          ),
+        ],
+      ),
+    );
+  }
 }

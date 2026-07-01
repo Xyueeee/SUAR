@@ -14,10 +14,16 @@ import 'content_models.dart';
 const Color _ink = Color(0xFF1A1A1A);
 
 /// Builds the vertical list of widgets for one page's blocks.
-List<Widget> buildBlocks(List<Block> blocks) {
+/// Pass [textColor] to override the default dark ink — e.g. pass
+/// [ColorScheme.onSurface] so text adapts to the active theme.
+/// Pass [brightness] so explicitly-black run colours flip to white in dark mode
+/// (and vice versa) — the editor only lets admins pick black, not white.
+List<Widget> buildBlocks(List<Block> blocks,
+    {Color? textColor, Brightness brightness = Brightness.light}) {
+  final ink = textColor ?? _ink;
   final out = <Widget>[];
   for (final b in blocks) {
-    final w = _blockWidget(b);
+    final w = _blockWidget(b, ink, brightness);
     if (w != null) {
       out.add(Padding(padding: const EdgeInsets.only(bottom: 14), child: w));
     }
@@ -25,15 +31,15 @@ List<Widget> buildBlocks(List<Block> blocks) {
   return out;
 }
 
-Widget? _blockWidget(Block b) {
+Widget? _blockWidget(Block b, Color ink, Brightness brightness) {
   switch (b) {
     case HeadingBlock(:final level, :final runs):
       final size = level == 1 ? 22.0 : (level == 2 ? 18.0 : 16.0);
       return Text.rich(
-        _spans(runs, TextStyle(fontSize: size, fontWeight: FontWeight.bold, color: _ink, height: 1.3)),
+        _spans(runs, TextStyle(fontSize: size, fontWeight: FontWeight.bold, color: ink, height: 1.3), brightness),
       );
     case ParagraphBlock(:final runs):
-      return Text.rich(_spans(runs, const TextStyle(fontSize: 15, color: _ink, height: 1.5)));
+      return Text.rich(_spans(runs, TextStyle(fontSize: 15, color: ink, height: 1.5), brightness));
     case BulletsBlock(:final ordered, :final items):
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -48,12 +54,12 @@ Widget? _blockWidget(Block b) {
                     width: 24,
                     child: Text(
                       ordered ? '${i + 1}.' : '•',
-                      style: const TextStyle(fontSize: 15, color: _ink, height: 1.5),
+                      style: TextStyle(fontSize: 15, color: ink, height: 1.5),
                     ),
                   ),
                   Expanded(
                     child: Text.rich(
-                      _spans(items[i], const TextStyle(fontSize: 15, color: _ink, height: 1.5)),
+                      _spans(items[i], TextStyle(fontSize: 15, color: ink, height: 1.5), brightness),
                     ),
                   ),
                 ],
@@ -64,24 +70,36 @@ Widget? _blockWidget(Block b) {
     case ImageBlock(:final url, :final caption):
       return _GuideImage(url: url, caption: caption);
     case DividerBlock():
-      return const Divider(height: 1, color: Colors.black12);
+      return Divider(height: 1, color: ink.withValues(alpha: 0.12));
     case UnknownBlock():
       return null;
   }
 }
 
-TextSpan _spans(List<Run> runs, TextStyle base) =>
-    TextSpan(children: runs.map((r) => _span(r, base)).toList());
+TextSpan _spans(List<Run> runs, TextStyle base, Brightness brightness) =>
+    TextSpan(children: runs.map((r) => _span(r, base, brightness)).toList());
 
-TextSpan _span(Run r, TextStyle base) => TextSpan(
+TextSpan _span(Run r, TextStyle base, Brightness brightness) => TextSpan(
       text: r.text,
       style: base.copyWith(
         fontWeight: r.bold ? FontWeight.bold : null,
         fontStyle: r.italic ? FontStyle.italic : null,
-        color: r.colorArgb != null ? Color(r.colorArgb!) : base.color,
+        color: _resolveRunColor(r.colorArgb, base.color ?? Colors.black, brightness),
         decoration: _decoration(r),
       ),
     );
+
+/// Flips near-black → white in dark mode (and near-white → black in light mode)
+/// so admin-authored black text stays readable without needing a separate
+/// white-text option in the editor.
+Color _resolveRunColor(int? argb, Color fallback, Brightness brightness) {
+  if (argb == null) return fallback;
+  final c = Color(argb);
+  final lum = c.computeLuminance();
+  if (brightness == Brightness.dark && lum < 0.15) return Colors.white;
+  if (brightness == Brightness.light && lum > 0.85) return Colors.black;
+  return c;
+}
 
 TextDecoration? _decoration(Run r) {
   final d = <TextDecoration>[];
@@ -114,18 +132,27 @@ class _GuideImageState extends State<_GuideImage> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     final caption = widget.caption;
     final Widget image;
     if (widget.url.startsWith('asset://')) {
-      image = Image.asset(widget.url.substring(8), fit: BoxFit.cover, errorBuilder: _err);
+      image = Image.asset(
+        widget.url.substring(8),
+        fit: BoxFit.cover,
+        errorBuilder: (ctx, e, s) => _placeholder(ctx, failed: true),
+      );
     } else {
       image = FutureBuilder<File?>(
         future: _file,
-        builder: (context, snap) {
-          if (snap.connectionState != ConnectionState.done) return _placeholder();
+        builder: (ctx, snap) {
+          if (snap.connectionState != ConnectionState.done) return _placeholder(ctx);
           final f = snap.data;
-          if (f == null) return _placeholder(failed: true);
-          return Image.file(f, fit: BoxFit.cover, errorBuilder: _err);
+          if (f == null) return _placeholder(ctx, failed: true);
+          return Image.file(
+            f,
+            fit: BoxFit.cover,
+            errorBuilder: (ctx2, e, s) => _placeholder(ctx2, failed: true),
+          );
         },
       );
     }
@@ -139,25 +166,31 @@ class _GuideImageState extends State<_GuideImage> {
         if (caption != null && caption.isNotEmpty)
           Padding(
             padding: const EdgeInsets.only(top: 6),
-            child: Text(caption,
-                style: const TextStyle(fontSize: 12, color: Colors.black54, fontStyle: FontStyle.italic)),
+            child: Text(
+              caption,
+              style: TextStyle(
+                fontSize: 12,
+                color: cs.onSurface.withValues(alpha: 0.54),
+                fontStyle: FontStyle.italic,
+              ),
+            ),
           ),
       ],
     );
   }
 
-  Widget _err(BuildContext context, Object error, StackTrace? stack) =>
-      _placeholder(failed: true);
-
-  Widget _placeholder({bool failed = false}) => Container(
-        color: Colors.black12,
-        alignment: Alignment.center,
-        child: Icon(
-          failed ? Icons.image_not_supported_outlined : Icons.image_outlined,
-          color: Colors.black26,
-          size: 36,
-        ),
-      );
+  Widget _placeholder(BuildContext context, {bool failed = false}) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      color: cs.onSurface.withValues(alpha: 0.10),
+      alignment: Alignment.center,
+      child: Icon(
+        failed ? Icons.image_not_supported_outlined : Icons.image_outlined,
+        color: cs.onSurface.withValues(alpha: 0.26),
+        size: 36,
+      ),
+    );
+  }
 }
 
 class _ContentImageCache {

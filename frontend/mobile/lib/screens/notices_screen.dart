@@ -58,7 +58,10 @@ class _NoticeBodyState extends State<NoticeBody> {
         if (widget.body.isNotEmpty) {
           return Text(
             widget.body,
-            style: const TextStyle(color: Colors.black87, fontSize: 15, height: 1.5),
+            style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.87),
+                fontSize: 15,
+                height: 1.5),
           );
         }
         return const SizedBox.shrink();
@@ -111,11 +114,9 @@ class _NoticesScreenState extends State<NoticesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Scaffold(
-      backgroundColor: Colors.white,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
         leading: const BackChevron(),
         title: const Text('Notices'),
       ),
@@ -129,13 +130,13 @@ class _NoticesScreenState extends State<NoticesScreen> {
           if (notices.isEmpty) {
             return RefreshIndicator(
               onRefresh: () async => setState(() => _future = _load()),
-              child: ListView(children: const [
-                SizedBox(height: 120),
-                Icon(Icons.notifications_none, size: 48, color: Colors.black26),
-                SizedBox(height: 12),
-                Center(child: Text('No notices', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600))),
-                SizedBox(height: 6),
-                Center(child: Text('You’re all caught up.', style: TextStyle(color: Colors.black54, fontSize: 13))),
+              child: ListView(children: [
+                const SizedBox(height: 120),
+                Icon(Icons.notifications_none, size: 48, color: cs.onSurface.withValues(alpha: 0.26)),
+                const SizedBox(height: 12),
+                const Center(child: Text('No notices', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600))),
+                const SizedBox(height: 6),
+                Center(child: Text('You’re all caught up.', style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54), fontSize: 13))),
               ]),
             );
           }
@@ -143,14 +144,14 @@ class _NoticesScreenState extends State<NoticesScreen> {
             onRefresh: () async => setState(() => _future = _load()),
             child: ListView.separated(
               itemCount: notices.length,
-              separatorBuilder: (context, index) => const Divider(height: 1, color: Colors.black12, indent: 16, endIndent: 16),
+              separatorBuilder: (context, index) => Divider(height: 1, color: cs.onSurface.withValues(alpha: 0.12), indent: 16, endIndent: 16),
               itemBuilder: (context, i) {
                 final n = notices[i];
                 final when = fmtNoticeTime((n['updatedat'] ?? n['createdat'])?.toString());
                 return ListTile(
                   title: Text((n['title'] ?? '').toString(),
-                      style: const TextStyle(color: Colors.black, fontWeight: FontWeight.w600)),
-                  subtitle: when.isEmpty ? null : Text(when, style: const TextStyle(color: Colors.black54)),
+                      style: TextStyle(color: cs.onSurface, fontWeight: FontWeight.w600)),
+                  subtitle: when.isEmpty ? null : Text(when, style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54))),
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute(builder: (_) => NoticeDetailScreen(notice: n)),
                   ),
@@ -179,11 +180,9 @@ class NoticeDetailScreen extends StatelessWidget {
     final stamp = created.isEmpty
         ? ''
         : (updated.isNotEmpty && updated != created ? 'Posted $created · Updated $updated' : 'Posted $created');
+    final cs = Theme.of(context).colorScheme;
     return Scaffold(
-      backgroundColor: Colors.white,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
         leading: const BackChevron(),
         title: const Text('Notice'),
       ),
@@ -201,14 +200,14 @@ class NoticeDetailScreen extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           Text((notice['title'] ?? '').toString(),
-              style: const TextStyle(color: Colors.black, fontSize: 22, fontWeight: FontWeight.bold)),
+              style: TextStyle(color: cs.onSurface, fontSize: 22, fontWeight: FontWeight.bold)),
           if (subtitle.isNotEmpty) ...[
             const SizedBox(height: 4),
-            Text(subtitle, style: const TextStyle(color: Colors.black54, fontSize: 15)),
+            Text(subtitle, style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54), fontSize: 15)),
           ],
           if (stamp.isNotEmpty) ...[
             const SizedBox(height: 8),
-            Text(stamp, style: const TextStyle(color: Colors.black38, fontSize: 12)),
+            Text(stamp, style: TextStyle(color: cs.onSurface.withValues(alpha: 0.38), fontSize: 12)),
           ],
           const SizedBox(height: 16),
           NoticeBody(notice: notice, body: body),

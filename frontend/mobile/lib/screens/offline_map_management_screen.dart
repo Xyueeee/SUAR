@@ -98,11 +98,9 @@ class _OfflineMapManagementScreenState
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Scaffold(
-      backgroundColor: Colors.white,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
         elevation: 0,
         leading: const BackChevron(),
         title: const Text('Offline Map Management'),
@@ -116,19 +114,19 @@ class _OfflineMapManagementScreenState
             return const Center(child: CircularProgressIndicator());
           }
           if (stores.isEmpty) {
-            return const Center(
+            return Center(
               child: Text(
                 'No downloaded regions yet.',
-                style: TextStyle(color: Colors.black54),
+                style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54)),
               ),
             );
           }
           return ListView.separated(
             padding: const EdgeInsets.symmetric(vertical: 4),
             itemCount: stores.length,
-            separatorBuilder: (_, _) => const Divider(
+            separatorBuilder: (_, _) => Divider(
               height: 1,
-              color: Colors.black12,
+              color: cs.onSurface.withValues(alpha: 0.12),
               indent: 16,
               endIndent: 16,
             ),
@@ -192,6 +190,8 @@ class _StoreRowState extends State<_StoreRow> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final muted = cs.onSurface.withValues(alpha: 0.54);
     return ListenableBuilder(
       listenable: widget.manager,
       builder: (context, _) {
@@ -208,26 +208,26 @@ class _StoreRowState extends State<_StoreRow> {
                     Expanded(
                       child: Text(
                         widget.store.storeName,
-                        style: const TextStyle(
-                          color: Colors.black,
+                        style: TextStyle(
+                          color: cs.onSurface,
                           fontWeight: FontWeight.w600,
                           fontSize: 15,
                         ),
                       ),
                     ),
                     if (active == null)
-                      const Icon(Icons.chevron_right, color: Colors.black38)
+                      Icon(Icons.chevron_right, color: cs.onSurface.withValues(alpha: 0.38))
                     else if (active.isQueued)
-                      const Text(
+                      Text(
                         'Queued',
-                        style: TextStyle(color: Colors.black54, fontSize: 12),
+                        style: TextStyle(color: muted, fontSize: 12),
                       )
                     else ...[
                       IconButton(
                         visualDensity: VisualDensity.compact,
                         icon: Icon(
                           active.isPaused ? Icons.play_arrow : Icons.pause,
-                          color: Colors.black54,
+                          color: muted,
                         ),
                         onPressed: () => active.isPaused
                             ? widget.manager.resume(widget.store.storeName)
@@ -235,7 +235,7 @@ class _StoreRowState extends State<_StoreRow> {
                       ),
                       IconButton(
                         visualDensity: VisualDensity.compact,
-                        icon: const Icon(Icons.close, color: Colors.black54),
+                        icon: Icon(Icons.close, color: muted),
                         onPressed: () =>
                             widget.manager.cancel(widget.store.storeName),
                       ),
@@ -251,7 +251,7 @@ class _StoreRowState extends State<_StoreRow> {
                           ? null
                           : active.progress!.percentageProgress / 100,
                       minHeight: 4,
-                      backgroundColor: Colors.black12,
+                      backgroundColor: cs.onSurface.withValues(alpha: 0.12),
                       color: const Color(0xFFA7C7E7),
                     ),
                   ),
@@ -263,12 +263,12 @@ class _StoreRowState extends State<_StoreRow> {
                               '${_formatEta(active.progress!.estRemainingDuration)} · '
                               '${_formatSizeProgress(active.progress!)} · '
                               '${_formatSpeed(active.progress!)}',
-                    style: const TextStyle(color: Colors.black54, fontSize: 12),
+                    style: TextStyle(color: muted, fontSize: 12),
                   ),
                 ] else if (active != null && active.isQueued)
-                  const Text(
+                  Text(
                     'Waiting for another download to finish…',
-                    style: TextStyle(color: Colors.black54, fontSize: 12),
+                    style: TextStyle(color: muted, fontSize: 12),
                   )
                 else
                   FutureBuilder(
@@ -280,8 +280,8 @@ class _StoreRowState extends State<_StoreRow> {
                           : '${stats.length} tiles · ${(stats.size / 1024).toStringAsFixed(1)} MB';
                       return Text(
                         text,
-                        style: const TextStyle(
-                          color: Colors.black54,
+                        style: TextStyle(
+                          color: muted,
                           fontSize: 12,
                         ),
                       );

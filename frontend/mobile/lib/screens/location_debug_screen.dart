@@ -180,6 +180,7 @@ class _LocationDebugScreenState extends State<LocationDebugScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     final fix = _estimator.lastFix;
     final hasFix = fix != null;
     final spoofing = LocationEstimator.isSpoofing;
@@ -194,10 +195,7 @@ class _LocationDebugScreenState extends State<LocationDebugScreen> {
         : '${DateTime.now().difference(fix.at).inSeconds}s ago';
 
     return Scaffold(
-      backgroundColor: Colors.white,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
         leading: const BackChevron(),
         title: const Text('Location'),
       ),
@@ -245,11 +243,11 @@ class _LocationDebugScreenState extends State<LocationDebugScreen> {
                                     ),
                               useRadiusInMeter: true,
                               color:
-                                  (spoofing ? Colors.deepPurple : Colors.blue)
+                                  (spoofing ? const Color(0xFFA7C7E7) : Colors.blue)
                                       .withValues(alpha: 0.15),
                               borderStrokeWidth: 1,
                               borderColor:
-                                  (spoofing ? Colors.deepPurple : Colors.blue)
+                                  (spoofing ? const Color(0xFFA7C7E7) : Colors.blue)
                                       .withValues(alpha: 0.7),
                             ),
                           ],
@@ -264,7 +262,7 @@ class _LocationDebugScreenState extends State<LocationDebugScreen> {
                                 decoration: BoxDecoration(
                                   shape: BoxShape.circle,
                                   color: spoofing
-                                      ? Colors.deepPurple
+                                      ? const Color(0xFFA7C7E7)
                                       : Colors.blue,
                                   border: Border.all(
                                     color: Colors.white,
@@ -308,34 +306,32 @@ class _LocationDebugScreenState extends State<LocationDebugScreen> {
             ),
           ),
           const SizedBox(height: 4),
-          const Text(
+          Text(
             'Tap the map to drop / move a spoof pin.',
-            style: TextStyle(color: Colors.black45, fontSize: 12),
+            style: TextStyle(color: cs.onSurface.withValues(alpha: 0.45), fontSize: 12),
           ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
-            activeThumbColor: Colors.deepPurple,
-            title: const Text(
+            title: Text(
               'Spoof location (testing)',
-              style: TextStyle(
-                color: Colors.black,
-                fontWeight: FontWeight.w600,
-              ),
+              style: TextStyle(color: cs.onSurface, fontWeight: FontWeight.w600),
             ),
-            subtitle: const Text(
+            subtitle: Text(
               'Override real GPS everywhere, including Victim bundles',
-              style: TextStyle(color: Colors.black54),
+              style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54)),
             ),
             value: spoofing,
             onChanged: _toggleSpoof,
           ),
           if (spoofing) ...[
             _editRow(
+              context,
               'Spoof accuracy',
               '±${LocationEstimator.spoof!.accuracyMeters.round()} m',
               _editSpoofAccuracy,
             ),
             _editRow(
+              context,
               'Spoof altitude',
               LocationEstimator.spoof!.altitude != null
                   ? '${LocationEstimator.spoof!.altitude!.round()} m'
@@ -343,71 +339,103 @@ class _LocationDebugScreenState extends State<LocationDebugScreen> {
               _editSpoofAltitude,
             ),
           ],
-          const Divider(height: 28),
-          _section('Estimator'),
-          _row('start() result', _started ? 'tracking' : 'unavailable'),
-          _row('Permission', _permission),
-          _row('Location service', _service),
+          Divider(height: 28, color: cs.onSurface.withValues(alpha: 0.12)),
+          _section(context, 'Estimator'),
+          _row(context, 'start() result', _started ? 'tracking' : 'unavailable'),
+          _row(context, 'Permission', _permission),
+          _row(context, 'Location service', _service),
           const SizedBox(height: 16),
-          _section('Latest fix'),
-          _row('Source', hasFix ? fix.source : '—'),
-          _row(
-            'Latitude',
-            hasFix ? fix.latitude.toStringAsFixed(6) : 'acquiring…',
-          ),
-          _row(
-            'Longitude',
-            hasFix ? fix.longitude.toStringAsFixed(6) : 'acquiring…',
-          ),
-          _row('Accuracy', accuracy),
-          _row('Altitude', altitude),
-          _row('Fix age', age),
+          _section(context, 'Latest fix'),
+          _row(context, 'Source', hasFix ? fix.source : '—'),
+          _row(context, 'Latitude',
+              hasFix ? fix.latitude.toStringAsFixed(6) : 'acquiring…'),
+          _row(context, 'Longitude',
+              hasFix ? fix.longitude.toStringAsFixed(6) : 'acquiring…'),
+          _row(context, 'Accuracy', accuracy),
+          _row(context, 'Altitude', altitude),
+          _row(context, 'Fix age', age),
           const SizedBox(height: 16),
-          _section('Bundle would carry'),
-          _row(
-            'estimatedLat',
-            hasFix ? fix.latitude.toStringAsFixed(6) : 'null',
-          ),
-          _row(
-            'estimatedLng',
-            hasFix ? fix.longitude.toStringAsFixed(6) : 'null',
-          ),
-          _row(
-            'accuracyMeters',
-            (hasFix && !fix.accuracyMeters.isNaN)
-                ? fix.accuracyMeters.toStringAsFixed(1)
-                : 'null',
-          ),
-          _row(
-            'estimatedAltitude',
-            fix?.altitude != null ? fix!.altitude!.toStringAsFixed(1) : 'null',
-          ),
+          _section(context, 'Bundle would carry'),
+          _row(context, 'estimatedLat',
+              hasFix ? fix.latitude.toStringAsFixed(6) : 'null'),
+          _row(context, 'estimatedLng',
+              hasFix ? fix.longitude.toStringAsFixed(6) : 'null'),
+          _row(context, 'accuracyMeters',
+              (hasFix && !fix.accuracyMeters.isNaN)
+                  ? fix.accuracyMeters.toStringAsFixed(1)
+                  : 'null'),
+          _row(context, 'estimatedAltitude',
+              fix?.altitude != null
+                  ? fix!.altitude!.toStringAsFixed(1)
+                  : 'null'),
           const SizedBox(height: 8),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 4),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
             child: Text(
               'Helper map draws the ring at accuracyMeters, clamped 8–500 m. '
               'A null fix shows as an approximate pin near the Helper instead. '
-              'GPS altitude is coarse (±10-30 m) — a floor hint, not a count.',
-              style: TextStyle(color: Colors.black45, fontSize: 12),
+              'GPS altitude is coarse (±10-30 m). A floor hint, not a count.',
+              style: TextStyle(
+                  color: cs.onSurface.withValues(alpha: 0.45), fontSize: 12),
             ),
           ),
           const SizedBox(height: 20),
           OutlinedButton.icon(
             onPressed: Geolocator.openLocationSettings,
-            icon: const Icon(Icons.gps_fixed, color: Colors.black),
-            label: const Text(
-              'Open location settings',
-              style: TextStyle(color: Colors.black),
-            ),
+            icon: Icon(Icons.gps_fixed, color: cs.onSurface),
+            label: Text('Open location settings',
+                style: TextStyle(color: cs.onSurface)),
           ),
           const SizedBox(height: 8),
           OutlinedButton.icon(
             onPressed: Geolocator.openAppSettings,
-            icon: const Icon(Icons.settings_outlined, color: Colors.black),
-            label: const Text(
-              'Open app permissions',
-              style: TextStyle(color: Colors.black),
+            icon: Icon(Icons.settings_outlined, color: cs.onSurface),
+            label: Text('Open app permissions',
+                style: TextStyle(color: cs.onSurface)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _section(BuildContext context, String label) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(
+        label.toUpperCase(),
+        style: TextStyle(
+          color: cs.onSurface.withValues(alpha: 0.54),
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.5,
+        ),
+      ),
+    );
+  }
+
+  Widget _row(BuildContext context, String label, String value) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 130,
+            child: Text(label,
+                style: TextStyle(
+                    color: cs.onSurface.withValues(alpha: 0.54), fontSize: 14)),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: TextStyle(
+                color: cs.onSurface,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
             ),
           ),
         ],
@@ -415,74 +443,35 @@ class _LocationDebugScreenState extends State<LocationDebugScreen> {
     );
   }
 
-  Widget _section(String label) => Padding(
-    padding: const EdgeInsets.only(bottom: 8),
-    child: Text(
-      label.toUpperCase(),
-      style: const TextStyle(
-        color: Colors.black54,
-        fontSize: 12,
-        fontWeight: FontWeight.w700,
-        letterSpacing: 0.5,
-      ),
-    ),
-  );
-
-  Widget _row(String label, String value) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 6),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(
-          width: 130,
-          child: Text(
-            label,
-            style: const TextStyle(color: Colors.black54, fontSize: 14),
-          ),
+  Widget _editRow(
+      BuildContext context, String label, String value, VoidCallback onEdit) {
+    final cs = Theme.of(context).colorScheme;
+    return InkWell(
+      onTap: onEdit,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 130,
+              child: Text(label,
+                  style: TextStyle(
+                      color: cs.onSurface.withValues(alpha: 0.54),
+                      fontSize: 14)),
+            ),
+            Expanded(
+              child: Text(value,
+                  style: TextStyle(
+                      color: cs.onSurface,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600)),
+            ),
+            Icon(Icons.edit_outlined,
+                size: 16,
+                color: cs.onSurface.withValues(alpha: 0.38)),
+          ],
         ),
-        Expanded(
-          child: Text(
-            value,
-            style: const TextStyle(
-              color: Colors.black,
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              fontFeatures: [FontFeature.tabularFigures()],
-            ),
-          ),
-        ),
-      ],
-    ),
-  );
-
-  /// A value row with an Edit affordance — matches the plain [_row] but taps
-  /// through to a setter, used for the spoof accuracy/altitude fields.
-  Widget _editRow(String label, String value, VoidCallback onEdit) => InkWell(
-    onTap: onEdit,
-    child: Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 130,
-            child: Text(
-              label,
-              style: const TextStyle(color: Colors.black54, fontSize: 14),
-            ),
-          ),
-          Expanded(
-            child: Text(
-              value,
-              style: const TextStyle(
-                color: Colors.black,
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-          const Icon(Icons.edit_outlined, size: 16, color: Colors.black38),
-        ],
       ),
-    ),
-  );
+    );
+  }
 }

@@ -187,20 +187,24 @@ class _RegionDownloadScreenState extends State<RegionDownloadScreen> {
       _Handle.bottomRight,
     };
 
-    if (adjustsLeft.contains(handle))
+    if (adjustsLeft.contains(handle)) {
       left = (left + details.delta.dx).clamp(0.0, right - _minBoxSize);
-    if (adjustsRight.contains(handle))
+    }
+    if (adjustsRight.contains(handle)) {
       right = (right + details.delta.dx).clamp(
         left + _minBoxSize,
         mapSize.width,
       );
-    if (adjustsTop.contains(handle))
+    }
+    if (adjustsTop.contains(handle)) {
       top = (top + details.delta.dy).clamp(0.0, bottom - _minBoxSize);
-    if (adjustsBottom.contains(handle))
+    }
+    if (adjustsBottom.contains(handle)) {
       bottom = (bottom + details.delta.dy).clamp(
         top + _minBoxSize,
         mapSize.height,
       );
+    }
 
     setState(() => _selectionRect = Rect.fromLTRB(left, top, right, bottom));
   }
@@ -306,10 +310,7 @@ class _RegionDownloadScreenState extends State<RegionDownloadScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
         leading: const BackChevron(),
         title: Text(
           _isEditing ? widget.existingStore!.storeName : 'Download Map Area',

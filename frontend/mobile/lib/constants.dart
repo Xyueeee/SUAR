@@ -1,6 +1,9 @@
 /// Fixed configuration values shared across the SUAR mesh networking layer.
 library;
 
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
+
 // "SUAR"/"ACK1" aren't valid hex — UUID.fromString (native) and Guid() (Dart)
 // both require hex digits only. Kept the visual mnemonic where hex allows it.
 const String suarServiceUuid = "0000F00D-0000-1000-8000-00805F9B34FB";
@@ -45,6 +48,14 @@ const int bleManufacturerId = 0xFFFF;
 const int dtnMaxHopCount = 12;
 
 const String deviceIdPrefKey = "suar_device_id";
+
+/// Ensures a stable device UUID exists in prefs. Called once at startup so
+/// the ID is available before the user enters any mode.
+Future<void> ensureDeviceId() async {
+  final prefs = await SharedPreferences.getInstance();
+  if (prefs.getString(deviceIdPrefKey) != null) return;
+  await prefs.setString(deviceIdPrefKey, const Uuid().v4());
+}
 const String appVersion = "1.0.0";
 
 // Single backend base URL for the whole app — Helper sync (future) AND the

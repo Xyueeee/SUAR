@@ -265,7 +265,7 @@ class BLEManager {
       // peer answers fine on the very next contact. One more attempt, after
       // a longer settle, recovers it instead of failing the whole ACK.
       if (!services.any((s) => s.uuid == Guid(suarServiceUuid))) {
-        _emit('SUAR service missing from discovery — retrying once…');
+        _emit('SUAR service missing from discovery. Retrying once…');
         await Future.delayed(const Duration(milliseconds: 800));
         services = await device.discoverServices();
         _emit(

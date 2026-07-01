@@ -6,6 +6,7 @@ SUAR.views = SUAR.views || {};
 SUAR.views.devices = (function () {
   let search = "", sortKey = "lastseen";
   let allRows = [];
+  let _detailOpen = false;
   const selected = new Set();
 
   async function render(container) {
@@ -72,32 +73,42 @@ SUAR.views.devices = (function () {
     return rows;
   }
 
+  function lastSeenCell(iso) {
+    if (!iso) return '<span class="muted">—</span>';
+    const diff = (Date.now() - new Date(iso)) / 1000;
+    const label = SUAR.ui.fmtRelative(iso);
+    if (!isNaN(diff) && diff < 3600) return '<span style="color:var(--ok)">' + label + "</span>";
+    if (!isNaN(diff) && diff < 86400) return '<span style="color:var(--moderate)">' + label + "</span>";
+    return '<span class="muted">' + label + "</span>";
+  }
+
   function renderTable() {
     const wrap = document.getElementById("d-table");
     if (!wrap) return;
     const rows = visibleRows();
     if (!rows.length) { wrap.innerHTML = SUAR.ui.empty(search ? "No matches" : "No devices yet", search ? "Try a different search." : "Devices register on their first sync."); return; }
     wrap.innerHTML =
-      '<table class="data"><thead><tr><th style="width:34px"><input type="checkbox" id="dv-selall"></th><th>Device ID</th><th>Mode</th><th>Version</th><th>Bundles</th><th>Last seen</th><th></th></tr></thead><tbody>' +
+      '<table class="data"><thead><tr><th style="width:34px"><input type="checkbox" id="dv-selall"></th><th>Device ID</th><th>Mode</th><th>Version</th><th>Bundles</th><th>Registered</th><th>Last seen</th><th></th></tr></thead><tbody>' +
       rows.map((d) =>
-        "<tr>" +
+        '<tr class="clickable">' +
         '<td><input type="checkbox" class="dv-sel"' + (selected.has(d.deviceid) ? " checked" : "") + "></td>" +
         '<td class="mono-cell">' + SUAR.ui.esc(d.deviceid) + "</td>" +
         "<td>" + modeChip(d.applicationmode) + "</td>" +
         '<td class="mono-cell">' + SUAR.ui.esc(d.applicationversion || "—") + "</td>" +
         '<td class="mono-cell">' + (d.bundleCount ?? 0) + "</td>" +
-        '<td class="muted">' + SUAR.ui.fmtRelative(d.lastseenat) + "</td>" +
+        '<td class="muted">' + SUAR.ui.fmtRelative(d.registeredat) + "</td>" +
+        "<td>" + lastSeenCell(d.lastseenat) + "</td>" +
         '<td class="cell-actions">' +
-          '<button class="btn btn--ghost btn--sm" data-edit>Edit</button>' +
           '<button class="btn btn--danger btn--sm" data-del>Delete</button>' +
         "</td></tr>"
       ).join("") + "</tbody></table>";
 
     rows.forEach((d, i) => {
       const tr = wrap.querySelectorAll("tbody tr")[i];
+      tr.addEventListener("click", () => openDetail(d));
+      tr.querySelector(".dv-sel").addEventListener("click", (e) => e.stopPropagation());
       tr.querySelector(".dv-sel").addEventListener("change", (e) => { e.target.checked ? selected.add(d.deviceid) : selected.delete(d.deviceid); updateBulkBar(); syncSelAll(); });
-      tr.querySelector("[data-edit]").addEventListener("click", () => openEdit(d));
-      tr.querySelector("[data-del]").addEventListener("click", () => del(d));
+      tr.querySelector("[data-del]").addEventListener("click", (e) => { e.stopPropagation(); del(d); });
     });
     const selall = wrap.querySelector("#dv-selall");
     selall.addEventListener("change", (e) => {
@@ -107,37 +118,59 @@ SUAR.views.devices = (function () {
     syncSelAll();
   }
 
+  function former(k, v) { return "<dt>" + k + "</dt><dd>" + v + "</dd>"; }
+
+  async function openDetail(d) {
+    if (_detailOpen) return;
+    _detailOpen = true;
+    const bundles = await SUAR.api.get("/admin/bundles?device=" + encodeURIComponent(d.deviceid)).finally(() => { _detailOpen = false; });
+    const tc = d.tierCounts || {};
+    const tierBadges = ["Critical", "High", "Moderate", "Low"].filter((t) => tc[t])
+      .map((t) => SUAR.ui.tierBadge(t) + " &times;" + tc[t]).join("  ");
+
+    const kv = [
+      former("Device ID", '<span class="mono">' + SUAR.ui.esc(d.deviceid) + "</span>"),
+      former("Mode", modeChip(d.applicationmode)),
+      former("App version", '<span class="mono">' + SUAR.ui.esc(d.applicationversion || "—") + "</span>"),
+      former("Registered", SUAR.ui.fmtDate(d.registeredat)),
+      former("Last seen", SUAR.ui.fmtDate(d.lastseenat)),
+      former("Bundles", (d.bundleCount ?? 0) + (tierBadges ? " &nbsp; " + tierBadges : "")),
+    ].join("");
+
+    const bundleRows = bundles.map((b) =>
+      "<tr>" +
+      "<td>" + SUAR.ui.tierBadge(b.prioritytier) + "</td>" +
+      '<td class="mono-cell">' + (b.priorityscore != null ? b.priorityscore.toFixed(3) : "—") + "</td>" +
+      '<td class="id-trunc">' + SUAR.ui.truncId(b.bundleid, 14) + "</td>" +
+      '<td class="muted">' + SUAR.ui.fmtRelative(b.createdat) + "</td>" +
+      "</tr>"
+    ).join("");
+
+    const body =
+      '<dl class="kv">' + kv + "</dl>" +
+      '<div class="section-title">Bundles (' + bundles.length + ")</div>" +
+      (bundles.length
+        ? '<table class="data"><thead><tr><th>Tier</th><th>Score</th><th>Bundle ID</th><th>Created</th></tr></thead><tbody>' + bundleRows + "</tbody></table>"
+        : '<p class="muted" style="font-size:13px">No bundles yet.</p>');
+
+    SUAR.ui.drawer({
+      title: "Device " + SUAR.ui.truncId(d.deviceid, 14),
+      body,
+      actions: [
+        { label: "Delete", className: "btn--danger", onClick: async (close) => {
+            const ok = await SUAR.ui.confirm({ title: "Delete device?", message: "Also deletes " + (d.bundleCount ?? 0) + " bundle(s). Cannot be undone.", confirmLabel: "Delete", danger: true });
+            if (!ok) return;
+            try { await SUAR.api.del("/admin/devices/" + encodeURIComponent(d.deviceid)); SUAR.ui.toast("Deleted", "ok"); close(); load(); SUAR.app.refreshCounts(); }
+            catch (e) { SUAR.ui.toast(e.message, "err"); }
+          } },
+      ],
+    });
+  }
+
   function modeChip(m) {
     if (m === "helper") return '<span class="chip chip--on">helper</span>';
     if (m === "victim") return '<span class="badge badge--High">victim</span>';
     return '<span class="chip">' + SUAR.ui.esc(m || "—") + "</span>";
-  }
-
-  function openEdit(d) {
-    SUAR.ui.modal({
-      title: "Edit device",
-      body:
-        '<div class="field"><label>Device ID</label><input class="input mono" value="' + SUAR.ui.esc(d.deviceid) + '" disabled></div>' +
-        '<div class="form-row">' +
-          '<div class="field"><label>Mode</label><select class="select" id="d-mode">' +
-            '<option value="victim"' + (d.applicationmode === "victim" ? " selected" : "") + ">victim</option>" +
-            '<option value="helper"' + (d.applicationmode === "helper" ? " selected" : "") + ">helper</option></select></div>" +
-          '<div class="field"><label>App version</label><input class="input" id="d-ver" value="' + SUAR.ui.esc(d.applicationversion || "") + '"></div>' +
-        "</div>",
-      actions: [
-        { label: "Cancel", className: "btn--ghost", onClick: (c) => c() },
-        { label: "Save", className: "btn--primary", onClick: async (close, btn) => {
-            btn.disabled = true;
-            try {
-              await SUAR.api.patch("/admin/devices/" + encodeURIComponent(d.deviceid), {
-                applicationmode: document.getElementById("d-mode").value,
-                applicationversion: document.getElementById("d-ver").value,
-              });
-              SUAR.ui.toast("Device updated", "ok"); close(); load();
-            } catch (e) { SUAR.ui.toast(e.message, "err"); btn.disabled = false; }
-          } },
-      ],
-    });
   }
 
   async function del(d) {

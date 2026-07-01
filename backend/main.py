@@ -432,12 +432,14 @@ def admin_delete_bundle(bundle_id: str, _=Depends(require_admin)):
 @app.get("/admin/devices")
 def admin_list_devices(_=Depends(require_admin)):
     devices = supabase.table("device").select("*").order("lastseenat", desc=True).execute().data
-    counts = Counter(
-        b["deviceid"]
-        for b in supabase.table("distressbundle").select("deviceid").execute().data
-    )
+    bundles = supabase.table("distressbundle").select("deviceid,prioritytier").execute().data
+    tier_by_device: dict[str, Counter] = defaultdict(Counter)
+    for b in bundles:
+        tier_by_device[b["deviceid"]][b["prioritytier"]] += 1
     for d in devices:
-        d["bundleCount"] = counts.get(d["deviceid"], 0)
+        tc = tier_by_device.get(d["deviceid"], Counter())
+        d["bundleCount"] = sum(tc.values())
+        d["tierCounts"] = {t: tc[t] for t in ["Critical", "High", "Moderate", "Low"] if tc[t]}
     return devices
 
 
@@ -525,7 +527,7 @@ _ADMIN_RESOURCES = {
     ),
     "docs": dict(
         table="appdoc", pk="docid",
-        fields=["category", "title", "structure", "ispublished", "orderindex"],
+        fields=["category", "title", "structure", "ispublished", "orderindex", "usepercent"],
         versioned=True,
     ),
 }

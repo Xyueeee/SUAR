@@ -92,7 +92,7 @@ class LocationEstimator {
   Future<bool> start() async {
     await loadSpoof();
     if (_spoof != null) {
-      _log('Spoof active — skipping GPS, using set location.');
+      _log('Spoof active. Skipping GPS, using set location.');
       return true;
     }
     try {
@@ -102,11 +102,11 @@ class LocationEstimator {
       }
       if (permission == LocationPermission.denied ||
           permission == LocationPermission.deniedForever) {
-        _log('Location permission not granted — bundle will have no GPS.');
+        _log('Location permission not granted. Bundle will have no GPS.');
         return false;
       }
       if (!await Geolocator.isLocationServiceEnabled()) {
-        _log('Location services off — bundle will have no GPS.');
+        _log('Location services off. Bundle will have no GPS.');
         return false;
       }
 

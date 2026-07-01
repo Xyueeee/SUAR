@@ -26,11 +26,9 @@ class _DebugDatabaseScreenState extends State<DebugDatabaseScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Scaffold(
-      backgroundColor: Colors.white,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
         leading: const BackChevron(),
         title: const Text('Local Database'),
       ),
@@ -42,17 +40,18 @@ class _DebugDatabaseScreenState extends State<DebugDatabaseScreen> {
           }
           final tables = snapshot.data!;
           if (tables.isEmpty) {
-            return const Center(
+            return Center(
               child: Text(
                 'No tables found.',
-                style: TextStyle(color: Colors.black54),
+                style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54)),
               ),
             );
           }
+          final cs2 = Theme.of(context).colorScheme;
           return ListView.separated(
             itemCount: tables.length,
-            separatorBuilder: (context, index) => const Divider(
-              color: Colors.black12,
+            separatorBuilder: (context, index) => Divider(
+              color: cs2.onSurface.withValues(alpha: 0.12),
               height: 1,
               indent: 16,
               endIndent: 16,
@@ -60,15 +59,9 @@ class _DebugDatabaseScreenState extends State<DebugDatabaseScreen> {
             itemBuilder: (context, index) {
               final table = tables[index];
               return ListTile(
-                leading: const Icon(
-                  Icons.table_chart_outlined,
-                  color: Colors.black,
-                ),
-                title: Text(table, style: const TextStyle(color: Colors.black)),
-                trailing: const Icon(
-                  Icons.chevron_right,
-                  color: Colors.black54,
-                ),
+                leading: Icon(Icons.table_chart_outlined, color: cs2.onSurface),
+                title: Text(table, style: TextStyle(color: cs2.onSurface)),
+                trailing: Icon(Icons.chevron_right, color: cs2.onSurface.withValues(alpha: 0.54)),
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(
                     builder: (_) => DebugTableScreen(tableName: table),
@@ -138,11 +131,9 @@ class _DebugTableScreenState extends State<DebugTableScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Scaffold(
-      backgroundColor: Colors.white,
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black,
         leading: const BackChevron(),
         title: Text(widget.tableName),
         actions: [
@@ -161,8 +152,9 @@ class _DebugTableScreenState extends State<DebugTableScreen> {
           }
           final rows = snapshot.data!;
           if (rows.isEmpty) {
-            return const Center(
-              child: Text('No rows.', style: TextStyle(color: Colors.black54)),
+            return Center(
+              child: Text('No rows.',
+                  style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54))),
             );
           }
           // _rowid is fetched for deletion but isn't a real column — hide it.
@@ -184,13 +176,12 @@ class _DebugTableScreenState extends State<DebugTableScreen> {
                           for (final column in columns)
                             DataCell(Text('${row[column] ?? ''}')),
                           DataCell(
-                            IconButton(
-                              icon: const Icon(
-                                Icons.delete_outline,
-                                size: 18,
-                                color: Colors.black54,
+                            Builder(
+                              builder: (ctx) => IconButton(
+                                icon: Icon(Icons.delete_outline, size: 18,
+                                    color: Theme.of(ctx).colorScheme.onSurface.withValues(alpha: 0.54)),
+                                onPressed: () => _deleteRow(row['_rowid'] as int),
                               ),
-                              onPressed: () => _deleteRow(row['_rowid'] as int),
                             ),
                           ),
                         ],

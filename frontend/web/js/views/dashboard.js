@@ -48,30 +48,47 @@ SUAR.views.dashboard = (function () {
     );
   }
 
+  function skelRow(n) {
+    let h = "";
+    for (let i = 0; i < n; i++) h += '<div class="stat"><div class="skel" style="height:12px;width:55%;margin-bottom:10px;border-radius:4px"></div><div class="skel" style="height:28px;width:35%;border-radius:4px"></div></div>';
+    return h;
+  }
+
   async function render(container) {
     charts.forEach((c) => c.destroy()); charts = [];
     if (map) { map.remove(); map = null; }
 
-    const s = await SUAR.api.get("/admin/stats");
-
+    // Render structural shell immediately — page is no longer blank while fetching.
     container.innerHTML =
-      '<div class="grid grid--stats" style="margin-bottom:16px">' +
-        statTile("Total bundles", s.totalBundles, s.locatedCount + " located", "var(--accent)") +
-        statTile("Critical + High", (s.tierCounts.Critical + s.tierCounts.High), "need attention", "var(--critical)") +
-        statTile("Devices seen", s.deviceCount, s.topDevices.length + " active", "var(--accent-soft)") +
-        statTile("Active (24h)", s.activeCount, s.inactiveCount + " gone quiet", "var(--accent)") +
-      "</div>" +
-      '<div style="margin-bottom:16px">' + tierBarHtml(s.tierCounts) + "</div>" +
+      '<div class="grid grid--stats" id="dash-tiles" style="margin-bottom:16px">' + skelRow(4) + "</div>" +
+      '<div style="margin-bottom:16px" id="dash-tierbar">' + SUAR.ui.spinner() + "</div>" +
       '<div class="grid grid--2" style="margin-bottom:16px">' +
         '<div class="card"><div class="card__head"><h3>Activity — last 14 days</h3></div><div class="card__body"><canvas id="dash-activity" height="150"></canvas></div></div>' +
         '<div class="card"><div class="card__head"><h3>Severity split</h3></div><div class="card__body" style="display:grid;place-items:center"><div style="max-width:240px;width:100%"><canvas id="dash-tier"></canvas></div></div></div>' +
       "</div>" +
       '<div class="grid grid--2">' +
-        '<div class="card"><div class="card__head"><h3>Recent bundles</h3><span class="spacer"></span><a href="#/bundles" class="eyebrow">View all →</a></div><div class="table-wrap" id="dash-recent"></div></div>' +
+        '<div class="card"><div class="card__head"><h3>Recent bundles</h3><span class="spacer"></span><a href="#/bundles" class="eyebrow">View all →</a></div><div class="table-wrap" id="dash-recent">' + SUAR.ui.spinner() + "</div></div>" +
         '<div class="card"><div class="card__head"><h3>Located victims</h3><span class="spacer"></span><a href="#/map" class="eyebrow">Open map →</a></div><div class="card__body" style="padding:12px"><div class="map map--mini" id="dash-map"></div></div></div>' +
       "</div>";
 
-    // Recent bundles table
+    // Init map immediately — tile loading starts in parallel with the stats fetch.
+    map = L.map("dash-map", { zoomControl: false, attributionControl: false });
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(map);
+    map.setView([3.139, 101.6869], 11); // KL default; overridden below if points exist
+
+    const s = await SUAR.api.get("/admin/stats");
+
+    // Stat tiles
+    document.getElementById("dash-tiles").innerHTML =
+      statTile("Total bundles", s.totalBundles, s.locatedCount + " located", "var(--accent)") +
+      statTile("Critical + High", (s.tierCounts.Critical + s.tierCounts.High), "need attention", "var(--critical)") +
+      statTile("Devices seen", s.deviceCount, s.topDevices.length + " active", "var(--accent-soft)") +
+      statTile("Active (24h)", s.activeCount, s.inactiveCount + " gone quiet", "var(--accent)");
+
+    // Tier bar
+    document.getElementById("dash-tierbar").innerHTML = tierBarHtml(s.tierCounts);
+
+    // Recent bundles
     const recent = s.recentBundles || [];
     document.getElementById("dash-recent").innerHTML = recent.length
       ? '<table class="data"><thead><tr><th>Tier</th><th>Score</th><th>Device</th><th>When</th></tr></thead><tbody>' +
@@ -89,8 +106,6 @@ SUAR.views.dashboard = (function () {
       type: "bar",
       data: {
         labels: act.map((d) => d.date.slice(5)),
-        // No mobile-app equivalent for "activity over time" — pastel-ized
-        // version of the old solid accent blue (#3e6fa8) instead.
         datasets: [{ data: act.map((d) => d.count), backgroundColor: "#A8BED8", borderRadius: 4, maxBarThickness: 22 }],
       },
       options: {
@@ -115,9 +130,7 @@ SUAR.views.dashboard = (function () {
       options: { cutout: "62%", plugins: { legend: { display: false }, tooltip: { enabled: hasTier } } },
     }));
 
-    // Mini map
-    map = L.map("dash-map", { zoomControl: false, attributionControl: false });
-    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(map);
+    // Map pins (map already initialised above)
     const located = recent.filter((b) => b.estimatedlat != null && b.estimatedlng != null);
     if (located.length) {
       const pts = [];
@@ -129,8 +142,6 @@ SUAR.views.dashboard = (function () {
         pts.push([b.estimatedlat, b.estimatedlng]);
       });
       map.fitBounds(pts, { padding: [30, 30], maxZoom: 15 });
-    } else {
-      map.setView([3.139, 101.6869], 11); // KL fallback
     }
   }
 

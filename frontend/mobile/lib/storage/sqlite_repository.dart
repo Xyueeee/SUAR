@@ -15,7 +15,8 @@ class SQLiteRepository {
   // v8: added AppDoc + DocProgress — the unified content/prep model (one tree
   //     per doc). Supersedes Guide/PrepPlanT/PrepProgress (kept but unused).
   // v9: added AppDoc.OrderIndex — admin-controlled display order.
-  static const int _dbVersion = 9;
+  // v10: added AppDoc.UsePercent — % card flag moved from structure JSON to DB column.
+  static const int _dbVersion = 10;
 
   Database? _db;
 
@@ -95,6 +96,7 @@ class SQLiteRepository {
       Version INTEGER NOT NULL DEFAULT 1,
       StructureJson TEXT NOT NULL,
       OrderIndex INTEGER NOT NULL DEFAULT 0,
+      UsePercent INTEGER NOT NULL DEFAULT 0,
       UpdatedAt TEXT
     )
   ''';
@@ -157,6 +159,12 @@ class SQLiteRepository {
         }
         if (oldVersion >= 8 && oldVersion < 9) {
           await db.execute('ALTER TABLE AppDoc ADD COLUMN OrderIndex INTEGER NOT NULL DEFAULT 0');
+        }
+        // Covers v8 too: a v8 device jumping straight to v10 never runs the
+        // v9 step, so gate on the full range the column was absent for (v8+v9),
+        // not just v9. OrderIndex above stays ==8 because v9 tables already have it.
+        if (oldVersion >= 8 && oldVersion < 10) {
+          await db.execute('ALTER TABLE AppDoc ADD COLUMN UsePercent INTEGER NOT NULL DEFAULT 0');
         }
       },
     );

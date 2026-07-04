@@ -9,8 +9,11 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../constants.dart';
 import '../controllers/victim_controller.dart';
+import '../help/help_tour.dart';
 import '../log_translator.dart';
+import '../services/app_lock.dart';
 import '../theme.dart';
+import '../widgets/marquee_text.dart';
 import '../widgets/mesh_activity_card.dart';
 import '../widgets/radio_status_banner.dart';
 import 'dashboard_screen.dart';
@@ -99,6 +102,13 @@ class _VictimModeScreenState extends State<VictimModeScreen> {
   Timer? _sosTimer;
   int _sosStep = 0;
 
+  // Help tour targets
+  final _kRadioPill = GlobalKey();
+  final _kMeshCard = GlobalKey();
+  final _kTipsCard = GlobalKey();
+  final _kToolsCard = GlobalKey();
+  late final HelpTourController _help;
+
   @override
   void initState() {
     super.initState();
@@ -107,6 +117,41 @@ class _VictimModeScreenState extends State<VictimModeScreen> {
     _controller.triageStatus.addListener(_onTriage);
     _controller.startVictimMode();
     _startMagnetometer();
+    _help = HelpTourController([
+      HelpStep(
+        targetKey: _kRadioPill,
+        title: 'Your connection status',
+        body: const [
+          'Broadcasting means nearby helpers can find you.',
+          'It moves through Connecting to Sending as a helper picks up your signal.',
+        ],
+      ),
+      HelpStep(
+        targetKey: _kMeshCard,
+        title: 'Live activity',
+        body: const [
+          'Shows what your phone is doing right now, in plain language.',
+          'You do not need to do anything here, it updates on its own.',
+        ],
+      ),
+      HelpStep(
+        targetKey: _kToolsCard,
+        title: 'Survival tools',
+        body: const [
+          'Flashlight (with an SOS blink) and a compass.',
+          'Swipe sideways for your ID, medical info, and live triage.',
+          'These keep working while you broadcast.',
+        ],
+      ),
+      HelpStep(
+        targetKey: _kTipsCard,
+        title: 'Survival & first aid tips',
+        body: const [
+          'Quick reference for staying safe and helping the injured.',
+          'Works fully offline once loaded.',
+        ],
+      ),
+    ]);
   }
 
   void _addLogLine(String raw) {
@@ -167,6 +212,7 @@ class _VictimModeScreenState extends State<VictimModeScreen> {
 
   @override
   void dispose() {
+    _help.dispose();
     _statusSub?.cancel();
     _controller.triageStatus.removeListener(_onTriage);
     _magSub?.cancel();
@@ -213,11 +259,36 @@ class _VictimModeScreenState extends State<VictimModeScreen> {
     _sosTimer = Timer(Duration(milliseconds: ms), _stepSos);
   }
 
+  // ─── Exit gate ───────────────────────────────────────────────────────────
+
+  /// Leave victim mode. When the exit lock is on, require the device lock first
+  /// (fail-open if the device cannot authenticate). Programmatic pop bypasses
+  /// [PopScope], so this is the single exit path for both the chevron and the
+  /// hardware/predictive back button.
+  Future<void> _handleExit() async {
+    // If the help tour is open, the back button should close it, not leave
+    // victim mode (and definitely not trigger the exit-lock prompt behind it).
+    if (_help.isShowing) {
+      _help.dismiss();
+      return;
+    }
+    if (AppLock.requireExitVictim.value) {
+      final ok = await AppLock.authenticate('Confirm to leave victim mode');
+      if (!ok || !mounted) return;
+    }
+    if (mounted) Navigator.of(context).pop();
+  }
+
   // ─── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _handleExit();
+      },
+      child: Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
         child: Padding(
@@ -238,12 +309,13 @@ class _VictimModeScreenState extends State<VictimModeScreen> {
                 child: ValueListenableBuilder<bool>(
                   valueListenable: detailedLogging,
                   builder: (_, detailed, x) => MeshActivityCard(
+                    key: _kMeshCard,
                     lines: detailed ? _rawLog : _displayLog,
                   ),
                 ),
               ),
               const SizedBox(height: 8),
-              _VictimTipsCard(radioLabel: _controller.radioLabel),
+              _VictimTipsCard(key: _kTipsCard, radioLabel: _controller.radioLabel),
               const SizedBox(height: 8),
               _buildToolsCard(),
               const SizedBox(height: 4),
@@ -251,25 +323,25 @@ class _VictimModeScreenState extends State<VictimModeScreen> {
           ),
         ),
       ),
+      ),
     );
   }
 
   Widget _buildHeader() {
     return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Row(
-          children: [
-            IconButton(
-              onPressed: () => Navigator.of(context).pop(),
-              icon: const Icon(Icons.chevron_left, color: Colors.white),
-            ),
-            const Text(
-              'Victim Mode',
-              style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
-            ),
-          ],
+        IconButton(
+          onPressed: _handleExit,
+          icon: const Icon(Icons.chevron_left, color: Colors.white),
         ),
+        const Expanded(
+          child: MarqueeText(
+            'Victim Mode',
+            style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+          ),
+        ),
+        const SizedBox(width: 8),
+        HelpButton(controller: _help, color: Colors.white70),
         ValueListenableBuilder<String>(
           valueListenable: _controller.radioLabel,
           builder: (ctx, status, _) {
@@ -281,6 +353,7 @@ class _VictimModeScreenState extends State<VictimModeScreen> {
             };
             final label = status == 'BT Link' ? 'Connecting' : status;
             return Container(
+              key: _kRadioPill,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
               decoration: BoxDecoration(
                 color: Colors.white.withValues(alpha: 0.15),
@@ -308,6 +381,7 @@ class _VictimModeScreenState extends State<VictimModeScreen> {
 
   Widget _buildToolsCard() {
     return SizedBox(
+      key: _kToolsCard,
       height: 170,
       child: Column(
         children: [
@@ -642,7 +716,7 @@ class _VictimModeScreenState extends State<VictimModeScreen> {
 // ─── Tips card (dark-themed) ──────────────────────────────────────────────────
 
 class _VictimTipsCard extends StatelessWidget {
-  const _VictimTipsCard({required this.radioLabel});
+  const _VictimTipsCard({super.key, required this.radioLabel});
   final ValueListenable<String> radioLabel;
 
   @override

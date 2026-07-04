@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../help/help_tour.dart';
 import '../permissions.dart';
+import '../widgets/marquee_text.dart';
 import 'helper_mode_screen.dart';
 import 'victim_mode_screen.dart';
 
@@ -17,6 +19,33 @@ class ModeSelectionScreen extends StatefulWidget {
 
 class _ModeSelectionScreenState extends State<ModeSelectionScreen> {
   bool _requesting = false;
+
+  final _kVictimCard = GlobalKey();
+  final _kHelperCard = GlobalKey();
+  late final HelpTourController _help = HelpTourController([
+    HelpStep(
+      targetKey: _kVictimCard,
+      title: 'Victim Mode',
+      body: const [
+        'Pick this if you are in danger and need help.',
+        'Your phone becomes a beacon, broadcasting your distress and sensor readings to nearby helpers.',
+      ],
+    ),
+    HelpStep(
+      targetKey: _kHelperCard,
+      title: 'Helper Mode',
+      body: const [
+        'Pick this if you are safe and able to help others.',
+        'Your phone listens for victim beacons, collects their data, and relays it on to other helpers.',
+      ],
+    ),
+  ]);
+
+  @override
+  void dispose() {
+    _help.dispose();
+    super.dispose();
+  }
 
   Future<void> _enterMode(Widget Function() screenBuilder) async {
     if (_requesting) return;
@@ -103,18 +132,22 @@ class _ModeSelectionScreenState extends State<ModeSelectionScreen> {
                     onPressed: () => Navigator.of(context).pop(),
                     icon: const Icon(Icons.chevron_left, color: Colors.white),
                   ),
-                  const Text(
-                    'Choose Emergency Mode',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
+                  const Expanded(
+                    child: MarqueeText(
+                      'Choose Emergency Mode',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
+                  HelpButton(controller: _help, color: Colors.white70),
                 ],
               ),
               const SizedBox(height: 16),
               _ModeCard(
+                key: _kVictimCard,
                 label: 'Victim Mode',
                 color: const Color(0xFFEAACAC),
                 icon: Icons.health_and_safety,
@@ -131,6 +164,7 @@ class _ModeSelectionScreenState extends State<ModeSelectionScreen> {
               ),
               const SizedBox(height: 16),
               _ModeCard(
+                key: _kHelperCard,
                 label: 'Helper Mode',
                 color: const Color(0xFFA7C7E7),
                 icon: Icons.engineering,
@@ -155,6 +189,7 @@ class _ModeSelectionScreenState extends State<ModeSelectionScreen> {
 
 class _ModeCard extends StatelessWidget {
   const _ModeCard({
+    super.key,
     required this.label,
     required this.color,
     required this.icon,

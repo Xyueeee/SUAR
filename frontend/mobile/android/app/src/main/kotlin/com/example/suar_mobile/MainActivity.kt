@@ -2,7 +2,7 @@ package com.example.suar_mobile
 
 import android.content.Intent
 import android.net.wifi.p2p.WifiP2pManager
-import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
@@ -14,7 +14,7 @@ private const val BLE_PERIPHERAL_EVENTS = "suar/ble_peripheral_events"
 private const val SENSORS_CHANNEL = "suar/sensors"
 private const val SENSORS_EVENTS = "suar/sensors_events"
 
-class MainActivity : FlutterActivity() {
+class MainActivity : FlutterFragmentActivity() {
 
     private lateinit var wifiDirectHelper: WifiDirectHelper
     private lateinit var blePeripheralHelper: BlePeripheralHelper

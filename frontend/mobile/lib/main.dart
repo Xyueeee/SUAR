@@ -6,6 +6,7 @@ import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 import 'constants.dart';
 import 'map/offline_download_manager.dart';
 import 'screens/dashboard_screen.dart';
+import 'services/app_lock.dart';
 import 'services/notification_service.dart';
 import 'theme.dart';
 
@@ -14,6 +15,7 @@ void main() async {
   await FMTCObjectBoxBackend().initialise();
   await loadThemeMode();
   await loadDetailedLogging();
+  await AppLock.load();
   await ensureDeviceId();
   // Best-effort resume of anything interrupted by a crash/kill last session.
   unawaited(OfflineDownloadManager.instance.resumeFailedDownloads());

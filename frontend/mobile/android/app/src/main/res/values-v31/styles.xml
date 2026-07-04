@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- API 31+ (Android 12+) draws its own splash screen from these
+         android:windowSplashScreen* attributes instead of our launch_background
+         drawable. Without this override the system falls back to the app's
+         launcher icon (ic_launcher.png, which has a solid white background baked
+         in) framed in its default icon box — the "icon in a white box" look.
+         Pointing windowSplashScreenAnimatedIcon at the flat, transparent-background
+         flame logo and leaving windowSplashScreenIconBackgroundColor unset (so it
+         defaults to transparent) draws just the logo, no box. -->
+    <style name="LaunchTheme" parent="@android:style/Theme.Light.NoTitleBar">
+        <item name="android:windowBackground">@drawable/launch_background</item>
+        <item name="android:windowSplashScreenBackground">@android:color/white</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon</item>
+    </style>
+</resources>

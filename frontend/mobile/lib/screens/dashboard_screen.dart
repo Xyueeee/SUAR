@@ -8,6 +8,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../constants.dart';
 import '../content/doc_controller.dart';
+import '../help/help_tour.dart';
+import '../services/app_lock.dart';
 import '../theme.dart' show kPanelDark;
 import '../content/doc_service.dart';
 import '../services/geofence_service.dart';
@@ -33,6 +35,46 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Timer? _geofenceTimer;
   int _tab = 0;
 
+  // Help tour targets
+  final _kEmergency = GlobalKey();
+  final _kPrep = GlobalKey();
+  final _kDeviceTest = GlobalKey();
+  final _kTips = GlobalKey();
+  late final HelpTourController _help = HelpTourController([
+    HelpStep(
+      targetKey: _kEmergency,
+      title: 'Emergency Mode',
+      body: const [
+        'Tap here if you are in an emergency right now.',
+        'You choose Victim or Helper, then your phone joins the offline rescue network.',
+      ],
+    ),
+    HelpStep(
+      targetKey: _kPrep,
+      title: 'Get ready before disaster',
+      body: const [
+        'A short checklist for preparing ahead of time.',
+        'Tap it to open the full plan and track what you have done.',
+      ],
+    ),
+    HelpStep(
+      targetKey: _kDeviceTest,
+      title: 'Device Test',
+      body: const [
+        'Run this to check Bluetooth and Wi-Fi Direct work on your phone.',
+        'Best done now, before you actually need them.',
+      ],
+    ),
+    HelpStep(
+      targetKey: _kTips,
+      title: 'Survival & first aid tips',
+      body: const [
+        'Quick reference guides, useful when you need help fast.',
+        'Works offline once loaded.',
+      ],
+    ),
+  ]);
+
   @override
   void initState() {
     super.initState();
@@ -43,6 +85,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   @override
   void dispose() {
+    _help.dispose();
     _geofenceTimer?.cancel();
     super.dispose();
   }
@@ -140,6 +183,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
+                          HelpButton(controller: _help, color: cs.onSurface),
                           const _NoticesBell(),
                           IconButton(
                             onPressed: () => Navigator.of(context).push(
@@ -159,6 +203,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   SizedBox(height: 24 * scale),
                   const _NoticesBanner(),
                   InkWell(
+                    key: _kEmergency,
                     borderRadius: BorderRadius.circular(20),
                     onTap: () => Navigator.of(context).push(
                       MaterialPageRoute(
@@ -194,9 +239,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
                   ),
                   SizedBox(height: 16 * scale),
-                  _PrepSummaryCard(key: _prepKey),
+                  KeyedSubtree(key: _kPrep, child: _PrepSummaryCard(key: _prepKey)),
                   SizedBox(height: 16 * scale),
                   InkWell(
+                    key: _kDeviceTest,
                     borderRadius: BorderRadius.circular(14),
                     onTap: () => Navigator.of(context).push(
                       MaterialPageRoute(
@@ -232,7 +278,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
                   ),
                   SizedBox(height: 16 * scale),
-                  const _TipsCard(),
+                  _TipsCard(key: _kTips),
                 ],
               ),
               ),
@@ -270,6 +316,37 @@ class _MedicalInfoContentState extends State<_MedicalInfoContent> {
   bool _loading = true;
   bool _disposed = false;
 
+  // Help tour targets
+  final _kAvatar = GlobalKey();
+  final _kAllergies = GlobalKey();
+  final _kPrivacy = GlobalKey();
+  late final HelpTourController _help = HelpTourController([
+    HelpStep(
+      targetKey: _kAvatar,
+      title: 'This is only on your phone',
+      body: const [
+        'Your medical details never leave this device.',
+        'They are not sent over Bluetooth, Wi-Fi Direct, or to the cloud.',
+      ],
+    ),
+    HelpStep(
+      targetKey: _kAllergies,
+      title: 'Why fill this in',
+      body: const [
+        'If you are unconscious, a helper holding your unlocked phone can read this to treat you correctly.',
+        'Allergies, blood type, and DNR status are the details rescuers need most.',
+      ],
+    ),
+    HelpStep(
+      targetKey: _kPrivacy,
+      title: 'Keep it current',
+      body: const [
+        'This is the one thing in the app that is personal to you, so keep it up to date.',
+        'Tap Edit at the top to change anything.',
+      ],
+    ),
+  ]);
+
   @override
   void initState() {
     super.initState();
@@ -278,6 +355,7 @@ class _MedicalInfoContentState extends State<_MedicalInfoContent> {
 
   @override
   void dispose() {
+    _help.dispose();
     _disposed = true;
     super.dispose();
   }
@@ -364,29 +442,42 @@ class _MedicalInfoContentState extends State<_MedicalInfoContent> {
                           ),
                         ],
                       ),
-                      TextButton(
-                        style: TextButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 4),
-                          minimumSize: Size.zero,
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                        onPressed: () async {
-                          await Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => _MedInfoEditScreen(initial: _data),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          HelpButton(controller: _help, color: cs.onSurface),
+                          TextButton(
+                            style: TextButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 4),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                             ),
-                          );
-                          _load();
-                        },
-                        child: const Text(
-                          'Edit',
-                          style: TextStyle(color: Color(0xFF3E6FA8), fontSize: 15),
-                        ),
+                            onPressed: () async {
+                              final navigator = Navigator.of(context);
+                              if (AppLock.requireMedicalEdit.value) {
+                                final ok = await AppLock.authenticate(
+                                    'Confirm to edit medical info');
+                                if (!ok) return;
+                              }
+                              await navigator.push(
+                                MaterialPageRoute(
+                                  builder: (_) => _MedInfoEditScreen(initial: _data),
+                                ),
+                              );
+                              _load();
+                            },
+                            child: const Text(
+                              'Edit',
+                              style: TextStyle(color: Color(0xFF3E6FA8), fontSize: 15),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
                   const SizedBox(height: 24),
                   Center(
+                    key: _kAvatar,
                     child: Column(
                       children: [
                         () {
@@ -442,6 +533,7 @@ class _MedicalInfoContentState extends State<_MedicalInfoContent> {
                   ),
                   const SizedBox(height: 16),
                   _MedCard(
+                    key: _kAllergies,
                     title: 'Allergies',
                     children: [
                       _MedField('Drug', _display(_kMedAllergyDrug)),
@@ -473,6 +565,7 @@ class _MedicalInfoContentState extends State<_MedicalInfoContent> {
                   ],
                   const SizedBox(height: 24),
                   Center(
+                    key: _kPrivacy,
                     child: Text(
                       'This information is stored locally on your device only\nand is never transmitted.',
                       textAlign: TextAlign.center,
@@ -487,7 +580,7 @@ class _MedicalInfoContentState extends State<_MedicalInfoContent> {
 }
 
 class _MedCard extends StatelessWidget {
-  const _MedCard({required this.title, required this.children});
+  const _MedCard({super.key, required this.title, required this.children});
   final String title;
   final List<Widget> children;
 
@@ -1442,7 +1535,7 @@ class _NoticesBannerState extends State<_NoticesBanner> {
 
 /// Survival / First Aid entry rows — each opens its category guide list.
 class _TipsCard extends StatelessWidget {
-  const _TipsCard();
+  const _TipsCard({super.key});
 
   @override
   Widget build(BuildContext context) {

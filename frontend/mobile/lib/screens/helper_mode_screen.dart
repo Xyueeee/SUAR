@@ -10,6 +10,7 @@ import 'package:latlong2/latlong.dart';
 
 import '../constants.dart';
 import '../controllers/helper_controller.dart';
+import '../help/help_tour.dart';
 import '../log_translator.dart';
 import '../theme.dart';
 import '../map/map_constants.dart';
@@ -17,6 +18,7 @@ import '../models/distress_bundle_model.dart';
 import '../sensing/location_estimator.dart';
 import '../services/geofence_service.dart';
 import '../sensing/triage_calculator.dart' show TriageFlag;
+import '../widgets/marquee_text.dart';
 import '../widgets/mesh_activity_card.dart';
 import '../widgets/radio_status_banner.dart';
 
@@ -90,6 +92,46 @@ class _HelperModeScreenState extends State<HelperModeScreen>
   final _geofenceService = GeofenceService();
   List<Map<String, dynamic>> _geofences = const [];
   bool _disposed = false;
+
+  // Help tour targets
+  final _kRadioPill = GlobalKey();
+  final _kMap = GlobalKey();
+  final _kMeshCard = GlobalKey();
+  late final HelpTourController _help = HelpTourController([
+    HelpStep(
+      targetKey: _kRadioPill,
+      title: 'Your connection status',
+      body: const [
+        'Searching means you are listening for people who need help.',
+        'It changes to Connecting then Receiving as a victim signal comes in.',
+      ],
+    ),
+    HelpStep(
+      targetKey: _kMap,
+      title: 'Live map',
+      body: const [
+        'Each pin is a victim your phone has picked up nearby.',
+        'A pin found through another helper shows its relay hop, not a direct detection.',
+        'Shaded areas are admin-marked danger zones.',
+      ],
+      ensureVisible: () async {
+        if (_mapMinimized && mounted) {
+          setState(() => _mapMinimized = false);
+          // Let the 200ms expand animation settle before measuring.
+          await Future<void>.delayed(const Duration(milliseconds: 260));
+        }
+      },
+    ),
+    HelpStep(
+      targetKey: _kMeshCard,
+      title: 'Activity log',
+      body: const [
+        'A running record of signals received and relayed, in plain language.',
+        'Collected data uploads on its own once the internet is back, no manual step.',
+        'Switch to technical detail in Settings if you prefer.',
+      ],
+    ),
+  ]);
 
   @override
   void initState() {
@@ -472,6 +514,7 @@ class _HelperModeScreenState extends State<HelperModeScreen>
   @override
   void dispose() {
     _disposed = true;
+    _help.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _statusSub?.cancel();
     _bundleSub?.cancel();
@@ -1018,27 +1061,26 @@ class _HelperModeScreenState extends State<HelperModeScreen>
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Row(
-                    children: [
-                      IconButton(
-                        onPressed: () => Navigator.of(context).pop(),
-                        icon: const Icon(
-                          Icons.chevron_left,
-                          color: Colors.white,
-                        ),
-                      ),
-                      const Text(
-                        'Helper Mode',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(
+                      Icons.chevron_left,
+                      color: Colors.white,
+                    ),
                   ),
+                  const Expanded(
+                    child: MarqueeText(
+                      'Helper Mode',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  HelpButton(controller: _help, color: Colors.white70),
                   ValueListenableBuilder<String>(
                     valueListenable: _controller.radioLabel,
                     builder: (ctx, status, _) {
@@ -1050,6 +1092,7 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                       };
                       final label = status == 'BT Link' ? 'Connecting' : status;
                       return Container(
+                        key: _kRadioPill,
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
                         decoration: BoxDecoration(
                           color: Colors.white.withValues(alpha: 0.15),
@@ -1121,6 +1164,7 @@ class _HelperModeScreenState extends State<HelperModeScreen>
               // fetches or location-triggered rebuilds running in the
               // background — actually paused, not just invisible.
               AnimatedSize(
+                key: _kMap,
                 duration: const Duration(milliseconds: 200),
                 curve: Curves.easeInOut,
                 alignment: Alignment.topCenter,
@@ -1669,6 +1713,7 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                 child: ValueListenableBuilder<bool>(
                   valueListenable: detailedLogging,
                   builder: (_, detailed, x) => MeshActivityCard(
+                    key: _kMeshCard,
                     lines: detailed ? _rawLog : _displayLog,
                     fontSize: 12,
                   ),

@@ -4,6 +4,7 @@ import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../help/help_tour.dart';
 import '../map/map_constants.dart';
 import '../map/offline_download_manager.dart';
 import '../widgets/back_chevron.dart';
@@ -47,6 +48,29 @@ class _RegionDownloadScreenState extends State<RegionDownloadScreen> {
   bool _initialized = false;
 
   bool get _isEditing => widget.existingStore != null;
+
+  // Help tour targets
+  final _kBox = GlobalKey();
+  final _kDownload = GlobalKey();
+  late final HelpTourController _help = HelpTourController([
+    HelpStep(
+      targetKey: _kBox,
+      title: 'Pick your area',
+      body: const [
+        'Drag inside this red box to move it, or drag a handle to resize.',
+        'Pan and zoom the map underneath to frame the area you want.',
+      ],
+    ),
+    HelpStep(
+      targetKey: _kDownload,
+      circle: true,
+      title: 'Download it',
+      body: const [
+        'Tap to save the map tiles inside the box for offline use.',
+        'The download runs in the background, you can leave this screen.',
+      ],
+    ),
+  ]);
 
   @override
   void initState() {
@@ -97,6 +121,7 @@ class _RegionDownloadScreenState extends State<RegionDownloadScreen> {
 
   @override
   void dispose() {
+    _help.dispose();
     _mapController.dispose();
     super.dispose();
   }
@@ -315,18 +340,19 @@ class _RegionDownloadScreenState extends State<RegionDownloadScreen> {
         title: Text(
           _isEditing ? widget.existingStore!.storeName : 'Download Map Area',
         ),
-        actions: _isEditing
-            ? [
-                IconButton(
-                  onPressed: _rename,
-                  icon: const Icon(Icons.edit_outlined),
-                ),
-                IconButton(
-                  onPressed: _delete,
-                  icon: const Icon(Icons.delete_outline),
-                ),
-              ]
-            : null,
+        actions: [
+          HelpButton(controller: _help),
+          if (_isEditing) ...[
+            IconButton(
+              onPressed: _rename,
+              icon: const Icon(Icons.edit_outlined),
+            ),
+            IconButton(
+              onPressed: _delete,
+              icon: const Icon(Icons.delete_outline),
+            ),
+          ],
+        ],
       ),
       body: LayoutBuilder(
         builder: (context, constraints) {
@@ -360,6 +386,7 @@ class _RegionDownloadScreenState extends State<RegionDownloadScreen> {
               if (rect != null) ...[
                 // Box body — drag anywhere inside (away from a handle) to move it.
                 Positioned(
+                  key: _kBox,
                   left: rect.left,
                   top: rect.top,
                   width: rect.width,
@@ -395,6 +422,7 @@ class _RegionDownloadScreenState extends State<RegionDownloadScreen> {
         },
       ),
       floatingActionButton: FloatingActionButton(
+        key: _kDownload,
         backgroundColor: const Color(0xFFA7C7E7),
         foregroundColor: Colors.black,
         tooltip: _isEditing ? 'Save & re-download' : 'Download this area',

@@ -5,6 +5,7 @@ import '../content/block_renderer.dart';
 import '../content/doc_controller.dart';
 import '../content/doc_models.dart';
 import '../content/doc_service.dart';
+import '../help/help_tour.dart';
 import '../theme.dart' show kPanelDark;
 import '../widgets/back_chevron.dart';
 
@@ -109,6 +110,28 @@ class _DocScreenState extends State<DocScreen> {
   late final DocController _ctrl = DocController(_service.repo);
   late final Future<void> _ready = _init();
 
+  // Help tour only applies to prep plans (percent roll-up + checklists).
+  bool get _isPrep => widget.category == 'prep';
+  final _kPercent = GlobalKey();
+  late final HelpTourController _help = HelpTourController([
+    HelpStep(
+      targetKey: _kPercent,
+      title: 'Your overall progress',
+      body: const [
+        'A weighted roll-up of everything you have checked off below.',
+        'It reaches 100% once your whole plan is complete.',
+      ],
+    ),
+    const HelpStep(
+      title: 'Working through the plan',
+      body: [
+        'Tap any item to mark it done. Progress saves automatically.',
+        'Sections open up to reveal their own checklists.',
+        'Everything here works offline once loaded.',
+      ],
+    ),
+  ]);
+
   Future<void> _init() async {
     final docs = await _service.loadDocs(widget.category);
     if (docs.isNotEmpty) await _ctrl.load(_merge(docs));
@@ -139,6 +162,7 @@ class _DocScreenState extends State<DocScreen> {
 
   @override
   void dispose() {
+    _help.dispose();
     _ctrl.dispose();
     super.dispose();
   }
@@ -149,7 +173,10 @@ class _DocScreenState extends State<DocScreen> {
       appBar: AppBar(
         leading: const BackChevron(),
         title: Text(widget.title),
-        actions: const [RadioPill()],
+        actions: [
+          if (_isPrep) HelpButton(controller: _help),
+          const RadioPill(),
+        ],
       ),
       body: FutureBuilder<void>(
         future: _ready,
@@ -164,7 +191,7 @@ class _DocScreenState extends State<DocScreen> {
             onRefresh: _refresh,
             child: ListView(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
-              children: [DocBody(controller: _ctrl)],
+              children: [DocBody(controller: _ctrl, percentKey: _isPrep ? _kPercent : null)],
             ),
           );
         },
@@ -181,7 +208,11 @@ class _DocScreenState extends State<DocScreen> {
 /// carry, not just its plain-text blocks).
 class DocBody extends StatelessWidget {
   final DocController controller;
-  const DocBody({super.key, required this.controller});
+
+  /// Optional key placed on the overall-percent card so the help tour can
+  /// spotlight it. Null on non-prep pages (which have no percent card).
+  final Key? percentKey;
+  const DocBody({super.key, required this.controller, this.percentKey});
 
   @override
   Widget build(BuildContext context) {
@@ -196,6 +227,7 @@ class DocBody extends StatelessWidget {
           children: [
             if (doc.usePercent) ...[
               _PercentCard(
+                key: percentKey,
                 text: doc.percentText.replaceAll('{p}', controller.overallPercent.round().toString()),
                 value: controller.overallPercent / 100,
               ),
@@ -657,7 +689,7 @@ class _TitleSub extends StatelessWidget {
 class _PercentCard extends StatelessWidget {
   final String text;
   final double value;
-  const _PercentCard({required this.text, required this.value});
+  const _PercentCard({super.key, required this.text, required this.value});
 
   @override
   Widget build(BuildContext context) {

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../services/app_lock.dart';
 import '../theme.dart';
 import '../widgets/back_chevron.dart';
 import 'debug_options_screen.dart';
@@ -83,6 +84,23 @@ class SettingsScreen extends StatelessWidget {
               height: 1,
               indent: 16,
               endIndent: 16),
+          // ── Security (device-lock gate) ───────────────────────────────────
+          ListTile(
+            leading: Icon(Icons.lock_outline, color: fg),
+            title: Text('Security', style: TextStyle(color: fg)),
+            subtitle: Text(
+              'Lock sensitive actions behind your device lock',
+              style: TextStyle(color: fg.withValues(alpha: 0.54)),
+            ),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const _SecurityPage()),
+            ),
+          ),
+          Divider(
+              color: fg.withValues(alpha: 0.12),
+              height: 1,
+              indent: 16,
+              endIndent: 16),
           // ── Debugging (last — developer-only) ─────────────────────────────
           ListTile(
             leading: Icon(Icons.bug_report_outlined, color: fg),
@@ -99,6 +117,20 @@ class SettingsScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Enabling a lock is free; disabling it requires passing the device lock, so a
+/// bystander cannot simply switch the protection off. Fail-open still applies
+/// (AppLock.authenticate returns true when the device cannot authenticate).
+Future<void> _toggleLock({
+  required bool enable,
+  required Future<void> Function(bool) setter,
+}) async {
+  if (!enable) {
+    final ok = await AppLock.authenticate('Confirm to turn off this lock');
+    if (!ok) return; // stay enabled
+  }
+  await setter(enable);
 }
 
 // ─── Shared option card ───────────────────────────────────────────────────────
@@ -304,6 +336,88 @@ class _ThemePreview extends StatelessWidget {
                 borderRadius: BorderRadius.circular(3),
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── Security page ────────────────────────────────────────────────────────────
+
+class _SecurityPage extends StatelessWidget {
+  const _SecurityPage();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final fg = cs.onSurface;
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return Scaffold(
+      appBar: AppBar(
+        leading: const BackChevron(),
+        title: const Text('Security'),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          const Text(
+            'Ask for your phone\'s lock (PIN, pattern, password, or biometric) '
+            'before these actions, so they can\'t be done by whoever is holding '
+            'the phone.',
+            style: TextStyle(fontSize: 14),
+          ),
+          const SizedBox(height: 20),
+          Container(
+            decoration: BoxDecoration(
+              color: dark ? kPanelDark : cs.onSurface.withValues(alpha: 0.05),
+              border: Border.all(color: cs.onSurface.withValues(alpha: 0.18)),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Column(
+              children: [
+                ValueListenableBuilder<bool>(
+                  valueListenable: AppLock.requireExitVictim,
+                  builder: (context, on, _) => SwitchListTile(
+                    secondary: Icon(Icons.exit_to_app, color: fg),
+                    title: Text('Lock exit from Victim Mode', style: TextStyle(color: fg)),
+                    subtitle: Text(
+                      'Confirm before leaving victim mode',
+                      style: TextStyle(color: fg.withValues(alpha: 0.54)),
+                    ),
+                    activeThumbColor: kAccentInk,
+                    value: on,
+                    onChanged: (v) => _toggleLock(
+                      enable: v,
+                      setter: AppLock.setRequireExitVictim,
+                    ),
+                  ),
+                ),
+                Divider(height: 1, indent: 16, endIndent: 16, color: fg.withValues(alpha: 0.12)),
+                ValueListenableBuilder<bool>(
+                  valueListenable: AppLock.requireMedicalEdit,
+                  builder: (context, on, _) => SwitchListTile(
+                    secondary: Icon(Icons.medical_information_outlined, color: fg),
+                    title: Text('Lock editing Medical Info', style: TextStyle(color: fg)),
+                    subtitle: Text(
+                      'Confirm before editing your medical info',
+                      style: TextStyle(color: fg.withValues(alpha: 0.54)),
+                    ),
+                    activeThumbColor: kAccentInk,
+                    value: on,
+                    onChanged: (v) => _toggleLock(
+                      enable: v,
+                      setter: AppLock.setRequireMedicalEdit,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'If your phone has no lock set up, these toggles have no effect.',
+            style: TextStyle(color: fg.withValues(alpha: 0.5), fontSize: 12),
           ),
         ],
       ),

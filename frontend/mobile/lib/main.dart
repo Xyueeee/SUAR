@@ -9,6 +9,7 @@ import 'onboarding.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/onboarding_screen.dart';
 import 'services/app_lock.dart';
+import 'services/geofence_service.dart';
 import 'services/notification_service.dart';
 import 'theme.dart';
 
@@ -17,6 +18,7 @@ void main() async {
   await FMTCObjectBoxBackend().initialise();
   await loadThemeMode();
   await loadDetailedLogging();
+  await loadBackgroundGeofencePref();
   await AppLock.load();
   await ensureDeviceId();
   final seenOnboarding = await hasSeenOnboarding();

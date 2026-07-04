@@ -3,7 +3,7 @@
 ///   - Victim: pushes its own bundle so far-away victims surface on the
 ///     dashboard even without a Helper in radio range.
 ///   - Helper: pushes all unsynced bundles, then pulls bundles created in the
-///     last 2 hours so nearby Helpers converge on the same picture.
+///     last 24 hours so nearby Helpers converge on the same picture.
 /// Dedup is by bundleId server-side, so re-pushing the same bundle is harmless.
 library;
 
@@ -14,7 +14,9 @@ import 'dart:io';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../constants.dart';
+import '../map/map_constants.dart' show bundleInactiveThreshold;
 import '../models/distress_bundle_model.dart';
+import '../services/device_identity.dart';
 import '../storage/sqlite_repository.dart';
 
 class SyncService {
@@ -35,6 +37,8 @@ class SyncService {
         'priorityTier': b.priorityTier,
         'estimatedLat': b.estimatedLat,
         'estimatedLng': b.estimatedLng,
+        'accuracyMeters': b.accuracyMeters,
+        'estimatedAltitude': b.estimatedAltitude,
         'hopCount': b.hopCount,
         'createdAt': b.createdAt.toUtc().toIso8601String(),
         'updatedAt': b.updatedAt.toUtc().toIso8601String(),
@@ -46,8 +50,14 @@ class SyncService {
   Future<bool> pushBundles(String deviceId, String mode, List<DistressBundleModel> bundles) async {
     final base = await _baseUrl();
     if (base == null || bundles.isEmpty) return false;
+    final hardwareId = await DeviceIdentity.androidId();
     final payload = {
-      'device': {'deviceId': deviceId, 'applicationMode': mode, 'applicationVersion': appVersion},
+      'device': {
+        'deviceId': deviceId,
+        'applicationMode': mode,
+        'applicationVersion': appVersion,
+        'hardwareId': ?hardwareId,
+      },
       'bundles': bundles.map(_bundleJson).toList(),
     };
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
@@ -66,8 +76,8 @@ class SyncService {
     }
   }
 
-  /// Helper pull: stores bundles created within the last 2 hours. Returns count
-  /// stored. Backend rows use lowercase keys (Supabase), mapped here.
+  /// Helper pull: stores bundles created within the last 24 hours. Returns
+  /// count stored. Backend rows use lowercase keys (Supabase), mapped here.
   Future<int> pullRecent(SQLiteRepository repo) async {
     final base = await _baseUrl();
     if (base == null) return 0;
@@ -101,6 +111,28 @@ class SyncService {
     return n;
   }
 
+  /// Pushes every unsynced local bundle to the backend, then either marks it
+  /// synced (still active — keep it for map/relay use) or deletes it locally
+  /// (inactive — backend now holds the only copy worth keeping). Shared by
+  /// HelperController's own sync loop and the background geofence/notice
+  /// check-in, so local bundles upload on ANY backend touch, not only while
+  /// the Helper screen happens to be open. Returns count pushed (0 offline).
+  Future<int> syncLocalBundles(
+      SQLiteRepository repo, String deviceId, String mode) async {
+    final unsynced = await repo.getUnsyncedBundles();
+    if (unsynced.isEmpty) return 0;
+    if (!await pushBundles(deviceId, mode, unsynced)) return 0;
+    for (final b in unsynced) {
+      if (DateTime.now().toUtc().difference(b.createdAt.toUtc()) >
+          bundleInactiveThreshold) {
+        await repo.deleteBundle(b.bundleId);
+      } else {
+        await repo.markAsSynced(b.bundleId);
+      }
+    }
+    return unsynced.length;
+  }
+
   DistressBundleModel _fromBackend(Map r) => DistressBundleModel(
         bundleId: (r['bundleid'] ?? '').toString(),
         deviceId: (r['deviceid'] ?? '').toString(),
@@ -108,6 +140,8 @@ class SyncService {
         priorityTier: (r['prioritytier'] ?? 'None').toString(),
         estimatedLat: (r['estimatedlat'] as num?)?.toDouble(),
         estimatedLng: (r['estimatedlng'] as num?)?.toDouble(),
+        accuracyMeters: (r['accuracymeters'] as num?)?.toDouble(),
+        estimatedAltitude: (r['estimatedaltitude'] as num?)?.toDouble(),
         hopCount: (r['hopcount'] as num?)?.toInt() ?? 0,
         isSynced: true,
         createdAt: DateTime.tryParse((r['createdat'] ?? '').toString()) ?? DateTime.now().toUtc(),

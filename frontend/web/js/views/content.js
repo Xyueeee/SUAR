@@ -134,7 +134,7 @@ SUAR.views._docsEditor = (function () {
         const dn = tr.querySelector("[data-down]"); if (dn) dn.addEventListener("click", stopAnd(() => reorder(d, 1)));
       });
       const selall = wrap.querySelector("#d-selall");
-      selall.addEventListener("change", (e) => { rows.forEach((d) => e.target.checked ? selected.add(d.docid) : selected.delete(d.docid)); updateBulkBar(); renderTable(); });
+      selall.addEventListener("change", (e) => { rows.forEach((d) => e.target.checked ? selected.add(d[PK]) : selected.delete(d[PK])); updateBulkBar(); renderTable(); });
       syncSelAll();
     }
 
@@ -419,7 +419,15 @@ SUAR.views._docsEditor = (function () {
         q(".blk-cap").forEach((i) => i.addEventListener("input", (e) => { blockOf(e.target).caption = e.target.value; renderPreview(); }));
         q("[data-bullet]").forEach((b) => b.addEventListener("click", () => bulletAct(b.dataset.bullet, b.dataset.p, +b.dataset.pi, +b.dataset.bi, b.dataset.ii != null ? +b.dataset.ii : null)));
         q("[data-upload]").forEach((b) => b.addEventListener("click", () => uploadImage(b.dataset.p, +b.dataset.pi, +b.dataset.bi)));
-        q(".ce").forEach((el) => { el.addEventListener("input", () => { syncCe(el); renderPreview(); }); el.addEventListener("focusin", () => { activeCe = el; }); });
+        q(".ce").forEach((el) => {
+          el.addEventListener("input", () => { syncCe(el); renderPreview(); });
+          el.addEventListener("focusin", () => { activeCe = el; });
+          // Clear on focus leaving, or Escape stays disabled for the rest of
+          // the session after the first text edit (activeCe was never reset).
+          // Minibar clicks preventDefault on mousedown, so they never blur
+          // the editable and this doesn't break the toolbar.
+          el.addEventListener("focusout", () => { if (activeCe === el) activeCe = null; });
+        });
       }
 
       function changeKind(path, kind) {

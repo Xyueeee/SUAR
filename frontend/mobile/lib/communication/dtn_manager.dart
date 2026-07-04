@@ -36,18 +36,25 @@ class DTNManager {
   final _statusController = StreamController<String>.broadcast();
   Stream<String> get statusStream => _statusController.stream;
 
+  // Relay attempts can still resolve after the owning screen disposes this
+  // manager (same race every other manager guards against) — a bare add()
+  // then throws "Bad state: Cannot add new events after calling close".
+  void _emit(String line) {
+    if (!_statusController.isClosed) _statusController.add(line);
+  }
+
   void onBundleReceived(DistressBundleModel bundle) {
     if (seenBundleIds.contains(bundle.bundleId)) {
-      _statusController.add('Bundle ${bundle.bundleId} already seen, skipping');
+      _emit('Bundle ${bundle.bundleId} already seen, skipping');
       return;
     }
     if (bundle.hopCount >= dtnMaxHopCount) {
-      _statusController.add('TTL exceeded: ${bundle.bundleId}');
+      _emit('TTL exceeded: ${bundle.bundleId}');
       return;
     }
     _markSeen(bundle.bundleId);
     storedBundles.add(bundle);
-    _statusController.add(
+    _emit(
       'Bundle ${bundle.bundleId} stored for relay (hopCount=${bundle.hopCount})',
     );
     _syncManifest();
@@ -103,7 +110,7 @@ class DTNManager {
     final toSend = <DistressBundleModel>[];
     for (final bundle in List<DistressBundleModel>.from(storedBundles)) {
       if (bundle.hopCount >= dtnMaxHopCount) {
-        _statusController.add('TTL exceeded: ${bundle.bundleId}');
+        _emit('TTL exceeded: ${bundle.bundleId}');
         storedBundles.remove(bundle);
         continue;
       }
@@ -143,11 +150,11 @@ class DTNManager {
       for (final bundle in toSend) {
         bundle.hopCount -= 1;
       }
-      _statusController.add('Sync with $helperDeviceId failed');
+      _emit('Sync with $helperDeviceId failed');
       return const [];
     }
     if (toSend.isNotEmpty) {
-      _statusController.add(
+      _emit(
         'Relayed ${toSend.length} bundle(s) to $helperDeviceId '
         '(${peerHas.length} already had)',
       );
@@ -166,14 +173,14 @@ class DTNManager {
       // A corrupt/truncated response shouldn't crash the relay attempt —
       // the push half above already succeeded; just treat the pull half as
       // "nothing came back" and let the next contact retry it.
-      _statusController.add(
+      _emit(
         'Sync response from $helperDeviceId was malformed: $e',
       );
       return const [];
     }
     if (pulled.isEmpty) {
       if (toSend.isEmpty) {
-        _statusController.add(
+        _emit(
           '$helperDeviceId and this device already have the same bundles',
         );
       }
@@ -183,7 +190,7 @@ class DTNManager {
       storedBundles.add(bundle);
     }
     _syncManifest();
-    _statusController.add(
+    _emit(
       'Pulled ${pulled.length} bundle(s) from $helperDeviceId',
     );
     return pulled;

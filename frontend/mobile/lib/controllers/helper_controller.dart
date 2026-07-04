@@ -41,12 +41,9 @@ class HelperController {
     final id = deviceId;
     if (id == null) return;
     try {
-      final unsynced = await repository.getUnsyncedBundles();
-      if (unsynced.isNotEmpty && await _sync.pushBundles(id, 'helper', unsynced)) {
-        for (final b in unsynced) {
-          await repository.markAsSynced(b.bundleId);
-        }
-        _emit('Synced ${unsynced.length} bundle(s) to backend');
+      final synced = await _sync.syncLocalBundles(repository, id, 'helper');
+      if (synced > 0) {
+        _emit('Synced $synced bundle(s) to backend');
       }
       final pulled = await _sync.pullRecent(repository);
       if (pulled > 0) {
@@ -881,6 +878,7 @@ class HelperController {
       // connect() call itself, whether it succeeds or times out below. See
       // _attemptCooldown.
       _attemptedRecentlyAt[peerHelperDeviceId] = DateTime.now();
+      radioLabel.value = 'Connecting';
       final connectionInfo = await wifiDirectManager.connectToHelper(
         peerAddress,
         myDeviceId: deviceId ?? '',
@@ -897,6 +895,7 @@ class HelperController {
         _attemptFailStreak[peerHelperDeviceId] =
             (_attemptFailStreak[peerHelperDeviceId] ?? 0) + 1;
         await wifiDirectManager.disconnect();
+        if (!_stopped) radioLabel.value = 'Searching';
         return;
       }
       // Got a real connection this cycle — the stack is healthy, clear the
@@ -922,13 +921,16 @@ class HelperController {
         _emit(
           'Connected to $peerHelperDeviceId as group owner. Will relay once it contacts this device first.',
         );
+        if (!_stopped) radioLabel.value = 'Searching';
         return;
       }
       final groupOwnerAddress = connectionInfo['groupOwnerAddress'] as String;
+      radioLabel.value = 'Receiving';
       await _savePulledBundles(
         await dtnManager.relayMissing(groupOwnerAddress, peerHelperDeviceId),
       );
       await wifiDirectManager.disconnect();
+      if (!_stopped) radioLabel.value = 'Searching';
     } finally {
       _explicitWifiDirectInFlight = false;
     }
@@ -1008,6 +1010,11 @@ class HelperController {
       await bleManager.stopScanning();
       await bleManager.stopAdvertising();
       await wifiDirectManager.stopServer();
+      // Tear down any P2P group this Helper still owns (hosted for a Victim,
+      // or the relay election's autonomous GO) — mirrors stopVictimMode.
+      // Leaving it up kept the radio busy and this device discoverable after
+      // the user explicitly stopped Helper mode.
+      await wifiDirectManager.disconnect();
       await _cancelSubs();
       _emit('Helper mode stopped');
     } catch (e) {
@@ -1018,6 +1025,14 @@ class HelperController {
   void dispose() {
     _radioWatchdog?.cancel();
     _syncTimer?.cancel();
+    // Normally already cleared by stopHelperMode(), but a dispose without a
+    // prior stop would otherwise let these timers fire into disposed managers.
+    for (final timer in _ackRetryTimers.values) {
+      timer.cancel();
+    }
+    for (final timer in _pullOwnerTeardownTimers.values) {
+      timer.cancel();
+    }
     _connectionFormedSub?.cancel();
     radioLabel.dispose();
     bleManager.dispose();

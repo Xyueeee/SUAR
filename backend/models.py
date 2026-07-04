@@ -9,6 +9,11 @@ class DeviceModel(BaseModel):
     deviceId: str
     applicationMode: Literal["victim", "helper"]
     applicationVersion: str
+    # Settings.Secure.ANDROID_ID — survives a reinstall (same signing key,
+    # same device), unlike deviceId (a random UUID regenerated whenever the
+    # app's local storage is cleared). Optional: older app builds, and
+    # non-Android platforms, never send it.
+    hardwareId: Optional[str] = None
 
 
 class SensorReadingModel(BaseModel):
@@ -33,6 +38,8 @@ class BundleModel(BaseModel):
     priorityTier: Literal["Critical", "High", "Moderate", "Low", "None"]
     estimatedLat: Optional[float] = None
     estimatedLng: Optional[float] = None
+    accuracyMeters: Optional[float] = None
+    estimatedAltitude: Optional[float] = None
     hopCount: int = 0
     createdAt: datetime
     updatedAt: datetime

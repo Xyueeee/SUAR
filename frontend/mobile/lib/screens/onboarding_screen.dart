@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../onboarding.dart';
 import '../permissions.dart';
 import '../services/app_lock.dart';
+import '../services/geofence_service.dart';
 import '../services/notification_service.dart';
 import '../theme.dart';
 import '../widgets/option_card.dart';
@@ -67,6 +68,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       _PermissionsPage(onCanProceedChanged: (v) => _setCanProceed(1, v)),
       _AppearancePage(onCanProceedChanged: (v) => _setCanProceed(2, v)),
       _SecurityPage(onCanProceedChanged: (v) => _setCanProceed(3, v)),
+      const _BackgroundAlertsPage(),
       if (showMap) _OfflineMapPage(onDownloaded: _next),
       const _TipPage(),
       const _AllSetPage(),
@@ -751,6 +753,66 @@ class _AppearancePage extends StatelessWidget {
           ],
         );
       },
+    );
+  }
+}
+
+// ─── Background hazard alerts page ───────────────────────────────────────────
+
+/// Optional (ungated, like the map page) — opt into continuous background
+/// hazard-zone checks. Android requires a persistent notification for the
+/// foreground location service this drives, so this is offered as a choice
+/// rather than silently turned on.
+class _BackgroundAlertsPage extends StatelessWidget {
+  const _BackgroundAlertsPage();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final fg = cs.onSurface;
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(24, 32, 24, 24),
+      children: [
+        Text('Stay alerted in the background',
+            style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: fg)),
+        const SizedBox(height: 8),
+        Text(
+          'SUAR can keep checking your location against admin-marked hazard '
+          'zones even while the app is closed, and alert you the moment you '
+          'enter one. Android requires a small ongoing notification while '
+          'this runs.',
+          style: TextStyle(fontSize: 14, color: fg.withValues(alpha: 0.65)),
+        ),
+        const SizedBox(height: 20),
+        Container(
+          decoration: BoxDecoration(
+            border: Border.all(color: fg.withValues(alpha: 0.18)),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Material(
+            color: dark ? kPanelDark : cs.onSurface.withValues(alpha: 0.05),
+            child: ValueListenableBuilder<bool>(
+              valueListenable: backgroundGeofenceEnabled,
+              builder: (context, enabled, _) => SwitchListTile(
+                secondary: Icon(Icons.shield_outlined, color: fg),
+                title: Text('Background hazard alerts', style: TextStyle(color: fg)),
+                subtitle: Text(enabled ? 'On' : 'Off',
+                    style: TextStyle(color: fg.withValues(alpha: 0.54))),
+                activeThumbColor: kAccentInk,
+                value: enabled,
+                onChanged: setBackgroundGeofenceEnabled,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Text(
+          'You can change this anytime later in Settings.',
+          style: TextStyle(color: fg.withValues(alpha: 0.5), fontSize: 12),
+        ),
+      ],
     );
   }
 }

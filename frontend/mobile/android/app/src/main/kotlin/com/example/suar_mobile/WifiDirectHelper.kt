@@ -749,6 +749,11 @@ class WifiDirectHelper(
     /// bundle would serve it to literally any incoming connection regardless
     /// of what the connector actually wanted.
     private fun handleRequest(client: Socket) {
+        // This runs on the single shared accept-loop thread — a peer that
+        // connects but never sends its request line (crashed mid-connect,
+        // radio dropped) would otherwise block readLine() forever and wedge
+        // every subsequent transfer for the rest of the session.
+        client.soTimeout = 10_000
         val reader = BufferedReader(InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8))
         val line = reader.readLine() ?: return
         val request = JSONObject(line)
@@ -851,6 +856,12 @@ class WifiDirectHelper(
     /// device/chipset's actual routing problem is entirely.
     private fun connectClientSocket(address: String): Socket {
         val socket = Socket()
+        // Read timeout too, not just connect: a peer that accepts but never
+        // answers (server thread died mid-request) left readLine() blocked
+        // forever — and the Dart side awaits these platform calls with no
+        // timeout of its own, so a single hung pull/sync froze the Helper's
+        // global Wi-Fi Direct mutex for the rest of the session.
+        socket.soTimeout = 10_000
         socket.connect(InetSocketAddress(address, WIFI_DIRECT_PORT), 3000)
         return socket
     }

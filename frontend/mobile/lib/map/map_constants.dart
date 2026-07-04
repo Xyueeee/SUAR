@@ -20,3 +20,12 @@ const double maxDownloadZoom = 17.0;
 // Helpers may still usefully forward it), this only governs whether THIS
 // device still shows it as an actionable map pin.
 const Duration staleBundleMapThreshold = Duration(hours: 1);
+
+// Admin's "Active (24h)" convention (web ACTIVE_WINDOW_MS, backend's
+// active-bundle-reuse window) — a bundle whose original event is older than
+// this is presumed resolved. Reads createdAt, not updatedAt: updatedAt gets
+// bumped by every relay re-save and every Victim triage refresh, so an old
+// event relayed helper-to-helper (or a Victim's app just still running) would
+// otherwise keep looking "fresh" on the map forever. This only governs map
+// display — the bundle stays in local storage and keeps relaying either way.
+const Duration bundleInactiveThreshold = Duration(hours: 24);

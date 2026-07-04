@@ -397,6 +397,7 @@ body.authed .login-screen { display: none; }
 }
 .chip--on { color: #2c8526; background: #e9f8e7; border-color: #c6ebc2; }
 .chip--off { color: var(--muted); }
+.chip--victim { color: #b23b3b; background: #fbeaea; border-color: #f0c9c9; }
 
 /* --------------------------------------------------------------------------- */
 /* Tables                                                                      */

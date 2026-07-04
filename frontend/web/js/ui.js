@@ -38,7 +38,11 @@ SUAR.ui = (function () {
   function truncId(id, n) {
     if (!id) return "—";
     n = n || 8;
-    return id.length > n ? id.slice(0, n) + "…" : id;
+    // Escaped here because every caller drops the result straight into
+    // innerHTML — ids come from the UNAUTHENTICATED /sync endpoint, so an
+    // attacker-crafted deviceId/bundleId would otherwise be stored XSS in
+    // the admin console.
+    return esc(id.length > n ? id.slice(0, n) + "…" : id);
   }
 
   function tierBadge(tier) {
@@ -93,6 +97,7 @@ SUAR.ui = (function () {
       overlay.classList.remove("open");
       setTimeout(() => overlay.remove(), 200);
       document.removeEventListener("keydown", onKey);
+      if (opts.onClose) opts.onClose();
     }
     function onKey(e) { if (e.key === "Escape") close(); }
     overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
@@ -120,9 +125,12 @@ SUAR.ui = (function () {
       const m = modal({
         title: opts.title || "Confirm",
         body: '<p style="margin:0;color:var(--muted)">' + esc(opts.message || "") + "</p>",
+        // Any close path (X button, Escape) must settle the promise — an
+        // unresolved confirm left the caller awaiting forever.
+        onClose: () => resolve(false),
         actions: [
-          { label: opts.cancelLabel || "Cancel", className: "btn--ghost", onClick: (close) => { close(); resolve(false); } },
-          { label: opts.confirmLabel || "Confirm", className: opts.danger ? "btn--danger" : "btn--primary", onClick: (close) => { close(); resolve(true); } },
+          { label: opts.cancelLabel || "Cancel", className: "btn--ghost", onClick: (close) => { resolve(false); close(); } },
+          { label: opts.confirmLabel || "Confirm", className: opts.danger ? "btn--danger" : "btn--primary", onClick: (close) => { resolve(true); close(); } },
         ],
       });
       m.overlay.addEventListener("click", (e) => { if (e.target === m.overlay) resolve(false); });

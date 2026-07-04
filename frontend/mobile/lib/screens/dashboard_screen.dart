@@ -10,7 +10,7 @@ import '../content/doc_controller.dart';
 import '../help/help_tour.dart';
 import '../onboarding.dart';
 import '../services/app_lock.dart';
-import '../theme.dart' show kPanelDark;
+import '../theme.dart' show kAccentInk, kPanelDark;
 import '../content/doc_service.dart';
 import '../services/geofence_service.dart';
 import '../services/notification_service.dart';
@@ -32,7 +32,9 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   final GlobalKey<_PrepSummaryCardState> _prepKey = GlobalKey();
-  final _geofence = GeofenceService();
+  final GlobalKey<_NoticesBellState> _noticesBellKey = GlobalKey();
+  final GlobalKey<_NoticesBannerState> _noticesBannerKey = GlobalKey();
+  final _geofence = GeofenceService.instance;
   Timer? _geofenceTimer;
   int _tab = 0;
 
@@ -79,9 +81,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
-    // Danger-zone proximity check on open + periodically while in foreground.
+    // Danger-zone proximity check on open + periodically while in foreground
+    // (catches a zone newly drawn around a stationary user, which the
+    // distance-filtered background stream below wouldn't notice on its own).
     _geofence.check();
-    _geofenceTimer = Timer.periodic(const Duration(seconds: 60), (_) => _geofence.check());
+    _geofenceTimer = Timer.periodic(const Duration(seconds: 60), (_) {
+      _geofence.check();
+      // Dashboard stays mounted indefinitely (IndexedStack), so the bell dot
+      // and banner otherwise never notice a notice posted after this screen
+      // first loaded — piggyback their refresh on the same periodic tick.
+      _noticesBellKey.currentState?.reload();
+      _noticesBannerKey.currentState?.reload();
+    });
+    // Keeps alerting after the user backgrounds/leaves the app — safe to
+    // call every time Dashboard opens, no-ops if already running.
+    _geofence.startBackgroundMonitoring();
     _maybeShowTourAfterOnboarding();
   }
 
@@ -153,7 +167,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
             // smaller screens scale down before falling back to scrolling.
             final scale = (constraints.maxHeight / 800).clamp(0.85, 1.2);
             return RefreshIndicator(
-              onRefresh: () async { await _prepKey.currentState?.reload(); },
+              onRefresh: () async {
+                await _prepKey.currentState?.reload();
+                await _geofence.check();
+                await _noticesBellKey.currentState?.reload();
+                await _noticesBannerKey.currentState?.reload();
+              },
               child: SingleChildScrollView(
               physics: const AlwaysScrollableScrollPhysics(),
               padding: EdgeInsets.symmetric(
@@ -194,7 +213,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           HelpButton(controller: _help, color: cs.onSurface),
-                          const _NoticesBell(),
+                          _NoticesBell(key: _noticesBellKey),
                           IconButton(
                             onPressed: () => Navigator.of(context).push(
                               MaterialPageRoute(
@@ -211,7 +230,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ],
                   ),
                   SizedBox(height: 24 * scale),
-                  const _NoticesBanner(),
+                  const _DangerZoneCard(),
+                  _NoticesBanner(key: _noticesBannerKey),
                   InkWell(
                     key: _kEmergency,
                     borderRadius: BorderRadius.circular(20),
@@ -1353,7 +1373,7 @@ class _PrepSummaryCardState extends State<_PrepSummaryCard> with WidgetsBindingO
 /// Bell icon in the dashboard header. Red dot when any active notice is unseen.
 /// Tapping opens the Notices list (which marks them seen).
 class _NoticesBell extends StatefulWidget {
-  const _NoticesBell();
+  const _NoticesBell({super.key});
 
   @override
   State<_NoticesBell> createState() => _NoticesBellState();
@@ -1366,10 +1386,12 @@ class _NoticesBellState extends State<_NoticesBell> {
   @override
   void initState() {
     super.initState();
-    _load();
+    reload();
   }
 
-  Future<void> _load() async {
+  /// Re-checks unseen notices. Public so the Dashboard can refresh the bell
+  /// dot on a periodic tick or manual pull-to-refresh, not just on open.
+  Future<void> reload() async {
     final notices = await _service.loadNotices();
     final seen = await _service.seenNoticeIds();
     final unseen = notices.any((n) => !seen.contains((n['noticeid'] ?? '').toString()));
@@ -1382,7 +1404,7 @@ class _NoticesBellState extends State<_NoticesBell> {
     return IconButton(
       onPressed: () async {
         await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NoticesScreen()));
-        _load();
+        reload();
       },
       icon: Stack(
         clipBehavior: Clip.none,
@@ -1408,11 +1430,137 @@ class _NoticesBellState extends State<_NoticesBell> {
   }
 }
 
+/// Severity → accent color, shared by every dashboard alert-style card
+/// ([_DangerZoneCard], [_NoticesBanner]) so the same red/amber/blue
+/// vocabulary means the same thing everywhere, whether it's an admin notice
+/// severity (critical/warning/advisory/info) or a geofence severity
+/// (danger/warning/info) — same hex values [noticeColor] in notices_screen.dart
+/// uses, kept in sync deliberately.
+Color _alertColor(String sev) {
+  switch (sev) {
+    case 'critical':
+    case 'danger':
+      return const Color(0xFFD64545);
+    case 'warning':
+      return const Color(0xFFE0A800);
+    default:
+      return kAccentInk; // advisory / info
+  }
+}
+
+/// Outline-only alert card: a thin severity-colored border and a small
+/// tinted icon chip, no solid fill and no left accent bar — deliberately
+/// distinct from Emergency Mode's solid pastel block just below it on the
+/// same screen, so these read as secondary/informational rather than
+/// competing with it. Shared by [_DangerZoneCard] and [_NoticesBanner].
+class _AlertCard extends StatelessWidget {
+  final Color color;
+  final IconData icon;
+  final String title;
+  final String? subtitle;
+  final VoidCallback? onTap;
+  const _AlertCard({
+    required this.color,
+    required this.icon,
+    required this.title,
+    this.subtitle,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final card = Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: dark ? kPanelDark : cs.onSurface.withValues(alpha: 0.04),
+        border: Border.all(color: color.withValues(alpha: 0.5), width: 1.3),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(color: color.withValues(alpha: 0.14), shape: BoxShape.circle),
+            child: Icon(icon, size: 18, color: color),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14, color: cs.onSurface)),
+                if (subtitle != null && subtitle!.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(subtitle!,
+                      style: TextStyle(fontSize: 12.5, color: cs.onSurface.withValues(alpha: 0.62), height: 1.3)),
+                ],
+              ],
+            ),
+          ),
+          if (onTap != null) ...[
+            const SizedBox(width: 4),
+            Icon(Icons.chevron_right, color: cs.onSurface.withValues(alpha: 0.3), size: 20),
+          ],
+        ],
+      ),
+    );
+    final padded = Padding(padding: const EdgeInsets.only(bottom: 10), child: card);
+    if (onTap == null) return padded;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: InkWell(borderRadius: BorderRadius.circular(14), onTap: onTap, child: card),
+    );
+  }
+}
+
+/// Persistent card shown while the device's current GPS fix is inside an
+/// admin-marked hazard zone — reactive off [GeofenceService.insideZones]
+/// directly rather than its own fetch/reload cycle, so it updates the
+/// instant a check (any of the periodic/background/pull-to-refresh paths)
+/// runs. Distinct from the one-shot OS notification on entry: this stays up
+/// for as long as the device remains inside, and disappears the moment it
+/// leaves.
+class _DangerZoneCard extends StatelessWidget {
+  const _DangerZoneCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<List<Map<String, dynamic>>>(
+      valueListenable: GeofenceService.instance.insideZones,
+      builder: (context, zones, _) {
+        if (zones.isEmpty) return const SizedBox.shrink();
+        // Worst zone first if inside several overlapping ones at once.
+        const rank = {'danger': 2, 'warning': 1, 'info': 0};
+        final z = zones.reduce((a, b) {
+          final ra = rank[(a['severity'] ?? 'warning').toString()] ?? 0;
+          final rb = rank[(b['severity'] ?? 'warning').toString()] ?? 0;
+          return rb > ra ? b : a;
+        });
+        final sev = (z['severity'] ?? 'warning').toString();
+        final name = (z['name'] ?? 'Hazard zone').toString();
+        final hazard = (z['hazardtype'] ?? 'hazard').toString();
+        return _AlertCard(
+          color: _alertColor(sev),
+          icon: Icons.warning_amber_rounded,
+          title: 'You are inside: $name',
+          subtitle: '$hazard area. Stay alert and move to safety if you can.',
+        );
+      },
+    );
+  }
+}
+
 /// Advisory / warning / critical notices as solid banners atop the dashboard
 /// (info shows only as the bell dot). Tapping opens the full announcement.
 /// A critical notice auto-opens its detail once, on app open.
 class _NoticesBanner extends StatefulWidget {
-  const _NoticesBanner();
+  const _NoticesBanner({super.key});
 
   @override
   State<_NoticesBanner> createState() => _NoticesBannerState();
@@ -1425,10 +1573,13 @@ class _NoticesBannerState extends State<_NoticesBanner> {
   @override
   void initState() {
     super.initState();
-    _load();
+    reload();
   }
 
-  Future<void> _load() async {
+  /// Re-fetches notices and re-derives the banner list. Public so the
+  /// Dashboard can refresh it on a periodic tick or manual pull-to-refresh,
+  /// not just once on open (Dashboard stays mounted indefinitely).
+  Future<void> reload() async {
     final all = await _service.loadNotices();
     final seen = await _service.seenNoticeIds();
     // Banners for advisory/warning/critical that haven't been seen/dismissed yet.
@@ -1483,59 +1634,21 @@ class _NoticesBannerState extends State<_NoticesBanner> {
     );
   }
 
-  // Pastel fills reusing the app palette (emergency pink / card blue / soft amber).
-  Color _pastel(String sev) {
-    switch (sev) {
-      case 'critical':
-        return const Color(0xFFEAACAC); // emergency-mode pink
-      case 'warning':
-        return const Color(0xFFF2D49B); // soft amber
-      case 'advisory':
-        return const Color(0xFFA7C7E7); // card blue
-      default:
-        return const Color(0xFFE0E0E0);
-    }
-  }
-
   Widget _banner(BuildContext context, Map<String, dynamic> n) {
     final sev = (n['severity'] ?? 'info').toString();
     final subtitle = (n['subtitle'] ?? '').toString();
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(10),
-        onTap: () async {
-          await _service.markNoticesSeen([(n['noticeid'] ?? '').toString()]);
-          if (context.mounted) {
-            await Navigator.of(context).push(MaterialPageRoute(builder: (_) => NoticeDetailScreen(notice: n)));
-          }
-          _load(); // banner disappears once seen
-        },
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          decoration: BoxDecoration(color: _pastel(sev), borderRadius: BorderRadius.circular(10)),
-          child: Row(
-            children: [
-              const Icon(Icons.campaign_rounded, size: 18, color: Colors.black87),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text((n['title'] ?? '').toString(),
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.black)),
-                    if (subtitle.isNotEmpty)
-                      Text(subtitle,
-                          style: const TextStyle(fontSize: 12.5, color: Colors.black87, height: 1.3)),
-                  ],
-                ),
-              ),
-              const Icon(Icons.chevron_right, color: Colors.black45, size: 20),
-            ],
-          ),
-        ),
-      ),
+    return _AlertCard(
+      color: _alertColor(sev),
+      icon: Icons.campaign_rounded,
+      title: (n['title'] ?? '').toString(),
+      subtitle: subtitle,
+      onTap: () async {
+        await _service.markNoticesSeen([(n['noticeid'] ?? '').toString()]);
+        if (context.mounted) {
+          await Navigator.of(context).push(MaterialPageRoute(builder: (_) => NoticeDetailScreen(notice: n)));
+        }
+        reload(); // banner disappears once seen
+      },
     );
   }
 }

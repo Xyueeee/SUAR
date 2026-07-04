@@ -63,7 +63,9 @@ SUAR.views.devices = (function () {
   function visibleRows() {
     let rows = allRows.slice();
     const q = search.trim().toLowerCase();
-    if (q) rows = rows.filter((d) => (d.deviceid || "").toLowerCase().includes(q));
+    if (q) rows = rows.filter((d) =>
+      (d.deviceid || "").toLowerCase().includes(q) ||
+      (d.hardwareid || "").toLowerCase().includes(q));
     rows.sort((a, b) => {
       if (sortKey === "bundles") return (b.bundleCount ?? 0) - (a.bundleCount ?? 0);
       if (sortKey === "mode") return (a.applicationmode || "").localeCompare(b.applicationmode || "");
@@ -82,17 +84,37 @@ SUAR.views.devices = (function () {
     return '<span class="muted">' + label + "</span>";
   }
 
+  // deviceId is a random UUID that resets on reinstall/data-clear, so the
+  // same physical phone can show up as several rows over its lifetime.
+  // hardwareid (Settings.Secure.ANDROID_ID) survives that — count how many
+  // rows share one, so a repeat can be flagged instead of silently miscounted
+  // as separate devices.
+  function hardwareIdCounts(rows) {
+    const counts = {};
+    rows.forEach((d) => { if (d.hardwareid) counts[d.hardwareid] = (counts[d.hardwareid] || 0) + 1; });
+    return counts;
+  }
+
+  function hardwareIdCell(d, counts) {
+    if (!d.hardwareid) return '<span class="muted">—</span>';
+    const dup = counts[d.hardwareid] > 1;
+    return '<span class="mono-cell"' + (dup ? ' title="Same physical phone as another device ID"' : '') + '>' +
+      SUAR.ui.truncId(d.hardwareid, 12) + (dup ? ' <span class="chip chip--on">dup</span>' : '') + '</span>';
+  }
+
   function renderTable() {
     const wrap = document.getElementById("d-table");
     if (!wrap) return;
     const rows = visibleRows();
     if (!rows.length) { wrap.innerHTML = SUAR.ui.empty(search ? "No matches" : "No devices yet", search ? "Try a different search." : "Devices register on their first sync."); return; }
+    const hwCounts = hardwareIdCounts(allRows);
     wrap.innerHTML =
-      '<table class="data"><thead><tr><th style="width:34px"><input type="checkbox" id="dv-selall"></th><th>Device ID</th><th>Mode</th><th>Version</th><th>Bundles</th><th>Registered</th><th>Last seen</th><th></th></tr></thead><tbody>' +
+      '<table class="data"><thead><tr><th style="width:34px"><input type="checkbox" id="dv-selall"></th><th>Device ID</th><th>Hardware ID</th><th>Mode</th><th>Version</th><th>Bundles</th><th>Registered</th><th>Last seen</th><th></th></tr></thead><tbody>' +
       rows.map((d) =>
         '<tr class="clickable">' +
         '<td><input type="checkbox" class="dv-sel"' + (selected.has(d.deviceid) ? " checked" : "") + "></td>" +
         '<td class="mono-cell">' + SUAR.ui.esc(d.deviceid) + "</td>" +
+        "<td>" + hardwareIdCell(d, hwCounts) + "</td>" +
         "<td>" + modeChip(d.applicationmode) + "</td>" +
         '<td class="mono-cell">' + SUAR.ui.esc(d.applicationversion || "—") + "</td>" +
         '<td class="mono-cell">' + (d.bundleCount ?? 0) + "</td>" +
@@ -123,13 +145,22 @@ SUAR.views.devices = (function () {
   async function openDetail(d) {
     if (_detailOpen) return;
     _detailOpen = true;
-    const bundles = await SUAR.api.get("/admin/bundles?device=" + encodeURIComponent(d.deviceid)).finally(() => { _detailOpen = false; });
+    let bundles;
+    try {
+      bundles = await SUAR.api.get("/admin/bundles?device=" + encodeURIComponent(d.deviceid));
+    } catch (e) {
+      SUAR.ui.toast(e.message, "err");
+      return;
+    } finally {
+      _detailOpen = false;
+    }
     const tc = d.tierCounts || {};
     const tierBadges = ["Critical", "High", "Moderate", "Low"].filter((t) => tc[t])
       .map((t) => SUAR.ui.tierBadge(t) + " &times;" + tc[t]).join("  ");
 
     const kv = [
       former("Device ID", '<span class="mono">' + SUAR.ui.esc(d.deviceid) + "</span>"),
+      former("Hardware ID", hardwareIdCell(d, hardwareIdCounts(allRows))),
       former("Mode", modeChip(d.applicationmode)),
       former("App version", '<span class="mono">' + SUAR.ui.esc(d.applicationversion || "—") + "</span>"),
       former("Registered", SUAR.ui.fmtDate(d.registeredat)),
@@ -169,7 +200,7 @@ SUAR.views.devices = (function () {
 
   function modeChip(m) {
     if (m === "helper") return '<span class="chip chip--on">helper</span>';
-    if (m === "victim") return '<span class="badge badge--High">victim</span>';
+    if (m === "victim") return '<span class="chip chip--victim">victim</span>';
     return '<span class="chip">' + SUAR.ui.esc(m || "—") + "</span>";
   }
 

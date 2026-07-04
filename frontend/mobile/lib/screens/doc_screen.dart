@@ -6,6 +6,7 @@ import '../content/doc_controller.dart';
 import '../content/doc_models.dart';
 import '../content/doc_service.dart';
 import '../help/help_tour.dart';
+import '../services/geofence_service.dart';
 import '../theme.dart' show kPanelDark;
 import '../widgets/back_chevron.dart';
 
@@ -140,6 +141,10 @@ class _DocScreenState extends State<DocScreen> {
   Future<void> _refresh() async {
     final docs = await _service.loadDocs(widget.category);
     if (docs.isNotEmpty) await _ctrl.load(_merge(docs));
+    // Pull-to-refresh does more than just this page's own content — same
+    // "any backend touch" piggyback as the dashboard (geofence check + local
+    // bundle sync), so every page that supports pulling down does it too.
+    await GeofenceService.instance.check();
     if (mounted) setState(() {});
   }
 

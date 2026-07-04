@@ -144,7 +144,13 @@ SUAR.views.bundles = (function () {
   }
 
   async function openDetail(id) {
-    const d = await SUAR.api.get("/admin/bundles/" + encodeURIComponent(id));
+    let d;
+    try {
+      d = await SUAR.api.get("/admin/bundles/" + encodeURIComponent(id));
+    } catch (e) {
+      SUAR.ui.toast(e.message, "err");
+      return;
+    }
     const b = d.bundle;
     const readings = d.sensorReadings || [];
     const relays = d.relayLogs || [];
@@ -210,17 +216,23 @@ SUAR.views.bundles = (function () {
           '<div class="field"><label>Score (0–1)</label><input class="input" id="e-score" type="number" step="0.001" min="0" max="1" value="' + (b.priorityscore ?? "") + '"></div>' +
         "</div>" +
         '<div class="form-row">' +
-          '<div class="field"><label>Latitude</label><input class="input" id="e-lat" type="number" step="any" value="' + (b.estimatedlat ?? "") + '"></div>' +
-          '<div class="field"><label>Longitude</label><input class="input" id="e-lng" type="number" step="any" value="' + (b.estimatedlng ?? "") + '"></div>' +
+          '<div class="field"><label>Latitude</label><input class="input" id="e-lat" type="number" step="any" min="-90" max="90" value="' + (b.estimatedlat ?? "") + '"></div>' +
+          '<div class="field"><label>Longitude</label><input class="input" id="e-lng" type="number" step="any" min="-180" max="180" value="' + (b.estimatedlng ?? "") + '"></div>' +
         "</div>",
       actions: [
         { label: "Cancel", className: "btn--ghost", onClick: (c) => c() },
         { label: "Save", className: "btn--primary", onClick: async (close, btn) => {
+            const score = parseFloat(document.getElementById("e-score").value);
+            if (isNaN(score) || score < 0 || score > 1) { SUAR.ui.toast("Score must be between 0 and 1", "err"); return; }
+            const lat = numOrNull(document.getElementById("e-lat").value);
+            const lng = numOrNull(document.getElementById("e-lng").value);
+            if (lat !== null && Math.abs(lat) > 90) { SUAR.ui.toast("Latitude must be between -90 and 90", "err"); return; }
+            if (lng !== null && Math.abs(lng) > 180) { SUAR.ui.toast("Longitude must be between -180 and 180", "err"); return; }
             const patch = {
               prioritytier: document.getElementById("e-tier").value,
-              priorityscore: parseFloat(document.getElementById("e-score").value),
-              estimatedlat: numOrNull(document.getElementById("e-lat").value),
-              estimatedlng: numOrNull(document.getElementById("e-lng").value),
+              priorityscore: score,
+              estimatedlat: lat,
+              estimatedlng: lng,
             };
             btn.disabled = true;
             try {

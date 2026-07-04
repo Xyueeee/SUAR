@@ -4,6 +4,7 @@ import '../content/doc_controller.dart';
 import '../content/doc_models.dart';
 import '../content/doc_service.dart';
 import '../screens/doc_screen.dart' show DocBody;
+import '../services/geofence_service.dart';
 import '../widgets/back_chevron.dart';
 
 /// Renders a notice's full structure — sections, checklist fields, guide
@@ -93,8 +94,10 @@ Color noticeColor(String sev) {
   }
 }
 
-/// Announcements list (reached from the bell on the dashboard). Opening it marks
-/// all current notices as seen (clears the bell dot).
+/// Announcements list (reached from the bell on the dashboard). A notice only
+/// counts as read once its detail is actually opened, here or via the
+/// dashboard banner — just opening this list no longer bulk-marks everything
+/// seen, so the bell dot and each row's unread dot stay accurate.
 class NoticesScreen extends StatefulWidget {
   const NoticesScreen({super.key});
 
@@ -104,12 +107,29 @@ class NoticesScreen extends StatefulWidget {
 
 class _NoticesScreenState extends State<NoticesScreen> {
   final _service = DocService();
-  late Future<List<Map<String, dynamic>>> _future = _load();
+  late Future<({List<Map<String, dynamic>> notices, Set<String> seen})> _future = _load();
 
-  Future<List<Map<String, dynamic>>> _load() async {
+  Future<({List<Map<String, dynamic>> notices, Set<String> seen})> _load() async {
     final notices = await _service.loadNotices();
-    await _service.markNoticesSeen(notices.map((n) => (n['noticeid'] ?? '').toString()));
-    return notices;
+    final seen = await _service.seenNoticeIds();
+    return (notices: notices, seen: seen);
+  }
+
+  /// Pull-to-refresh does more than just reload notices — same "any backend
+  /// touch" piggyback as the dashboard (geofence check + local bundle sync).
+  Future<void> _refresh() async {
+    await GeofenceService.instance.check();
+    if (mounted) setState(() => _future = _load());
+  }
+
+  Future<void> _open(Map<String, dynamic> n) async {
+    final id = (n['noticeid'] ?? '').toString();
+    await _service.markNoticesSeen([id]);
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => NoticeDetailScreen(notice: n)),
+    );
+    if (mounted) setState(() => _future = _load());
   }
 
   @override
@@ -120,16 +140,17 @@ class _NoticesScreenState extends State<NoticesScreen> {
         leading: const BackChevron(),
         title: const Text('Notices'),
       ),
-      body: FutureBuilder<List<Map<String, dynamic>>>(
+      body: FutureBuilder<({List<Map<String, dynamic>> notices, Set<String> seen})>(
         future: _future,
         builder: (context, snap) {
           if (snap.connectionState != ConnectionState.done) {
             return const Center(child: CircularProgressIndicator());
           }
-          final notices = snap.data ?? const [];
+          final notices = snap.data?.notices ?? const [];
+          final seen = snap.data?.seen ?? const {};
           if (notices.isEmpty) {
             return RefreshIndicator(
-              onRefresh: () async => setState(() => _future = _load()),
+              onRefresh: _refresh,
               child: ListView(children: [
                 const SizedBox(height: 120),
                 Icon(Icons.notifications_none, size: 48, color: cs.onSurface.withValues(alpha: 0.26)),
@@ -147,14 +168,45 @@ class _NoticesScreenState extends State<NoticesScreen> {
               separatorBuilder: (context, index) => Divider(height: 1, color: cs.onSurface.withValues(alpha: 0.12), indent: 16, endIndent: 16),
               itemBuilder: (context, i) {
                 final n = notices[i];
+                final id = (n['noticeid'] ?? '').toString();
+                final unread = !seen.contains(id);
                 final when = fmtNoticeTime((n['updatedat'] ?? n['createdat'])?.toString());
+                final sev = (n['severity'] ?? 'info').toString();
                 return ListTile(
-                  title: Text((n['title'] ?? '').toString(),
-                      style: TextStyle(color: cs.onSurface, fontWeight: FontWeight.w600)),
-                  subtitle: when.isEmpty ? null : Text(when, style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54))),
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => NoticeDetailScreen(notice: n)),
+                  title: Row(
+                    children: [
+                      Flexible(
+                        child: Text((n['title'] ?? '').toString(),
+                            style: TextStyle(color: cs.onSurface, fontWeight: FontWeight.w600)),
+                      ),
+                      if (unread) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          width: 7,
+                          height: 7,
+                          decoration: const BoxDecoration(color: Color(0xFFD64545), shape: BoxShape.circle),
+                        ),
+                      ],
+                    ],
                   ),
+                  subtitle: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (when.isNotEmpty) ...[
+                        Text(when, style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54))),
+                        const SizedBox(width: 8),
+                      ],
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        decoration: BoxDecoration(
+                            color: noticeColor(sev), borderRadius: BorderRadius.circular(999)),
+                        child: Text(sev.toUpperCase(),
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 10, fontWeight: FontWeight.w700)),
+                      ),
+                    ],
+                  ),
+                  onTap: () => _open(n),
                 );
               },
             ),

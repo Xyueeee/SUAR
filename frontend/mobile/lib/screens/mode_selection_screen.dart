@@ -167,7 +167,7 @@ class _ModeSelectionScreenState extends State<ModeSelectionScreen> {
                 key: _kHelperCard,
                 label: 'Helper Mode',
                 color: const Color(0xFFA7C7E7),
-                icon: Icons.engineering,
+                icon: Icons.person_search,
                 busy: _requesting,
                 onTap: () => _enterMode(() => const HelperModeScreen()),
               ),

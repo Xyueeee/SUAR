@@ -186,44 +186,50 @@ class SQLiteRepository {
   /// silently dropped as a duplicate.
   Future<void> saveBundle(DistressBundleModel bundle) async {
     final db = await _getDb();
-    final existing = await db.query(
-      'DistressBundle',
-      columns: ['UpdatedAt'],
-      where: 'BundleId = ?',
-      whereArgs: [bundle.bundleId],
-      limit: 1,
-    );
-    if (existing.isEmpty) {
-      await db.insert('DistressBundle', bundle.toMap());
-    } else {
-      final existingUpdated =
-          DateTime.tryParse(existing.first['UpdatedAt'] as String? ?? '');
-      if (existingUpdated != null && !bundle.updatedAt.isAfter(existingUpdated)) {
-        return; // stale or identical — keep what we have
-      }
-      await db.update(
+    // One transaction: the bundle row and its readings snapshot land (or
+    // don't) together — a crash between the readings delete and re-insert
+    // otherwise left a bundle with no readings.
+    await db.transaction((txn) async {
+      final existing = await txn.query(
         'DistressBundle',
-        bundle.toMap(),
+        columns: ['UpdatedAt'],
         where: 'BundleId = ?',
         whereArgs: [bundle.bundleId],
+        limit: 1,
       );
-      // Replace the readings snapshot with the newer one.
-      await db.delete('SensorReading',
-          where: 'BundleId = ?', whereArgs: [bundle.bundleId]);
-    }
-    for (final raw in bundle.sensorReadings) {
-      // Re-stamp the FK to this bundle in case the transported reading's
-      // bundleId drifted; dedup on ReadingId.
-      final reading = SensorReadingModel.fromJson({
-        ...raw,
-        'bundleId': bundle.bundleId,
-      });
-      await db.insert(
-        'SensorReading',
-        reading.toMap(),
-        conflictAlgorithm: ConflictAlgorithm.ignore,
-      );
-    }
+      if (existing.isEmpty) {
+        await txn.insert('DistressBundle', bundle.toMap());
+      } else {
+        final existingUpdated =
+            DateTime.tryParse(existing.first['UpdatedAt'] as String? ?? '');
+        if (existingUpdated != null &&
+            !bundle.updatedAt.isAfter(existingUpdated)) {
+          return; // stale or identical — keep what we have
+        }
+        await txn.update(
+          'DistressBundle',
+          bundle.toMap(),
+          where: 'BundleId = ?',
+          whereArgs: [bundle.bundleId],
+        );
+        // Replace the readings snapshot with the newer one.
+        await txn.delete('SensorReading',
+            where: 'BundleId = ?', whereArgs: [bundle.bundleId]);
+      }
+      for (final raw in bundle.sensorReadings) {
+        // Re-stamp the FK to this bundle in case the transported reading's
+        // bundleId drifted; dedup on ReadingId.
+        final reading = SensorReadingModel.fromJson({
+          ...raw,
+          'bundleId': bundle.bundleId,
+        });
+        await txn.insert(
+          'SensorReading',
+          reading.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+      }
+    });
   }
 
   Future<List<SensorReadingModel>> getReadingsForBundle(String bundleId) async {
@@ -257,6 +263,16 @@ class SQLiteRepository {
       where: 'BundleId = ?',
       whereArgs: [bundleId],
     );
+  }
+
+  /// Drops a bundle (and its readings) once the backend has it and it's old
+  /// enough to no longer matter locally — see SyncService.syncLocalBundles.
+  Future<void> deleteBundle(String bundleId) async {
+    final db = await _getDb();
+    await db.transaction((txn) async {
+      await txn.delete('SensorReading', where: 'BundleId = ?', whereArgs: [bundleId]);
+      await txn.delete('DistressBundle', where: 'BundleId = ?', whereArgs: [bundleId]);
+    });
   }
 
   // --- Debug-only inspection below: backs the Settings > Debugging Options >

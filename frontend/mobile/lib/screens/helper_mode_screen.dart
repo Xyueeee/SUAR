@@ -89,7 +89,7 @@ class _HelperModeScreenState extends State<HelperModeScreen>
   // Admin-drawn danger zones (geofences) — fetched once on open, same source
   // the background GeofenceService alerts use, so what's drawn here matches
   // what would trigger a proximity notification.
-  final _geofenceService = GeofenceService();
+  final _geofenceService = GeofenceService.instance;
   List<Map<String, dynamic>> _geofences = const [];
   bool _disposed = false;
 
@@ -566,6 +566,14 @@ class _HelperModeScreenState extends State<HelperModeScreen>
       // display hides it.
       if (DateTime.now().difference(bundle.updatedAt) >
           staleBundleMapThreshold) {
+        continue;
+      }
+      // Separate from the updatedAt check above: a helper-to-helper relay of
+      // an old bundle, or a Victim's app just left running, keeps bumping
+      // updatedAt without the underlying event actually being recent. Gate on
+      // createdAt too so a genuinely stale event can't reappear on the map.
+      if (DateTime.now().difference(bundle.createdAt) >
+          bundleInactiveThreshold) {
         continue;
       }
       if (!seenDevices.add(bundle.deviceId)) continue;

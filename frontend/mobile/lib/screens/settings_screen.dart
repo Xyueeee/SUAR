@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/app_lock.dart';
+import '../services/geofence_service.dart';
 import '../theme.dart';
 import '../widgets/back_chevron.dart';
 import '../widgets/option_card.dart';
@@ -77,6 +78,26 @@ class SettingsScreen extends StatelessWidget {
               ),
               onTap: () => Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const _LoggingPage()),
+              ),
+            ),
+          ),
+          Divider(
+              color: fg.withValues(alpha: 0.12),
+              height: 1,
+              indent: 16,
+              endIndent: 16),
+          // ── Background hazard alerts ────────────────────────────────────────
+          ValueListenableBuilder<bool>(
+            valueListenable: backgroundGeofenceEnabled,
+            builder: (context, enabled, _) => ListTile(
+              leading: Icon(Icons.shield_outlined, color: fg),
+              title: Text('Background Hazard Alerts', style: TextStyle(color: fg)),
+              subtitle: Text(
+                enabled ? 'On' : 'Off',
+                style: TextStyle(color: fg.withValues(alpha: 0.54)),
+              ),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const _BackgroundAlertsPage()),
               ),
             ),
           ),
@@ -177,6 +198,61 @@ class _AppearancePage extends StatelessWidget {
                 ),
                 const SizedBox(height: 12),
               ],
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+// ─── Background hazard alerts page ────────────────────────────────────────────
+
+class _BackgroundAlertsPage extends StatelessWidget {
+  const _BackgroundAlertsPage();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final fg = cs.onSurface;
+    return Scaffold(
+      appBar: AppBar(
+        leading: const BackChevron(),
+        title: const Text('Background Hazard Alerts'),
+      ),
+      body: ValueListenableBuilder<bool>(
+        valueListenable: backgroundGeofenceEnabled,
+        builder: (context, enabled, _) {
+          return ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              const Text(
+                'When on, SUAR keeps checking your location against '
+                'admin-marked hazard zones even while the app is in the '
+                'background, and alerts you the moment you enter one. '
+                'Android requires a small ongoing notification while this '
+                'runs, it just says SUAR is checking, nothing more.',
+                style: TextStyle(fontSize: 14),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'When off, hazard checks only run while the Dashboard is '
+                'open on screen, and stop as soon as you leave the app.',
+                style: TextStyle(fontSize: 14),
+              ),
+              const SizedBox(height: 20),
+              Container(
+                decoration: BoxDecoration(
+                  border: Border.all(color: fg.withValues(alpha: 0.18)),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: SwitchListTile(
+                  title: Text('Enable background alerts', style: TextStyle(color: fg)),
+                  value: enabled,
+                  onChanged: setBackgroundGeofenceEnabled,
+                ),
+              ),
             ],
           );
         },

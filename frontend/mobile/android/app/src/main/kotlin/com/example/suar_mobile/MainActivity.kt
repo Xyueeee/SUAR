@@ -2,6 +2,7 @@ package com.example.suar_mobile
 
 import android.content.Intent
 import android.net.wifi.p2p.WifiP2pManager
+import android.provider.Settings
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -13,6 +14,7 @@ private const val BLE_PERIPHERAL_CHANNEL = "suar/ble_peripheral"
 private const val BLE_PERIPHERAL_EVENTS = "suar/ble_peripheral_events"
 private const val SENSORS_CHANNEL = "suar/sensors"
 private const val SENSORS_EVENTS = "suar/sensors_events"
+private const val DEVICE_IDENTITY_CHANNEL = "suar/device_identity"
 
 class MainActivity : FlutterFragmentActivity() {
 
@@ -235,6 +237,23 @@ class MainActivity : FlutterFragmentActivity() {
                     sensorProbe.setEventSink(null)
                 }
             })
+
+        // Settings.Secure.ANDROID_ID: per-app-install/per-device value, survives a
+        // normal reinstall (same signing key, same device/user), unlike the random
+        // UUID this app generates itself (regenerated whenever SharedPreferences is
+        // cleared or the app is reinstalled). Sent alongside deviceId so the admin
+        // console can tell "same physical phone, new install" apart from "genuinely
+        // new phone" — no special permission needed, and not PII (unlike IMEI, which
+        // Android 10+ blocks 3rd-party apps from reading anyway).
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, DEVICE_IDENTITY_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "getAndroidId" -> result.success(
+                        Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+                    )
+                    else -> result.notImplemented()
+                }
+            }
     }
 
     private fun startMeshService(

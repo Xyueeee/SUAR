@@ -2,20 +2,68 @@
 /// location against each (circle or polygon), and fires an OS notification on
 /// entry. Re-arms when you leave a zone so re-entry alerts again. Offline-safe:
 /// any failure (no URL, no fix, no permission) is a quiet no-op.
+///
+/// Also owns the background poll for warning/critical notices ([_checkUrgentNotices])
+/// — unrelated to geofences, but background monitoring only needed one
+/// periodic timer, so notices ride along on it instead of running their own.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../constants.dart';
+import '../content/doc_service.dart';
+import '../storage/sqlite_repository.dart';
+import '../sync/sync_service.dart';
 import 'notification_service.dart';
 
+const String _bgMonitoringPrefKey = 'suar_bg_geofence_enabled';
+
+/// Whether continuous background hazard-zone monitoring is allowed to run.
+/// Persisted; user-facing toggle lives in Settings. Defaults on — this is the
+/// existing behaviour, just made optional (Android requires a persistent
+/// notification for the foreground service this drives, so some users may
+/// prefer to opt out and only get checked while Dashboard is open).
+final ValueNotifier<bool> backgroundGeofenceEnabled = ValueNotifier<bool>(true);
+
+Future<void> loadBackgroundGeofencePref() async {
+  final p = await SharedPreferences.getInstance();
+  backgroundGeofenceEnabled.value = p.getBool(_bgMonitoringPrefKey) ?? true;
+}
+
+Future<void> setBackgroundGeofenceEnabled(bool value) async {
+  backgroundGeofenceEnabled.value = value;
+  final p = await SharedPreferences.getInstance();
+  await p.setBool(_bgMonitoringPrefKey, value);
+  if (value) {
+    await GeofenceService.instance.startBackgroundMonitoring();
+  } else {
+    GeofenceService.instance.stopBackgroundMonitoring();
+  }
+}
+
 class GeofenceService {
+  GeofenceService._();
+  static final GeofenceService instance = GeofenceService._();
+
   final Set<String> _inside = {}; // zones we've already alerted for (until exit)
+  List<Map<String, dynamic>> _cachedZones = [];
+  StreamSubscription<Position>? _bgSub;
+  Timer? _zoneRefreshTimer;
+  final SyncService _syncService = SyncService();
+
+  /// Zones the device is currently physically inside, recomputed on every
+  /// [_evaluate] call (foreground [check] or the background position
+  /// stream). Distinct from [_inside] (a one-shot entry-alert dedup set) —
+  /// this reflects live "am I in one right now", for the Dashboard's
+  /// persistent in-app card, and clears the moment the device leaves.
+  final ValueNotifier<List<Map<String, dynamic>>> insideZones = ValueNotifier(const []);
 
   Future<String?> _baseUrl() async {
     final prefs = await SharedPreferences.getInstance();
@@ -63,29 +111,148 @@ class GeofenceService {
 
   /// One proximity sweep. Call periodically while the app is in the foreground.
   Future<void> check() async {
+    // Piggyback: any backend touch is a chance to flush locally-stored
+    // bundles to the admin (see _syncLocalBundles), not just Helper-mode
+    // ones. Unawaited so a slow/offline sync never delays the zone sweep.
+    unawaited(_syncLocalBundles());
     final zones = await _fetchZones();
     if (zones.isEmpty) return;
     final pos = await _position();
     if (pos == null) return;
+    await _evaluate(zones, pos);
+  }
+
+  /// Pushes whatever's unsynced in local storage to the backend on this
+  /// check-in, regardless of whether Helper mode is currently running — see
+  /// SyncService.syncLocalBundles. Offline/no-URL is a quiet no-op.
+  Future<void> _syncLocalBundles() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final deviceId = prefs.getString(deviceIdPrefKey);
+      if (deviceId == null) return;
+      await _syncService.syncLocalBundles(SQLiteRepository(), deviceId, 'helper');
+    } catch (_) {/* offline — try again next check-in */}
+  }
+
+  /// Starts a continuous Android foreground-service position stream so
+  /// danger-zone alerts still fire while the app is backgrounded, not just
+  /// while Dashboard is open — reuses the exact same [_evaluate] as [check],
+  /// so entries/exits stay deduped through the shared [_inside] set no
+  /// matter which path noticed them. No-op if already running or if
+  /// location isn't granted/on (same quiet-failure philosophy as [check];
+  /// this is called unconditionally at app startup).
+  Future<void> startBackgroundMonitoring() async {
+    if (_bgSub != null) return;
+    if (!backgroundGeofenceEnabled.value) return;
+    final perm = await Geolocator.checkPermission();
+    if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) return;
+    if (!await Geolocator.isLocationServiceEnabled()) return;
+
+    _cachedZones = await _fetchZones();
+    // Piggybacks warning/critical notice polling on the same timer — notices
+    // don't need a position fix at all, so they don't need their own
+    // schedule, just a periodic tick while the app isn't in the foreground.
+    _zoneRefreshTimer?.cancel();
+    _zoneRefreshTimer = Timer.periodic(const Duration(minutes: 5), (_) async {
+      _cachedZones = await _fetchZones();
+      await _checkUrgentNotices();
+      await _syncLocalBundles();
+    });
+
+    _bgSub = Geolocator.getPositionStream(
+      locationSettings: AndroidSettings(
+        accuracy: LocationAccuracy.high,
+        // Zones are city-block-scale at smallest; no need to re-check on
+        // every few metres of GPS jitter.
+        distanceFilter: 25,
+        // Android mandates a persistent notification for any foreground
+        // location service — this can't be hidden, only kept low-key. Plain
+        // wording, no alarming "danger zone" phrasing in the status bar
+        // itself (the actual entry alert still says that, via NotificationService).
+        foregroundNotificationConfig: const ForegroundNotificationConfig(
+          notificationTitle: 'SUAR',
+          notificationText: 'Checking for hazard zones nearby',
+          notificationChannelName: 'Hazard Zone Monitoring',
+          setOngoing: true,
+        ),
+      ),
+    ).listen(
+      (pos) {
+        if (_cachedZones.isEmpty) return;
+        _evaluate(_cachedZones, pos);
+      },
+      onError: (_) {}, // best-effort; see class doc comment
+    );
+  }
+
+  /// Stops continuous background monitoring (Settings toggle turned off).
+  /// Foreground checks via [check] are untouched.
+  void stopBackgroundMonitoring() {
+    _bgSub?.cancel();
+    _bgSub = null;
+    _zoneRefreshTimer?.cancel();
+    _zoneRefreshTimer = null;
+  }
+
+  /// Same warning/critical → OS notification rule as the dashboard's notice
+  /// banner (_NoticesBannerState._load), just runnable without a Dashboard
+  /// mounted. Shares [DocService]'s notifiedNoticeIds bookkeeping, so a
+  /// notice never double-notifies whichever path (this timer or opening the
+  /// app) happens to see it first.
+  Future<void> _checkUrgentNotices() async {
+    final service = DocService();
+    final all = await service.loadNotices();
+    final notified = await service.notifiedNoticeIds();
+    final toNotify = all
+        .where((n) =>
+            const ['warning', 'critical'].contains((n['severity'] ?? '').toString()) &&
+            !notified.contains((n['noticeid'] ?? '').toString()))
+        .toList();
+    if (toNotify.isEmpty) return;
+    for (final n in toNotify) {
+      await NotificationService.instance.show(
+        (n['title'] ?? '').toString(),
+        (n['subtitle'] ?? '').toString(),
+        high: true,
+      );
+    }
+    await service.markNoticesNotified(toNotify.map((n) => (n['noticeid'] ?? '').toString()));
+  }
+
+  Future<void> _evaluate(List<Map<String, dynamic>> zones, Position pos) async {
+    final currentlyInside = <Map<String, dynamic>>[];
     for (final z in zones) {
       if (z['isactive'] == false) continue;
       final id = (z['geofenceid'] ?? '').toString();
-      final inside = _isInside(z, pos.latitude, pos.longitude);
-      if (inside && !_inside.contains(id)) {
-        _inside.add(id);
-        final name = (z['name'] ?? 'Danger zone').toString();
-        final hazard = (z['hazardtype'] ?? 'hazard').toString();
-        final sev = (z['severity'] ?? 'warning').toString();
-        // info = quiet; warning/danger = heads-up alert.
-        await NotificationService.instance.show(
-          (sev == 'danger' ? 'Danger zone: ' : 'Hazard zone: ') + name,
-          'You are entering a $hazard area. Stay alert and move to safety if you can.',
-          high: sev != 'info',
-        );
-      } else if (!inside) {
+      // One zone with malformed geometry (bad admin edit / raw-JSON typo)
+      // must not abort the whole sweep — the geometry casts in _isInside
+      // throw on non-numeric values, and this also runs unawaited from the
+      // background position stream listener.
+      final bool inside;
+      try {
+        inside = _isInside(z, pos.latitude, pos.longitude);
+      } catch (_) {
+        continue;
+      }
+      if (inside) {
+        currentlyInside.add(z);
+        if (!_inside.contains(id)) {
+          _inside.add(id);
+          final name = (z['name'] ?? 'Danger zone').toString();
+          final hazard = (z['hazardtype'] ?? 'hazard').toString();
+          final sev = (z['severity'] ?? 'warning').toString();
+          // info = quiet; warning/danger = heads-up alert.
+          await NotificationService.instance.show(
+            (sev == 'danger' ? 'Danger zone: ' : 'Hazard zone: ') + name,
+            'You are entering a $hazard area. Stay alert and move to safety if you can.',
+            high: sev != 'info',
+          );
+        }
+      } else {
         _inside.remove(id); // re-arm for next entry
       }
     }
+    insideZones.value = currentlyInside;
   }
 
   bool _isInside(Map z, double lat, double lng) {

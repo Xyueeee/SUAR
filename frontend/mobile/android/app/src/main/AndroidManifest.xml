@@ -35,6 +35,13 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Background danger-zone monitoring (GeofenceService): the geolocator
+         plugin runs its own location-type foreground service (declared in
+         its own manifest, merged in at build time) instead of requesting
+         ACCESS_BACKGROUND_LOCATION — its persistent notification is the
+         required user-visible signal. Android 14+ additionally requires this
+         permission for any foregroundServiceType="location" service. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>
 

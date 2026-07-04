@@ -40,9 +40,12 @@ app = FastAPI(title="SUAR Sync + Admin Backend")
 # Dev: the static web dashboard is opened from file:// or any local host and
 # talks to this API over the ngrok URL, so origins are unpredictable. We auth
 # with a Bearer header (no cookies), so wildcard origins are safe here.
+# For a real deployment set ALLOWED_ORIGINS in .env (comma-separated) to pin
+# the console's origin(s); unset keeps the dev wildcard.
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -50,6 +53,34 @@ app.add_middleware(
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _is_newer(incoming: datetime, stored_iso: str | None) -> bool:
+    """True when `incoming` is strictly newer than the stored ISO timestamp.
+    Unparseable/missing stored values count as older (accept the update) —
+    never let a bad row block fresher data."""
+    if not stored_iso:
+        return True
+    try:
+        stored = datetime.fromisoformat(stored_iso)
+    except ValueError:
+        return True
+    # Treat naive timestamps (device clocks without a zone) as UTC.
+    if incoming.tzinfo is None:
+        incoming = incoming.replace(tzinfo=timezone.utc)
+    if stored.tzinfo is None:
+        stored = stored.replace(tzinfo=timezone.utc)
+    return incoming > stored
+
+
+def _sane_coords(lat: float | None, lng: float | None) -> tuple[float | None, float | None]:
+    """Drop a fix that is out of WGS84 range (buggy/hostile client) — a bundle
+    with no location is better than one that breaks the map."""
+    if lat is None or lng is None:
+        return None, None
+    if -90 <= lat <= 90 and -180 <= lng <= 180:
+        return lat, lng
+    return None, None
 
 
 # --------------------------------------------------------------------------- #
@@ -84,17 +115,37 @@ def require_admin(authorization: str = Header(None)):
 # --------------------------------------------------------------------------- #
 # Sync (Helper app)                                                            #
 # --------------------------------------------------------------------------- #
-def ensure_device(device_id: str, mode: str, version: str | None = None, touch_lastseen: bool = True) -> None:
+def ensure_device(
+    device_id: str,
+    mode: str,
+    version: str | None = None,
+    touch_lastseen: bool = True,
+    hardware_id: str | None = None,
+) -> None:
     existing = supabase.table("device").select("deviceid").eq("deviceid", device_id).execute()
     if existing.data:
         if touch_lastseen:
-            supabase.table("device").update({"lastseenat": _now_iso()}).eq("deviceid", device_id).execute()
+            # touch_lastseen=True only on the device's OWN /sync call (not the
+            # relay-driven "register this bundle's owning victim" call below) —
+            # mode/version can legitimately change after first registration (the
+            # same device switches Victim<->Helper mode, or the app updates).
+            # Without this the row stayed frozen at whatever mode it FIRST
+            # registered with, so a device that started as Victim looked
+            # permanently "victim" in the admin console even once it moved to
+            # Helper mode and was syncing fine.
+            update = {"lastseenat": _now_iso(), "applicationmode": mode}
+            if version is not None:
+                update["applicationversion"] = version
+            if hardware_id is not None:
+                update["hardwareid"] = hardware_id
+            supabase.table("device").update(update).eq("deviceid", device_id).execute()
     else:
         supabase.table("device").insert(
             {
                 "deviceid": device_id,
                 "applicationmode": mode,
                 "applicationversion": version,
+                "hardwareid": hardware_id,
                 "registeredat": _now_iso(),
                 "lastseenat": _now_iso(),
             }
@@ -128,6 +179,7 @@ def sync(payload: SyncRequest):
             payload.device.applicationMode,
             payload.device.applicationVersion,
             touch_lastseen=True,
+            hardware_id=payload.device.hardwareId,
         )
     except Exception as exc:
         logger.error(f"Device upsert failed for {payload.device.deviceId}: {exc}")
@@ -137,9 +189,10 @@ def sync(payload: SyncRequest):
 
     for bundle in payload.bundles:
         try:
+            lat, lng = _sane_coords(bundle.estimatedLat, bundle.estimatedLng)
             existing = (
                 supabase.table("distressbundle")
-                .select("bundleid")
+                .select("bundleid,updatedat")
                 .eq("bundleid", bundle.bundleId)
                 .execute()
             )
@@ -148,12 +201,25 @@ def sync(payload: SyncRequest):
                 # over time, so UPDATE the existing row instead of dropping the
                 # newer data as a "duplicate" (that left bundles stuck at the
                 # first push's None / 0 / no-location values).
+                #
+                # Timestamp-based conflict resolution (FR 5.x): the same bundle
+                # can arrive via multiple relay paths — a stale copy (older
+                # updatedAt than what's stored) must not clobber fresher data.
+                if not _is_newer(bundle.updatedAt, existing.data[0].get("updatedat")):
+                    supabase.table("syncrecord").upsert(
+                        {"bundleid": bundle.bundleId, "syncedat": _now_iso(), "serverstatus": "duplicate"},
+                        on_conflict="bundleid",
+                    ).execute()
+                    duplicates += 1
+                    continue
                 supabase.table("distressbundle").update(
                     {
                         "priorityscore": bundle.priorityScore,
                         "prioritytier": bundle.priorityTier,
-                        "estimatedlat": bundle.estimatedLat,
-                        "estimatedlng": bundle.estimatedLng,
+                        "estimatedlat": lat,
+                        "estimatedlng": lng,
+                        "accuracymeters": bundle.accuracyMeters,
+                        "estimatedaltitude": bundle.estimatedAltitude,
                         "hopcount": bundle.hopCount,
                         "updatedat": bundle.updatedAt.isoformat(),
                     }
@@ -173,8 +239,10 @@ def sync(payload: SyncRequest):
                     "deviceid": bundle.deviceId,
                     "priorityscore": bundle.priorityScore,
                     "prioritytier": bundle.priorityTier,
-                    "estimatedlat": bundle.estimatedLat,
-                    "estimatedlng": bundle.estimatedLng,
+                    "estimatedlat": lat,
+                    "estimatedlng": lng,
+                    "accuracymeters": bundle.accuracyMeters,
+                    "estimatedaltitude": bundle.estimatedAltitude,
                     "hopcount": bundle.hopCount,
                     "issynced": True,
                     "createdat": bundle.createdAt.isoformat(),
@@ -243,7 +311,18 @@ def sync(payload: SyncRequest):
 def public_notices():
     rows = supabase.table("notice").select("*").eq("isactive", True).order("createdat", desc=True).execute().data
     now = datetime.now(timezone.utc)
-    return [r for r in rows if not r.get("expiresat") or datetime.fromisoformat(r["expiresat"]) > now]
+
+    def _unexpired(r):
+        exp = r.get("expiresat")
+        if not exp:
+            return True
+        try:
+            return datetime.fromisoformat(exp) > now
+        except ValueError:
+            # Malformed expiry must not 500 the whole public feed; keep the row.
+            return True
+
+    return [r for r in rows if _unexpired(r)]
 
 
 @app.get("/geofences")
@@ -373,7 +452,7 @@ def admin_list_bundles(
     tier: str | None = Query(None),
     synced: bool | None = Query(None),
     device: str | None = Query(None),
-    limit: int = Query(200, le=1000),
+    limit: int = Query(200, ge=1, le=1000),
 ):
     q = supabase.table("distressbundle").select("*")
     if tier:
@@ -409,6 +488,10 @@ def admin_update_bundle(bundle_id: str, payload: dict = Body(...), _=Depends(req
     row = {k: v for k, v in payload.items() if k in _BUNDLE_EDITABLE}
     if not row:
         raise HTTPException(status_code=400, detail="No editable fields supplied")
+    for key, lo, hi in (("estimatedlat", -90, 90), ("estimatedlng", -180, 180)):
+        v = row.get(key)
+        if v is not None and (not isinstance(v, (int, float)) or not lo <= v <= hi):
+            raise HTTPException(status_code=400, detail=f"{key} must be between {lo} and {hi}")
     row["updatedat"] = _now_iso()
     try:
         res = supabase.table("distressbundle").update(row).eq("bundleid", bundle_id).execute()
@@ -541,6 +624,8 @@ def _register_crud(name: str, cfg: dict) -> None:
 
     def create(payload: dict = Body(...), _=Depends(require_admin)):
         row = {k: payload[k] for k in fields if k in payload}
+        if not row:
+            raise HTTPException(status_code=400, detail="No editable fields supplied")
         try:
             res = supabase.table(table).insert(row).execute()
         except Exception as exc:

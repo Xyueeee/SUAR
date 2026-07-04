@@ -13,6 +13,10 @@ class NotificationService {
   bool _ready = false;
   int _id = 100;
 
+  /// Sets up the plugin + notification channels only. Safe to call on every
+  /// app start (idempotent) — does NOT prompt for the runtime permission, so
+  /// it never interrupts the user outside onboarding. Call [requestPermission]
+  /// separately for that.
   Future<void> init() async {
     if (_ready) return;
     const android = AndroidInitializationSettings('@mipmap/ic_launcher');
@@ -29,8 +33,16 @@ class NotificationService {
       description: 'Background status such as map downloads',
       importance: Importance.low,
     ));
-    await impl?.requestNotificationsPermission();
     _ready = true;
+  }
+
+  /// Prompts for the Android 13+ POST_NOTIFICATIONS runtime permission.
+  /// Called once, from onboarding's permission-grant flow.
+  Future<bool> requestPermission() async {
+    if (!_ready) await init();
+    final impl = _plugin
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+    return await impl?.requestNotificationsPermission() ?? true;
   }
 
   /// [high] = alerts channel (heads-up); otherwise the quiet status channel.

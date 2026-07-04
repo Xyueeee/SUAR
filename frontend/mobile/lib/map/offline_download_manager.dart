@@ -37,6 +37,7 @@ class OfflineDownloadManager extends ChangeNotifier {
     required LatLngBounds bounds,
     required int minZoom,
     required int maxZoom,
+    required double viewZoom,
   }) async {
     await FMTCStore(storeName).manage.create();
     await _saveBoundsAndEnqueue(
@@ -44,6 +45,7 @@ class OfflineDownloadManager extends ChangeNotifier {
       bounds: bounds,
       minZoom: minZoom,
       maxZoom: maxZoom,
+      viewZoom: viewZoom,
     );
   }
 
@@ -61,6 +63,7 @@ class OfflineDownloadManager extends ChangeNotifier {
     required LatLngBounds bounds,
     required int minZoom,
     required int maxZoom,
+    required double viewZoom,
   }) async {
     await FMTCStore(storeName).manage.reset();
     await _saveBoundsAndEnqueue(
@@ -68,6 +71,7 @@ class OfflineDownloadManager extends ChangeNotifier {
       bounds: bounds,
       minZoom: minZoom,
       maxZoom: maxZoom,
+      viewZoom: viewZoom,
     );
   }
 
@@ -76,6 +80,7 @@ class OfflineDownloadManager extends ChangeNotifier {
     required LatLngBounds bounds,
     required int minZoom,
     required int maxZoom,
+    required double viewZoom,
   }) async {
     final store = FMTCStore(storeName);
     await store.metadata.setBulk(
@@ -86,6 +91,11 @@ class OfflineDownloadManager extends ChangeNotifier {
         'west': bounds.west.toString(),
         'minZoom': minZoom.toString(),
         'maxZoom': maxZoom.toString(),
+        // The map camera's zoom when the box was drawn — separate from
+        // minZoom/maxZoom above, which are the tile download range. Lets
+        // reopening restore the same zoom instead of re-fitting to a
+        // padding-derived one that never matched what the user actually saw.
+        'viewZoom': viewZoom.toString(),
       },
     );
 

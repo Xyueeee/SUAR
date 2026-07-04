@@ -5,7 +5,9 @@ import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 
 import 'constants.dart';
 import 'map/offline_download_manager.dart';
+import 'onboarding.dart';
 import 'screens/dashboard_screen.dart';
+import 'screens/onboarding_screen.dart';
 import 'services/app_lock.dart';
 import 'services/notification_service.dart';
 import 'theme.dart';
@@ -17,15 +19,19 @@ void main() async {
   await loadDetailedLogging();
   await AppLock.load();
   await ensureDeviceId();
+  final seenOnboarding = await hasSeenOnboarding();
   // Best-effort resume of anything interrupted by a crash/kill last session.
   unawaited(OfflineDownloadManager.instance.resumeFailedDownloads());
-  // Notifications channels + permission (non-blocking; never gates startup).
+  // Notification channels only (non-blocking; never gates startup). The
+  // runtime permission prompt is requested once, from onboarding.
   unawaited(NotificationService.instance.init());
-  runApp(const SuarApp());
+  runApp(SuarApp(seenOnboarding: seenOnboarding));
 }
 
 class SuarApp extends StatelessWidget {
-  const SuarApp({super.key});
+  const SuarApp({super.key, required this.seenOnboarding});
+
+  final bool seenOnboarding;
 
   @override
   Widget build(BuildContext context) {
@@ -38,7 +44,7 @@ class SuarApp extends StatelessWidget {
         theme: buildTheme(Brightness.light),
         darkTheme: buildTheme(Brightness.dark),
         themeMode: mode,
-        home: const DashboardScreen(),
+        home: seenOnboarding ? const DashboardScreen() : const OnboardingScreen(),
       ),
     );
   }

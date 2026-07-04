@@ -2,13 +2,13 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:image_cropper/image_cropper.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../constants.dart';
 import '../content/doc_controller.dart';
 import '../help/help_tour.dart';
+import '../onboarding.dart';
 import '../services/app_lock.dart';
 import '../theme.dart' show kPanelDark;
 import '../content/doc_service.dart';
@@ -18,6 +18,7 @@ import 'device_test_screen.dart';
 import 'doc_screen.dart';
 import 'mode_selection_screen.dart';
 import 'notices_screen.dart';
+import 'photo_crop_screen.dart';
 import 'settings_screen.dart';
 
 /// Home screen (Figma node 7:269, "4.1.1 SUAR Dashboard"). Only the
@@ -81,6 +82,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // Danger-zone proximity check on open + periodically while in foreground.
     _geofence.check();
     _geofenceTimer = Timer.periodic(const Duration(seconds: 60), (_) => _geofence.check());
+    _maybeShowTourAfterOnboarding();
+  }
+
+  Future<void> _maybeShowTourAfterOnboarding() async {
+    if (!await consumeShowDashboardTourOnce()) return;
+    if (!mounted) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _help.start(context);
+    });
   }
 
   @override
@@ -932,20 +942,11 @@ class _MedInfoEditScreenState extends State<_MedInfoEditScreen> {
     final picked = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
     if (picked == null) return;
     if (!mounted) return;
-    final cropped = await ImageCropper().cropImage(
-      sourcePath: picked.path,
-      uiSettings: [
-        AndroidUiSettings(
-          toolbarTitle: 'Crop Photo',
-          toolbarColor: const Color(0xFF3E6FA8),
-          toolbarWidgetColor: Colors.white,
-          initAspectRatio: CropAspectRatioPreset.square,
-          lockAspectRatio: false,
-        ),
-      ],
+    final croppedPath = await Navigator.of(context).push<String>(
+      MaterialPageRoute(builder: (_) => PhotoCropScreen(imagePath: picked.path)),
     );
-    if (cropped == null) return;
-    await _commit(_kMedPhotoPath, cropped.path);
+    if (croppedPath == null) return;
+    await _commit(_kMedPhotoPath, croppedPath);
   }
 
   Future<void> _removePhoto() async {
@@ -954,7 +955,7 @@ class _MedInfoEditScreenState extends State<_MedInfoEditScreen> {
 
   Widget _divider() => Divider(color: _cs.onSurface.withValues(alpha: 0.12), height: 1, indent: 16, endIndent: 16);
 
-  Widget _allergyField(String label, String key, TextEditingController ctrl) {
+  Widget _allergyField(String label, String key, TextEditingController ctrl, String example) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
       child: Column(
@@ -983,6 +984,8 @@ class _MedInfoEditScreenState extends State<_MedInfoEditScreen> {
             ),
             onChanged: (v) => _commit(key, v),
           ),
+          const SizedBox(height: 6),
+          Text(example, style: TextStyle(color: _cs.onSurface.withValues(alpha: 0.38), fontSize: 11, height: 1.4)),
           const SizedBox(height: 4),
         ],
       ),
@@ -1084,10 +1087,14 @@ class _MedInfoEditScreenState extends State<_MedInfoEditScreen> {
           ),
 
           _header('ALLERGIES'),
-          _allergyField('Drug Allergy', _kMedAllergyDrug, _allergyDrugCtrl),
-          _allergyField('Food Allergy', _kMedAllergyFood, _allergyFoodCtrl),
-          _allergyField('Insect Allergy', _kMedAllergyInsect, _allergyInsectCtrl),
-          _allergyField('Latex Allergy', _kMedAllergyLatex, _allergyLatexCtrl),
+          _allergyField('Drug Allergy', _kMedAllergyDrug, _allergyDrugCtrl,
+              'e.g. Penicillin, aspirin, sulfa drugs'),
+          _allergyField('Food Allergy', _kMedAllergyFood, _allergyFoodCtrl,
+              'e.g. Peanuts, shellfish, dairy'),
+          _allergyField('Insect Allergy', _kMedAllergyInsect, _allergyInsectCtrl,
+              'e.g. Bee stings, wasp stings, fire ants'),
+          _allergyField('Latex Allergy', _kMedAllergyLatex, _allergyLatexCtrl,
+              'e.g. Gloves, balloons, rubber bands'),
 
           _header('ADDITIONAL NOTES'),
           Padding(

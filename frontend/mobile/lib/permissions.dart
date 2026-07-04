@@ -80,6 +80,60 @@ Future<bool> meshPermsPermanentlyDenied() async {
   return statuses.any((s) => s.isPermanentlyDenied);
 }
 
+/// Per-permission grant status for onboarding's display rows. Branches on the
+/// same API 31/33 splits as [requestMeshPermissions]: a permission that isn't
+/// applicable on this device's Android version reads as granted (there is
+/// nothing to grant) instead of a misleading "not granted".
+Future<({bool bluetooth, bool nearbyWifi, bool location})>
+    meshPermissionStatuses() async {
+  int sdkInt = 0;
+  try {
+    sdkInt = (await DeviceInfoPlugin().androidInfo).version.sdkInt;
+  } catch (_) {
+    // Not running on Android — nothing to check.
+  }
+
+  bool bluetooth;
+  if (sdkInt >= 31) {
+    final statuses = await Future.wait([
+      Permission.bluetoothScan.status,
+      Permission.bluetoothAdvertise.status,
+      Permission.bluetoothConnect.status,
+    ]);
+    bluetooth = statuses.every((s) => s.isGranted);
+  } else {
+    bluetooth = true; // BLUETOOTH/BLUETOOTH_ADMIN are normal permissions pre-31.
+  }
+
+  final nearbyWifi = sdkInt >= 33
+      ? (await Permission.nearbyWifiDevices.status).isGranted
+      : true; // Wi-Fi Direct discovery relies on Location instead, pre-33.
+
+  final location = (await Permission.locationWhenInUse.status).isGranted;
+
+  return (bluetooth: bluetooth, nearbyWifi: nearbyWifi, location: location);
+}
+
+/// Requests location access on its own, independent of [requestMeshPermissions]
+/// (which only bundles location in for API < 31/33 devices — on newer devices
+/// BLE and Wi-Fi Direct don't need it at all, so it's never requested there).
+/// The app still wants location for danger-zone proximity alerts and GPS
+/// regardless of API level, so onboarding requests it explicitly. Never
+/// throws (same stuck-native-lock guard as above).
+Future<bool> requestLocationPermission() async {
+  try {
+    final status = await Permission.locationWhenInUse.request();
+    if (status.isGranted) return true;
+  } on PlatformException catch (e) {
+    assert(() {
+      // ignore: avoid_print
+      print('[permissions] location request() threw, falling back to status: $e');
+      return true;
+    }());
+  }
+  return await Permission.locationWhenInUse.status.isGranted;
+}
+
 /// Requests microphone access for ambient-sound triage / the Device Test page.
 ///
 /// Deliberately separate from [requestMeshPermissions]: the mic is OPTIONAL.

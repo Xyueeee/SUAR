@@ -5,10 +5,12 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../constants.dart';
+import '../onboarding.dart';
 import '../widgets/back_chevron.dart';
 import '../widgets/validated_text_dialog.dart';
 import 'debug_database_screen.dart';
 import 'location_debug_screen.dart';
+import 'onboarding_screen.dart';
 import 'triage_logic_screen.dart';
 
 /// Settings > Debugging Options — dev-only tools that don't belong in front
@@ -132,6 +134,21 @@ class _DebugOptionsScreenState extends State<DebugOptionsScreen> {
               decoration: BoxDecoration(color: connColor, shape: BoxShape.circle),
             ),
             onTap: _editBackendUrl,
+          ),
+          Divider(color: cs.onSurface.withValues(alpha: 0.12), height: 1, indent: 16, endIndent: 16),
+          ListTile(
+            leading: Icon(Icons.replay_outlined, color: cs.onSurface),
+            title: Text('Replay Onboarding', style: TextStyle(color: cs.onSurface)),
+            subtitle: Text('Reset first-launch flags and restart the walkthrough',
+                style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54))),
+            onTap: () async {
+              await resetOnboarding();
+              if (!context.mounted) return;
+              Navigator.of(context).pushAndRemoveUntil(
+                MaterialPageRoute(builder: (_) => const OnboardingScreen()),
+                (route) => false,
+              );
+            },
           ),
           Divider(color: cs.onSurface.withValues(alpha: 0.12), height: 1, indent: 16, endIndent: 16),
           ListTile(

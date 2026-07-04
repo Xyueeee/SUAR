@@ -46,6 +46,9 @@ class _RegionDownloadScreenState extends State<RegionDownloadScreen> {
   final MapController _mapController = MapController();
   Rect? _selectionRect;
   bool _initialized = false;
+  // Null until a fix is in hand — the blue dot and the recenter button both
+  // gate on this, so neither shows unless location is actually on.
+  LatLng? _userLocation;
 
   bool get _isEditing => widget.existingStore != null;
 
@@ -75,26 +78,22 @@ class _RegionDownloadScreenState extends State<RegionDownloadScreen> {
   @override
   void initState() {
     super.initState();
+    // Runs every time this screen opens, not just on first ever launch — so
+    // a permission denied last time gets asked again, and a since-enabled
+    // GPS toggle picks up a fix without needing app restart.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _initLocation());
     if (_isEditing) {
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => _loadExistingBounds(),
-      );
-    } else {
-      // Without this the selection box always starts on Kuala Lumpur
-      // (defaultMapCenter) regardless of where the user actually is,
-      // forcing them to pan/search for their own surroundings before they
-      // can even start picking an area — most of the time they just want to
-      // download the area they're standing in right now.
-      WidgetsBinding.instance.addPostFrameCallback(
-        (_) => _centerOnUserLocation(),
       );
     }
   }
 
   /// Best-effort only — the selection box stays screen-centered regardless
-  /// (see _initSelectionRect), so a failed/slow fix just means the map keeps
-  /// its default center; the user can still pan manually as before.
-  Future<void> _centerOnUserLocation() async {
+  /// (see _initSelectionRect), so a failed/slow fix just means the blue dot
+  /// and recenter button simply never appear; the user can still pan
+  /// manually as before.
+  Future<void> _initLocation() async {
     try {
       var permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
@@ -110,10 +109,19 @@ class _RegionDownloadScreenState extends State<RegionDownloadScreen> {
       // nothing) is all it needs.
       final lastKnown = await Geolocator.getLastKnownPosition();
       if (lastKnown == null || !mounted) return;
-      _mapController.move(
-        LatLng(lastKnown.latitude, lastKnown.longitude),
-        defaultMapZoom,
-      );
+      final loc = LatLng(lastKnown.latitude, lastKnown.longitude);
+      setState(() => _userLocation = loc);
+      // Only the new-region flow recenters the camera on the user — editing
+      // an existing region instead fits the view to its saved bounds (see
+      // _loadExistingBounds), which would otherwise get clobbered by this.
+      if (!_isEditing) {
+        // Without this the selection box always starts on Kuala Lumpur
+        // (defaultMapCenter) regardless of where the user actually is,
+        // forcing them to pan/search for their own surroundings before they
+        // can even start picking an area — most of the time they just want
+        // to download the area they're standing in right now.
+        _mapController.move(loc, defaultMapZoom);
+      }
     } catch (_) {
       // Best-effort, see doc comment above.
     }
@@ -138,20 +146,27 @@ class _RegionDownloadScreenState extends State<RegionDownloadScreen> {
     }
 
     final bounds = LatLngBounds(LatLng(north, east), LatLng(south, west));
-    final fitted = CameraFit.bounds(
-      bounds: bounds,
-      padding: const EdgeInsets.all(40),
-    ).fit(_mapController.camera);
-    _mapController.move(fitted.center, fitted.zoom);
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final camera = _mapController.camera;
-      final p1 = camera.latLngToScreenOffset(LatLng(north, east));
-      final p2 = camera.latLngToScreenOffset(LatLng(south, west));
-      setState(() {
-        _selectionRect = Rect.fromPoints(p1, p2);
-        _initialized = true;
-      });
+    // CameraFit.center is the Web Mercator pixel midpoint of the box (NOT
+    // bounds.center, which is the great-circle center — its latitude sits
+    // south of the on-screen midpoint, which is what shifted the reopened
+    // view south of where the box was actually drawn). That midpoint is the
+    // same lat/lng no matter what zoom the fit computes it at, so it's safe
+    // to pair with the saved viewZoom instead of the fit's own zoom, which
+    // is only used as a fallback for stores saved before viewZoom existed.
+    final fitted = CameraFit.bounds(bounds: bounds, padding: const EdgeInsets.all(40))
+        .fit(_mapController.camera);
+    final viewZoom = double.tryParse(metadata['viewZoom'] ?? '');
+    _mapController.move(fitted.center, viewZoom ?? fitted.zoom);
+    if (!mounted) return;
+    // move() applies synchronously — _mapController.camera reflects the new
+    // center/zoom immediately, no frame wait needed. Projecting off this
+    // SAME live camera means the box can never disagree with what's rendered.
+    final camera = _mapController.camera;
+    final p1 = camera.latLngToScreenOffset(LatLng(north, east));
+    final p2 = camera.latLngToScreenOffset(LatLng(south, west));
+    setState(() {
+      _selectionRect = Rect.fromPoints(p1, p2);
+      _initialized = true;
     });
   }
 
@@ -246,6 +261,14 @@ class _RegionDownloadScreenState extends State<RegionDownloadScreen> {
   Future<void> _saveNewRegion() async {
     final rect = _selectionRect;
     if (rect == null) return;
+    // Captured BEFORE the naming dialog opens, not after: the dialog's
+    // keyboard shrinks this Scaffold's body (resizeToAvoidBottomInset
+    // defaults to true), so _mapController.camera briefly reports a much
+    // shorter viewport while it's up — reading the camera after the dialog
+    // closed bounds to that squished size, not the real one, shifting every
+    // saved region south.
+    final bounds = _currentBounds();
+    final viewZoom = _mapController.camera.zoom;
 
     final name = await showValidatedTextDialog(
       context: context,
@@ -263,9 +286,10 @@ class _RegionDownloadScreenState extends State<RegionDownloadScreen> {
 
     await OfflineDownloadManager.instance.startNewRegion(
       storeName: name,
-      bounds: _currentBounds(),
+      bounds: bounds,
       minZoom: minDownloadZoom.round(),
       maxZoom: maxDownloadZoom.round(),
+      viewZoom: viewZoom,
     );
     if (!mounted) return;
     Navigator.of(context).pop(true);
@@ -279,6 +303,7 @@ class _RegionDownloadScreenState extends State<RegionDownloadScreen> {
       bounds: _currentBounds(),
       minZoom: minDownloadZoom.round(),
       maxZoom: maxDownloadZoom.round(),
+      viewZoom: _mapController.camera.zoom,
     );
     if (!mounted) return;
     Navigator.of(context).pop(true);
@@ -381,6 +406,27 @@ class _RegionDownloadScreenState extends State<RegionDownloadScreen> {
                       loadingStrategy: BrowseLoadingStrategy.cacheFirst,
                     ),
                   ),
+                  // Same blue-dot styling as the Helper mode map's self marker.
+                  if (_userLocation != null)
+                    MarkerLayer(
+                      markers: [
+                        Marker(
+                          point: _userLocation!,
+                          width: 22,
+                          height: 22,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Colors.blue,
+                              border: Border.all(color: Colors.white, width: 2),
+                              boxShadow: const [
+                                BoxShadow(color: Colors.black38, blurRadius: 4),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                 ],
               ),
               if (rect != null) ...[
@@ -417,6 +463,41 @@ class _RegionDownloadScreenState extends State<RegionDownloadScreen> {
                   ),
                 ),
               ),
+              if (_userLocation != null)
+                Positioned(
+                  bottom: 16,
+                  left: 16,
+                  child: GestureDetector(
+                    // Pans only — keeps whatever zoom the user was already
+                    // at, instead of snapping to a fixed recenter zoom.
+                    onTap: () => _mapController.move(
+                      _userLocation!,
+                      _mapController.camera.zoom,
+                    ),
+                    child: Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        // Same icon as Helper mode's recenter button, but a
+                        // light/dark-matching fill (instead of Helper mode's
+                        // fixed black54) so it reads against a light map too.
+                        color: Theme.of(context).brightness == Brightness.dark
+                            ? Colors.black
+                            : Colors.white,
+                        shape: BoxShape.circle,
+                        boxShadow: const [
+                          BoxShadow(color: Colors.black38, blurRadius: 4),
+                        ],
+                      ),
+                      child: Icon(
+                        Icons.my_location,
+                        color: Theme.of(context).brightness == Brightness.dark
+                            ? Colors.white
+                            : Colors.black,
+                        size: 20,
+                      ),
+                    ),
+                  ),
+                ),
             ],
           );
         },

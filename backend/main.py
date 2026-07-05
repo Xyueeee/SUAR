@@ -10,6 +10,7 @@ docs/superpowers/specs/2026-06-24-admin-web-design.md.
 """
 import hashlib
 import logging
+import math
 import os
 import uuid
 from collections import Counter, defaultdict
@@ -704,6 +705,9 @@ _TRIAGE_FIELDS = {
     "batterycomfortlevel", "pressuremaxdeviationhpa", "micmindb", "micmaxdb",
     "darkbelowlux", "brightabovelux", "batteryfastdrainpermin",
 }
+_TRIAGE_BOOL_FIELDS = {
+    "fallenabled", "faintenabled", "lowbatteryenabled", "criticalbatteryenabled",
+}
 
 
 @app.get("/admin/triage-config")
@@ -714,9 +718,39 @@ def admin_get_triage_config(_=Depends(require_admin)):
 
 @app.patch("/admin/triage-config")
 def admin_update_triage_config(payload: dict = Body(...), _=Depends(require_admin)):
-    row = {k: v for k, v in payload.items() if k in _TRIAGE_FIELDS}
+    # Every column is NOT NULL, so a JSON null (e.g. NaN serialised client-side)
+    # or a wrong type would otherwise surface as a raw PostgREST error.
+    row: dict = {}
+    for k, v in payload.items():
+        if k not in _TRIAGE_FIELDS:
+            continue
+        if k in _TRIAGE_BOOL_FIELDS:
+            if not isinstance(v, bool):
+                raise HTTPException(status_code=400, detail=f"{k} must be true or false")
+        elif isinstance(v, bool) or not isinstance(v, (int, float)) \
+                or not math.isfinite(v) or v < 0:
+            raise HTTPException(status_code=400, detail=f"{k} must be a non-negative number")
+        row[k] = v
     if not row:
         raise HTTPException(status_code=400, detail="No editable fields supplied")
+    # Tier classification on the device is a first-match-wins cascade
+    # (critical, then high, then moderate — see tierForScore in
+    # triage_calculator.dart), so the thresholds must strictly descend or
+    # whole tiers become unreachable. Merge with the stored row so a partial
+    # PATCH can't sneak an inversion past the check.
+    _tiers = ("criticalthreshold", "highthreshold", "moderatethreshold")
+    if any(k in row for k in _tiers):
+        merged = {k: row[k] for k in _tiers if k in row}
+        if len(merged) < 3:  # partial PATCH — fill gaps from the stored row
+            stored = supabase.table("triageconfig").select(",".join(_tiers)).eq("id", 1).execute().data
+            merged = {**(stored[0] if stored else {}), **merged}
+        c, h, m = (merged.get(k) for k in _tiers)
+        if None not in (c, h, m) and not (c > h > m):
+            raise HTTPException(
+                status_code=400,
+                detail="Tier thresholds must descend: Critical > High > Moderate "
+                       f"(got {c} / {h} / {m})",
+            )
     row["updatedat"] = _now_iso()
     try:
         res = supabase.table("triageconfig").update(row).eq("id", 1).execute()
@@ -742,7 +776,9 @@ def admin_get_debug_lock(_=Depends(require_admin)):
 def admin_update_debug_lock(payload: dict = Body(...), _=Depends(require_admin)):
     row: dict = {}
     if "enabled" in payload:
-        row["enabled"] = bool(payload["enabled"])
+        if not isinstance(payload["enabled"], bool):
+            raise HTTPException(status_code=400, detail="enabled must be true or false")
+        row["enabled"] = payload["enabled"]
     password = payload.get("password")
     if password:
         if not isinstance(password, str) or len(password) < 4:

@@ -49,6 +49,9 @@ SUAR.views.system = (function () {
     ] },
   ];
 
+  const FIELD_LABELS = {};
+  FIELD_GROUPS.forEach((g) => g.fields.forEach(([k, l]) => { FIELD_LABELS[k] = l; }));
+
   const TOGGLE_FIELDS = [
     ["fallenabled", "Fall detection enabled"],
     ["faintenabled", "Faint detection enabled"],
@@ -82,6 +85,10 @@ SUAR.views.system = (function () {
       container.innerHTML = SUAR.ui.empty("Couldn't load system settings", e.message || String(e));
       return;
     }
+    // Endpoints return null if the settings row was never seeded — fall back
+    // to the built-in defaults instead of crashing the whole view.
+    cfg = cfg || { ...DEFAULTS };
+    lock = lock || { enabled: true };
     draw(container);
   }
 
@@ -189,15 +196,35 @@ SUAR.views.system = (function () {
     wireWeightBar();
   }
 
+  // Returns null (with a toast naming the bad field) rather than sending an
+  // empty box as 0 or free text as NaN — every triage column is a
+  // non-negative NOT NULL number server-side.
   function collectTriagePayload() {
     const payload = {};
+    let bad = null;
     document.querySelectorAll("[data-field]").forEach((el) => {
-      payload[el.dataset.field] = el.type === "checkbox" ? el.checked : Number(el.value);
+      if (el.type === "checkbox") { payload[el.dataset.field] = el.checked; return; }
+      const v = Number(el.value);
+      if (el.value.trim() === "" || !Number.isFinite(v) || v < 0) bad = bad || el.dataset.field;
+      payload[el.dataset.field] = v;
     });
+    if (bad) {
+      SUAR.ui.toast('"' + (FIELD_LABELS[bad] || bad) + '" needs a number of 0 or more', "err");
+      return null;
+    }
+    // Device-side tier classification is first-match-wins (critical, then
+    // high, then moderate), so out-of-order thresholds silently kill tiers.
+    if (!(payload.criticalthreshold > payload.highthreshold &&
+          payload.highthreshold > payload.moderatethreshold)) {
+      SUAR.ui.toast("Tier thresholds must descend: Critical > High > Moderate", "err");
+      return null;
+    }
     return payload;
   }
 
   async function saveTriage() {
+    const payload = collectTriagePayload();
+    if (!payload) return;
     const btn = document.getElementById("sys-save");
     btn.disabled = true;
     try {

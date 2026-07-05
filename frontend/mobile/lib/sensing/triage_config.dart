@@ -355,9 +355,17 @@ class TriageConfig {
       final cfg = TriageConfig.fromServerJson(decoded.cast<String, dynamic>());
       remoteDefault = cfg;
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_remoteDefaultKey, jsonEncode(cfg.toJson()));
-      if (prefs.getString(_prefsKey) == null) {
-        active = cfg; // no local override — admin default applies live
+      final encoded = jsonEncode(cfg.toJson());
+      // Only act on an actual admin change. This runs every 60s while the
+      // Dashboard is open — unconditionally swapping [active] would detach a
+      // Triage Logic session mid-edit (the screen holds the old instance
+      // until its next _persist), and rewriting identical prefs every poll
+      // is pointless churn.
+      if (prefs.getString(_remoteDefaultKey) != encoded) {
+        await prefs.setString(_remoteDefaultKey, encoded);
+        if (prefs.getString(_prefsKey) == null) {
+          active = cfg; // no local override — admin default applies live
+        }
       }
       return cfg;
     } catch (_) {

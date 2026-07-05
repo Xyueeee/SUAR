@@ -10,7 +10,8 @@ import '../constants.dart';
 /// toggles it and sets the password remotely (web System Settings); the
 /// device caches the enabled flag + password hash so the gate still works
 /// offline (field testers may have no connectivity at all). Baked-in default
-/// ("SUARadmin123") applies before the device has ever synced.
+/// ("SUARadmin123." — note the trailing dot) applies before the device has
+/// ever synced.
 ///
 /// Low-stakes by design: this keeps casual users out of dev tools, it is not
 /// a real auth boundary, so caching the hash on-device (rather than

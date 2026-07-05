@@ -32,7 +32,7 @@ class HelperController {
   /// 'Connecting' → Wi-Fi Direct handshake; 'Receiving' → pulling bundle.
   final ValueNotifier<String> radioLabel = ValueNotifier('Searching');
 
-  // Opportunistic cloud sync: push unsynced bundles + pull the last 2h when online.
+  // Opportunistic cloud sync: push unsynced bundles + pull the last 24h when online.
   final SyncService _sync = SyncService();
   Timer? _syncTimer;
   static const _syncInterval = Duration(seconds: 45);
@@ -1033,6 +1033,10 @@ class HelperController {
     for (final timer in _pullOwnerTeardownTimers.values) {
       timer.cancel();
     }
+    _bleStatusSub?.cancel();
+    _wifiStatusSub?.cancel();
+    _dtnStatusSub?.cancel();
+    _bundleReceivedSub?.cancel();
     _connectionFormedSub?.cancel();
     radioLabel.dispose();
     bleManager.dispose();

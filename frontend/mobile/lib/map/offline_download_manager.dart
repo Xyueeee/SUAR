@@ -191,6 +191,13 @@ class OfflineDownloadManager extends ChangeNotifier {
         active[storeName]?.progress = progress;
         notifyListeners();
       },
+      // A stream error would otherwise leave this entry stuck in [active]
+      // forever and never advance the queue — treat it like a completion.
+      onError: (Object _) {
+        active.remove(storeName);
+        notifyListeners();
+        _startNextQueued();
+      },
       onDone: () {
         active.remove(storeName);
         notifyListeners();

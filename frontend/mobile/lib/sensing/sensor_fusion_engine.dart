@@ -7,6 +7,7 @@ import 'package:sensors_plus/sensors_plus.dart';
 
 import '../models/sensor_reading_model.dart';
 import 'device_sensor_probe.dart';
+import 'mic_guard.dart';
 import 'triage_calculator.dart';
 import 'triage_config.dart';
 
@@ -109,7 +110,10 @@ class SensorFusionEngine {
 
     if (withMic) {
       try {
-        _micSub = NoiseMeter().noise.listen(
+        // guardedNoiseStream (not NoiseMeter().noise directly): spaces mic
+        // sessions out so a quick Victim-mode exit → re-entry can't overlap
+        // audio_streamer's shared native recorder — see mic_guard.dart.
+        _micSub = guardedNoiseStream().listen(
           (r) => _micDb = r.meanDecibel,
           onError: (_) => _micDb = null,
           cancelOnError: true,

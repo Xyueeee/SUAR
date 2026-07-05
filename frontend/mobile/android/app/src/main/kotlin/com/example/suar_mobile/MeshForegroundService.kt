@@ -20,6 +20,16 @@ class MeshForegroundService : Service() {
         const val EXTRA_STATUS_TEXT = "status_text"
         const val EXTRA_DETAIL_TEXT = "detail_text"
         const val EXTRA_WIFI_ACTION = "wifi_action"
+        // Stop request routed THROUGH the service (see MainActivity.stopMeshService).
+        // A plain Context.stopService() while a startForegroundService() is still
+        // pending is fatal on Android 14+: the system logs "Bringing down service
+        // while still waiting for start foreground" and kills the app with
+        // ForegroundServiceDidNotStartInTimeException (confirmed on the S926B:
+        // RadioStatusBanner's updateMeshStatus landed 23ms before the mode-exit
+        // stopService and crashed Victim-mode exit). Delivering the stop as one
+        // more start lets onStartCommand call startForeground() first — paying
+        // off every pending obligation — and only then stop itself.
+        const val EXTRA_STOP = "stop_service"
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -36,6 +46,14 @@ class MeshForegroundService : Service() {
         try {
             startForeground(NOTIFICATION_ID, buildNotification(statusText, detailText, wifiAction))
         } catch (e: Exception) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        // Stop request (see EXTRA_STOP above): the startForeground() call above
+        // has already discharged any pending start obligation, so stopping here
+        // is safe where a bare Context.stopService() from the Activity was not.
+        if (intent?.getBooleanExtra(EXTRA_STOP, false) == true) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
         }

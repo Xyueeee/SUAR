@@ -353,8 +353,13 @@ def public_notices():
         if not exp:
             return True
         try:
-            return datetime.fromisoformat(exp) > now
-        except ValueError:
+            parsed = datetime.fromisoformat(exp)
+            # A naive timestamp (no zone) can't be compared to the aware `now`
+            # without raising — treat it as UTC, same policy as _is_newer.
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed > now
+        except (ValueError, TypeError):
             # Malformed expiry must not 500 the whole public feed; keep the row.
             return True
 
@@ -364,19 +369,6 @@ def public_notices():
 @app.get("/geofences")
 def public_geofences():
     return supabase.table("geofence").select("*").eq("isactive", True).order("createdat", desc=True).execute().data
-
-
-@app.get("/content")
-def public_content(category: str | None = Query(None)):
-    q = supabase.table("appcontent").select("*").eq("ispublished", True)
-    if category:
-        q = q.eq("category", category)
-    return q.order("updatedat", desc=True).execute().data
-
-
-@app.get("/prep-plans")
-def public_prep_plans():
-    return supabase.table("prepplan").select("*").eq("ispublished", True).order("updatedat", desc=True).execute().data
 
 
 @app.get("/appdocs")
@@ -642,8 +634,10 @@ async def admin_upload(file: UploadFile = File(...), _=Depends(require_admin)):
 # --------------------------------------------------------------------------- #
 # Admin: generic CRUD for the four simple admin-authored tables                #
 # --------------------------------------------------------------------------- #
-# geofence / notice / appcontent / prepplan share an identical CRUD shape, so
-# one registrar covers all four instead of ~150 lines of copy-paste.
+# geofence / notice / appdoc share an identical CRUD shape, so one registrar
+# covers them instead of ~100 lines of copy-paste. (The legacy appcontent /
+# prepplan resources were removed once the unified appdoc table replaced them;
+# the empty cloud tables still exist but nothing reads or writes them.)
 _ADMIN_RESOURCES = {
     "geofences": dict(
         table="geofence", pk="geofenceid",
@@ -654,16 +648,6 @@ _ADMIN_RESOURCES = {
         table="notice", pk="noticeid",
         fields=["title", "subtitle", "body", "severity", "isactive", "expiresat", "structure"],
         versioned=False,
-    ),
-    "content": dict(
-        table="appcontent", pk="contentid",
-        fields=["category", "title", "section", "body", "ispublished"],
-        versioned=True,
-    ),
-    "prep-plans": dict(
-        table="prepplan", pk="prepplanid",
-        fields=["title", "structure", "ispublished"],
-        versioned=True,
     ),
     "docs": dict(
         table="appdoc", pk="docid",

@@ -16,7 +16,9 @@ class SQLiteRepository {
   //     per doc). Supersedes Guide/PrepPlanT/PrepProgress (kept but unused).
   // v9: added AppDoc.OrderIndex — admin-controlled display order.
   // v10: added AppDoc.UsePercent — % card flag moved from structure JSON to DB column.
-  static const int _dbVersion = 10;
+  // v11: dropped the dead Guide/PrepPlanT/PrepProgress tables (superseded by
+  //      AppDoc/DocProgress in v8; nothing has read or written them since).
+  static const int _dbVersion = 11;
 
   Database? _db;
 
@@ -51,43 +53,9 @@ class SQLiteRepository {
     )
   ''';
 
-  // Content caches store the block-JSON / structure-JSON verbatim in a TEXT
-  // column (flexible, schema-light) — the tree shape lives inside the blob, not
-  // as normalised columns. PrepProgress keys fill-state by positional path.
-  static const String _createGuide = '''
-    CREATE TABLE IF NOT EXISTS Guide (
-      ContentId TEXT PRIMARY KEY,
-      Category TEXT NOT NULL,
-      Title TEXT NOT NULL,
-      Section TEXT,
-      Version INTEGER NOT NULL DEFAULT 1,
-      BodyJson TEXT NOT NULL,
-      UpdatedAt TEXT
-    )
-  ''';
-
-  static const String _createPrepPlan = '''
-    CREATE TABLE IF NOT EXISTS PrepPlanT (
-      PrepPlanId TEXT PRIMARY KEY,
-      Title TEXT NOT NULL,
-      Version INTEGER NOT NULL DEFAULT 1,
-      StructureJson TEXT NOT NULL,
-      UpdatedAt TEXT
-    )
-  ''';
-
-  static const String _createPrepProgress = '''
-    CREATE TABLE IF NOT EXISTS PrepProgress (
-      PrepPlanId TEXT NOT NULL,
-      Path TEXT NOT NULL,
-      Value TEXT NOT NULL,
-      UpdatedAt TEXT,
-      PRIMARY KEY (PrepPlanId, Path)
-    )
-  ''';
-
-  // Unified content/prep cache (one tree-JSON blob per doc) + per-user fill
-  // state keyed by positional node path.
+  // Unified content/prep cache (one tree-JSON blob per doc, verbatim in a TEXT
+  // column — the tree shape lives inside the blob, not as normalised columns)
+  // + per-user fill state keyed by positional node path.
   static const String _createAppDoc = '''
     CREATE TABLE IF NOT EXISTS AppDoc (
       DocId TEXT PRIMARY KEY,
@@ -121,9 +89,6 @@ class SQLiteRepository {
       onCreate: (db, version) async {
         await db.execute(_createDistressBundle);
         await db.execute(_createSensorReading);
-        await db.execute(_createGuide);
-        await db.execute(_createPrepPlan);
-        await db.execute(_createPrepProgress);
         await db.execute(_createAppDoc);
         await db.execute(_createDocProgress);
       },
@@ -144,15 +109,9 @@ class SQLiteRepository {
             'ALTER TABLE DistressBundle ADD COLUMN EstimatedAltitude REAL',
           );
         }
-        if (oldVersion < 6) {
-          await db.execute(_createGuide);
-          await db.execute(_createPrepPlan);
-          await db.execute(_createPrepProgress);
-        }
-        if (oldVersion >= 6 && oldVersion < 7) {
-          // Devices already on v6 have a Guide table without Section.
-          await db.execute('ALTER TABLE Guide ADD COLUMN Section TEXT');
-        }
+        // v6 (create Guide/PrepPlanT/PrepProgress) and v7 (Guide.Section) are
+        // intentionally no longer replayed — those tables are dropped at v11
+        // below, so creating them on the way up would be pointless churn.
         if (oldVersion < 8) {
           await db.execute(_createAppDoc);
           await db.execute(_createDocProgress);
@@ -166,13 +125,19 @@ class SQLiteRepository {
         if (oldVersion >= 8 && oldVersion < 10) {
           await db.execute('ALTER TABLE AppDoc ADD COLUMN UsePercent INTEGER NOT NULL DEFAULT 0');
         }
+        if (oldVersion < 11) {
+          // Dead since v8's AppDoc/DocProgress unification — reclaim the space.
+          await db.execute('DROP TABLE IF EXISTS Guide');
+          await db.execute('DROP TABLE IF EXISTS PrepPlanT');
+          await db.execute('DROP TABLE IF EXISTS PrepProgress');
+        }
       },
     );
     _db = opened;
     return opened;
   }
 
-  /// Shared database handle. ContentRepository uses this instead of opening its
+  /// Shared database handle. DocRepository uses this instead of opening its
   /// own connection so SQLiteRepository stays the single owner of versioning.
   Future<Database> get database => _getDb();
 

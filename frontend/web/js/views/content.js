@@ -158,7 +158,7 @@ SUAR.views._docsEditor = (function () {
     // the same order (it sorts published docs by orderindex).
     async function reorder(d, dir) {
       const rows = visibleRows();
-      const i = rows.findIndex((r) => r.docid === d.docid);
+      const i = rows.findIndex((r) => r[PK] === d[PK]);
       const j = i + dir;
       if (i < 0 || j < 0 || j >= rows.length) return;
       const tmp = rows[i]; rows[i] = rows[j]; rows[j] = tmp;

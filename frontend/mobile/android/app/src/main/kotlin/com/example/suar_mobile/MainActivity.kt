@@ -71,8 +71,10 @@ class MainActivity : FlutterFragmentActivity() {
                         // chrome that's visible even with the app backgrounded/screen
                         // off, instead of relying on an in-app banner nobody's looking
                         // at — confirmed on real hardware that the in-app-only banner
-                        // was missed during testing.
-                        startMeshService(
+                        // was missed during testing. Gated on meshServiceWanted (see
+                        // updateMeshServiceStatus) so a banner poll firing mid mode-exit
+                        // can't race the stop and crash the app.
+                        updateMeshServiceStatus(
                             call.argument<String>("text") ?: "Mesh radio active...",
                             call.argument<String>("detail"),
                             call.argument<Boolean>("wifiAction") ?: false
@@ -256,11 +258,23 @@ class MainActivity : FlutterFragmentActivity() {
             }
     }
 
+    // Whether the mesh service is SUPPOSED to be up right now — set by the real
+    // start/stop paths, checked by the notification-update path. Main-thread
+    // only, so no synchronisation needed. Without this, a status update racing
+    // a mode exit (RadioStatusBanner polls fire on their own timers) could
+    // resurrect the service milliseconds after stopMeshService(), leaving a
+    // ghost "Mesh Active" notification with no radios behind it — or, worse,
+    // land just BEFORE the stop and get the app killed with
+    // ForegroundServiceDidNotStartInTimeException (see EXTRA_STOP's doc in
+    // MeshForegroundService; confirmed crash on the S926B, Android 16).
+    private var meshServiceWanted = false
+
     private fun startMeshService(
         statusText: String,
         detailText: String? = null,
         wifiAction: Boolean = false
     ) {
+        meshServiceWanted = true
         val intent = Intent(this, MeshForegroundService::class.java)
             .putExtra(MeshForegroundService.EXTRA_STATUS_TEXT, statusText)
             .putExtra(MeshForegroundService.EXTRA_DETAIL_TEXT, detailText)
@@ -268,8 +282,34 @@ class MainActivity : FlutterFragmentActivity() {
         startForegroundService(intent)
     }
 
+    /// Notification-text refresh only (the updateMeshStatus channel call).
+    /// Dropped when no mesh session wants the service up — an update must
+    /// never (re)start the service on its own.
+    private fun updateMeshServiceStatus(
+        statusText: String,
+        detailText: String? = null,
+        wifiAction: Boolean = false
+    ) {
+        if (!meshServiceWanted) return
+        startMeshService(statusText, detailText, wifiAction)
+    }
+
     private fun stopMeshService() {
-        stopService(Intent(this, MeshForegroundService::class.java))
+        meshServiceWanted = false
+        // Routed through the service as one final start (EXTRA_STOP) instead of
+        // Context.stopService(): the service calls startForeground() first, so a
+        // still-pending earlier start can't be orphaned — a bare stopService()
+        // in that window is a guaranteed app kill on Android 14+.
+        val intent = Intent(this, MeshForegroundService::class.java)
+            .putExtra(MeshForegroundService.EXTRA_STOP, true)
+        try {
+            startForegroundService(intent)
+        } catch (e: Exception) {
+            // e.g. background FGS-start restriction during a swipe-away
+            // teardown (onDestroy). No pending start can exist in that state,
+            // so the plain stop is safe here.
+            stopService(Intent(this, MeshForegroundService::class.java))
+        }
     }
 
     /// All the normal stop paths (stopServer/stopAdvertising/disconnect)

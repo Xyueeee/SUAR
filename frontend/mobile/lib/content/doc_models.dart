@@ -64,7 +64,9 @@ class DocNode {
       weight: (j['weight'] is num) ? j['weight'] as num : 1,
       usePercent: j['usePercent'] == true,
       children: kind == 'section' ? listFrom(j['children']) : const [],
-      layout: j['layout']?.toString() == 'scroll' ? 'scroll' : 'steps',
+      layout: const ['scroll', 'inline'].contains(j['layout']?.toString())
+          ? j['layout'].toString()
+          : 'steps',
       pages: (kind == 'guide' && j['pages'] is List)
           ? (j['pages'] as List)
               .whereType<Map>()

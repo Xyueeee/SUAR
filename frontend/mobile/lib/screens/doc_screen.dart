@@ -302,11 +302,14 @@ class _SectionCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(child: _TitleSub(title: node.title, subtitle: node.subtitle, big: true)),
-              if (node.usePercent)
+              if (node.usePercent) ...[
+                const SizedBox(width: 12),
                 Text('${pct.round()}%',
                     style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54), fontSize: 14)),
+              ],
             ],
           ),
           if (node.usePercent) ...[
@@ -380,6 +383,8 @@ class _ChildPanel extends StatelessWidget {
   final List<String> paths;
   const _ChildPanel({required this.controller, required this.nodes, required this.paths});
 
+  bool _isInline(DocNode n) => n.isGuide && n.layout == 'inline';
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -390,6 +395,42 @@ class _ChildPanel extends StatelessWidget {
             style: TextStyle(color: cs.onSurface.withValues(alpha: 0.45))),
       );
     }
+    // Inline content renders bare (no grey panel); every other kind groups into
+    // the grey rounded panel with dividers. Split into alternating segments so
+    // an inline guide never sits inside the box.
+    final segments = <Widget>[];
+    var run = <int>[];
+    void flush() {
+      if (run.isEmpty) return;
+      segments.add(_greyPanel(context, List<int>.from(run)));
+      run = [];
+    }
+
+    for (var i = 0; i < nodes.length; i++) {
+      if (_isInline(nodes[i])) {
+        flush();
+        segments.add(_InlineGuide(node: nodes[i]));
+      } else {
+        run.add(i);
+      }
+    }
+    flush();
+
+    if (segments.length == 1) return segments.first;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (var i = 0; i < segments.length; i++) ...[
+          if (i > 0) const SizedBox(height: 12),
+          segments[i],
+        ],
+      ],
+    );
+  }
+
+  Widget _greyPanel(BuildContext context, List<int> idx) {
+    final cs = Theme.of(context).colorScheme;
     final dark = Theme.of(context).brightness == Brightness.dark;
     return Container(
       decoration: BoxDecoration(
@@ -398,15 +439,15 @@ class _ChildPanel extends StatelessWidget {
       ),
       child: Column(
         children: [
-          for (var i = 0; i < nodes.length; i++) ...[
-            if (i > 0)
+          for (var k = 0; k < idx.length; k++) ...[
+            if (k > 0)
               Divider(
                 height: 1,
                 color: cs.onSurface.withValues(alpha: 0.12),
                 indent: 14,
                 endIndent: 14,
               ),
-            _ChildRow(controller: controller, node: nodes[i], path: paths[i]),
+            _ChildRow(controller: controller, node: nodes[idx[k]], path: paths[idx[k]]),
           ],
         ],
       ),
@@ -437,7 +478,7 @@ class _ChildRow extends StatelessWidget {
               Expanded(child: _TitleSub(title: node.title, subtitle: node.subtitle)),
               if (node.usePercent)
                 Padding(
-                  padding: const EdgeInsets.only(right: 6),
+                  padding: const EdgeInsets.only(left: 12, right: 6),
                   child: Text('${pct.round()}%',
                       style: TextStyle(
                           color: pct >= 99.95 ? _green : cs.onSurface.withValues(alpha: 0.54),
@@ -451,6 +492,9 @@ class _ChildRow extends StatelessWidget {
       );
     }
     if (node.isGuide) {
+      // 'inline' = show the content directly in place, no tap-through button
+      // (used for notices and any doc that just wants direct text/content).
+      if (node.layout == 'inline') return _InlineGuide(node: node);
       return InkWell(
         onTap: () => _pushWithTheme(context, _GuideViewer(node: node)),
         child: Padding(
@@ -528,7 +572,7 @@ class _FieldRowState extends State<_FieldRow> {
     return InkWell(
       onTap: () => widget.controller.toggle(widget.path, !checked),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         child: Row(
           children: [
             Checkbox(
@@ -540,10 +584,32 @@ class _FieldRowState extends State<_FieldRow> {
               visualDensity: VisualDensity.compact,
               onChanged: (v) => widget.controller.toggle(widget.path, v ?? false),
             ),
+            const SizedBox(width: 10),
             Expanded(child: _TitleSub(title: node.title, subtitle: node.subtitle)),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Inline content — a guide with layout 'inline'. Renders its blocks directly
+/// where the node sits: no tap-through row, no drill-in screen, no wrapping
+/// box, so a notice or doc shows its text the moment the page opens. Same
+/// output as the web editor's inline preview (all pages' blocks, concatenated).
+class _InlineGuide extends StatelessWidget {
+  final DocNode node;
+  const _InlineGuide({required this.node});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final blocks = [for (final p in node.pages) ...p.blocks];
+    if (blocks.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: buildBlocks(blocks, textColor: cs.onSurface, brightness: cs.brightness),
     );
   }
 }

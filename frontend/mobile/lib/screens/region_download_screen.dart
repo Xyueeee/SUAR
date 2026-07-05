@@ -6,6 +6,7 @@ import 'package:latlong2/latlong.dart';
 
 import '../help/help_tour.dart';
 import '../map/map_constants.dart';
+import '../sensing/location_estimator.dart';
 import '../map/offline_download_manager.dart';
 import '../widgets/back_chevron.dart';
 import '../widgets/validated_text_dialog.dart';
@@ -95,6 +96,18 @@ class _RegionDownloadScreenState extends State<RegionDownloadScreen> {
   /// manually as before.
   Future<void> _initLocation() async {
     try {
+      // Debug spoof wins everywhere, same as the rest of the app — when a test
+      // location is set, use it instead of real GPS so the blue dot / recenter
+      // and the initial box land on the spoofed spot.
+      await LocationEstimator.loadSpoof();
+      final spoof = LocationEstimator.spoof;
+      if (spoof != null) {
+        if (!mounted) return;
+        final loc = LatLng(spoof.latitude, spoof.longitude);
+        setState(() => _userLocation = loc);
+        if (!_isEditing) _mapController.move(loc, defaultMapZoom);
+        return;
+      }
       var permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();

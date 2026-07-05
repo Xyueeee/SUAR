@@ -117,9 +117,12 @@ class _NoticesScreenState extends State<NoticesScreen> {
 
   /// Pull-to-refresh does more than just reload notices — same "any backend
   /// touch" piggyback as the dashboard (geofence check + local bundle sync).
+  /// Awaits the fetch so the spinner stays down until fresh data is loaded
+  /// (and admin edits actually show), instead of returning immediately.
   Future<void> _refresh() async {
     await GeofenceService.instance.check();
-    if (mounted) setState(() => _future = _load());
+    final data = await _load();
+    if (mounted) setState(() => _future = Future.value(data));
   }
 
   Future<void> _open(Map<String, dynamic> n) async {
@@ -162,7 +165,7 @@ class _NoticesScreenState extends State<NoticesScreen> {
             );
           }
           return RefreshIndicator(
-            onRefresh: () async => setState(() => _future = _load()),
+            onRefresh: _refresh,
             child: ListView.separated(
               itemCount: notices.length,
               separatorBuilder: (context, index) => Divider(height: 1, color: cs.onSurface.withValues(alpha: 0.12), indent: 16, endIndent: 16),

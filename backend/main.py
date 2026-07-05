@@ -13,13 +13,16 @@ import logging
 import math
 import os
 import uuid
+
+import httpx
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
-from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from supabase import Client, create_client
+from fastapi.responses import JSONResponse
+from supabase import Client, ClientOptions, create_client
 
 from models import SyncRequest, SyncResponse
 
@@ -28,8 +31,21 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("suar-backend")
 
+# The backend<->Supabase link on this network intermittently drops a TCP connect
+# (WinError 10060 ConnectTimeout). A retrying transport re-attempts connect-level
+# failures automatically (httpcore retries ConnectError/ConnectTimeout with
+# backoff), so a single blip heals before any endpoint sees it — instead of
+# crashing every request with a raw 500. Applies to postgrest, auth AND storage
+# (supabase passes this one client to all three).
+_http_client = httpx.Client(
+    timeout=httpx.Timeout(connect=8.0, read=30.0, write=30.0, pool=30.0),
+    transport=httpx.HTTPTransport(retries=3),  # 4 attempts total, ~0/0.5/1s backoff
+)
+
 supabase: Client = create_client(
-    os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SECRET_KEY")
+    os.getenv("SUPABASE_URL"),
+    os.getenv("SUPABASE_SECRET_KEY"),
+    options=ClientOptions(httpx_client=_http_client),
 )
 
 # Emails allowed into /admin/*. A valid Supabase login is NOT enough — the anon
@@ -51,6 +67,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(httpx.TransportError)
+def _supabase_unreachable(request: Request, exc: httpx.TransportError):
+    """Backstop: if a Supabase call still fails after the transport's retries,
+    return a clean 502 instead of a raw 500 + full stack trace in the log. The
+    app's public polls (/notices, /geofences, ...) can ignore a 502 and retry;
+    nobody gets logged out over it."""
+    logger.warning(f"Supabase unreachable for {request.method} {request.url.path}: {exc}")
+    return JSONResponse(status_code=502, content={"detail": "Database temporarily unreachable — try again"})
 
 
 def _now_iso() -> str:
@@ -100,6 +126,14 @@ def require_admin(authorization: str = Header(None)):
     token = authorization.split(" ", 1)[1]
     try:
         res = supabase.auth.get_user(token)
+    except httpx.TransportError as exc:
+        # Backend couldn't REACH Supabase GoTrue (connect/read timeout, DNS,
+        # dropped connection) even after the transport's retries. This is NOT an
+        # auth failure — returning 401 here made the web sign the operator out
+        # mid-edit on a transient network blip. 502 tells the client "upstream
+        # is down, your session is fine".
+        logger.warning(f"Auth check couldn't reach Supabase: {exc}")
+        raise HTTPException(status_code=502, detail="Auth service unreachable — try again")
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     if not res or not res.user:

@@ -243,7 +243,7 @@ SUAR.views._docsEditor = (function () {
           '<div class="docset">' +
             '<span class="spacer"></span><button class="btn btn--ghost btn--sm" id="d-raw" title="Edit / copy the raw JSON">Raw JSON</button>' +
           '</div><div class="tree" id="d-tree"></div></div>' +
-          '<div class="editor__right"><div class="phone-wrap"><div class="phone" id="d-preview"></div></div><div class="phone-note">Live preview — what the app shows</div></div>' +
+          '<div class="editor__right"><div class="phone-wrap"><div class="phone" id="d-preview"></div></div><div class="phone-note">Live preview: what the app shows</div></div>' +
         "</div></div>";
       document.body.appendChild(overlay);
       requestAnimationFrame(() => overlay.classList.add("open"));
@@ -252,7 +252,18 @@ SUAR.views._docsEditor = (function () {
       const previewEl = overlay.querySelector("#d-preview");
       // Interactive phone preview — shared with the read-only viewer. Defined
       // here (before any handler references it) to avoid a const TDZ error.
-      const renderPreview = mountPhone(previewEl, state, () => overlay.querySelector("#d-title").value, pv);
+      // Notice mode feeds the preview the live header fields so it mirrors the
+      // phone's notice detail (pill / title / subtitle / posted-time).
+      const noticeMeta = NOTICE
+        ? () => ({
+            severity: (overlay.querySelector("#d-cat") || {}).value || "info",
+            title: overlay.querySelector("#d-title").value,
+            subtitle: (overlay.querySelector("#d-sub") || {}).value || "",
+            created: d ? d.createdat : "",
+            updated: d ? d.updatedat : "",
+          })
+        : null;
+      const renderPreview = mountPhone(previewEl, state, () => overlay.querySelector("#d-title").value, pv, noticeMeta);
       // Editor is a DOM overlay, not a route — integrate with browser history so
       // the Back button (and Esc / Cancel) all close it consistently.
       let closed = false;
@@ -273,6 +284,13 @@ SUAR.views._docsEditor = (function () {
       });
       overlay.querySelector("#d-save").addEventListener("click", save);
       overlay.querySelector("#d-title").addEventListener("input", renderPreview);
+      // Severity + subtitle also drive the notice preview header — keep it live.
+      if (NOTICE) {
+        const subEl = overlay.querySelector("#d-sub");
+        if (subEl) subEl.addEventListener("input", renderPreview);
+        const catEl = overlay.querySelector("#d-cat");
+        if (catEl) catEl.addEventListener("change", renderPreview);
+      }
 
       // Advanced: edit / copy the raw JSON in place of the visual tree.
       let rawMode = false;
@@ -347,9 +365,16 @@ SUAR.views._docsEditor = (function () {
             '<div class="node__children">' + (n.children || []).map((c, i) => nodeHtml(c, path + "." + i)).join("") +
               '<div class="tree-add"><button class="chip-btn" data-add="section" data-p="' + path + '">+ Sub-section</button><button class="chip-btn" data-add="check" data-p="' + path + '">+ Checkbox</button><button class="chip-btn" data-add="text" data-p="' + path + '">+ Text</button><button class="chip-btn" data-add="number" data-p="' + path + '">+ Number</button><button class="chip-btn" data-add="guide" data-p="' + path + '">+ Content</button></div></div>';
         } else if (n.kind === "guide") {
-          body =
-            '<label class="mini">Layout <select class="select nt-layout" data-p="' + path + '"><option value="steps"' + (n.layout !== "scroll" ? " selected" : "") + ">Steps (swipe)</option><option value=\"scroll\"" + (n.layout === "scroll" ? " selected" : "") + ">Scroll</option></select></label>" +
-            '<div class="pages">' + (n.pages || []).map((p, pi) => pageHtml(p, path, pi)).join("") + '<button class="chip-btn add-wide" data-pageadd="' + path + '">+ Page</button></div>';
+          // scroll/inline = one continuous block list (no pages, no "+ Page").
+          // steps = paged swipe (keeps per-page structure + "+ Page").
+          const cont = n.layout === "scroll" || n.layout === "inline";
+          const layoutSel = '<label class="mini">Layout <select class="select nt-layout" data-p="' + path + '"><option value="inline"' + (n.layout === "inline" ? " selected" : "") + ">Inline</option><option value=\"steps\"" + (!cont ? " selected" : "") + ">Steps (swipe)</option><option value=\"scroll\"" + (n.layout === "scroll" ? " selected" : "") + ">Scroll</option></select></label>";
+          if (cont) {
+            const blocks = (n.pages && n.pages[0] && n.pages[0].blocks) || [];
+            body = layoutSel + '<div class="pages"><div class="pg-blocks">' + blocks.map((b, bi) => blockHtml(b, path, 0, bi)).join("") + "</div>" + addBlocksBar(path, 0) + "</div>";
+          } else {
+            body = layoutSel + '<div class="pages">' + (n.pages || []).map((p, pi) => pageHtml(p, path, pi)).join("") + '<button class="chip-btn add-wide" data-pageadd="' + path + '">+ Page</button></div>';
+          }
         }
         return '<div class="node node--' + n.kind + '"><div class="node__row"><span class="node__tag">' + (n.kind === "section" ? "▣" : n.kind === "guide" ? "▤" : "☑") + "</span>" + kindSel + titles + tier + acts + "</div>" + (body ? '<div class="node__body">' + body + "</div>" : "") + "</div>";
       }
@@ -360,7 +385,11 @@ SUAR.views._docsEditor = (function () {
           rowActs("pageact", "data-p='" + path + "' data-pi='" + pi + "'") + "</div>" +
           '<input class="input pg-sub" data-p="' + path + '" data-pi="' + pi + '" placeholder="Page subtitle (optional)" value="' + SUAR.ui.esc(p.subtitle || "") + '">' +
           '<div class="pg-blocks">' + (p.blocks || []).map((b, bi) => blockHtml(b, path, pi, bi)).join("") + "</div>" +
-          '<div class="add-blocks">' + [["heading", "Heading"], ["paragraph", "Text"], ["bullets", "List"], ["image", "Image"], ["divider", "Divider"]].map((x) => '<button class="chip-btn" data-blockadd="' + x[0] + '" data-p="' + path + '" data-pi="' + pi + '">+ ' + x[1] + "</button>").join("") + "</div></div>";
+          addBlocksBar(path, pi) + "</div>";
+      }
+
+      function addBlocksBar(path, pi) {
+        return '<div class="add-blocks">' + [["heading", "Heading"], ["paragraph", "Text"], ["bullets", "List"], ["image", "Image"], ["divider", "Divider"]].map((x) => '<button class="chip-btn" data-blockadd="' + x[0] + '" data-p="' + path + '" data-pi="' + pi + '">+ ' + x[1] + "</button>").join("") + "</div>";
       }
 
       function blockHtml(b, path, pi, bi) {
@@ -403,7 +432,17 @@ SUAR.views._docsEditor = (function () {
         q(".nt-title").forEach((i) => i.addEventListener("input", (e) => { nodeAt(e.target.dataset.p).title = e.target.value; renderPreview(); }));
         q(".nt-sub").forEach((i) => i.addEventListener("input", (e) => { nodeAt(e.target.dataset.p).subtitle = e.target.value; renderPreview(); }));
         q(".nt-pct").forEach((i) => i.addEventListener("change", (e) => { nodeAt(e.target.dataset.p).usePercent = e.target.checked; renderPreview(); }));
-        q(".nt-layout").forEach((i) => i.addEventListener("change", (e) => { nodeAt(e.target.dataset.p).layout = e.target.value; renderPreview(); }));
+        q(".nt-layout").forEach((i) => i.addEventListener("change", (e) => {
+          const n = nodeAt(e.target.dataset.p), v = e.target.value;
+          // scroll/inline are single continuous lists — collapse any existing
+          // pages into one block list; steps needs at least one page.
+          if (v === "scroll" || v === "inline") {
+            n.pages = [{ blocks: (n.pages || []).reduce((a, p) => a.concat(p.blocks || []), []) }];
+          } else if (!n.pages || !n.pages.length) {
+            n.pages = [{ title: "", subtitle: "", blocks: [] }];
+          }
+          n.layout = v; renderTree(); renderPreview();
+        }));
         q("[data-rootadd]").forEach((b) => b.addEventListener("click", () => { state.nodes.push(newNode(b.dataset.rootadd)); renderTree(); renderPreview(); }));
         q("[data-add]").forEach((b) => b.addEventListener("click", () => { const n = nodeAt(b.dataset.p); n.children = n.children || []; n.children.push(newNode(b.dataset.add)); renderTree(); renderPreview(); }));
         q("[data-act]").forEach((b) => b.addEventListener("click", () => nodeAct(b.dataset.act, b.dataset.p)));
@@ -495,8 +534,26 @@ SUAR.views._docsEditor = (function () {
   }
 
   // Shared interactive phone preview. [struct] is the live structure object
-  // ({usePercent, percentText, nodes}); [pv] holds nav state. Returns render().
-  function mountPhone(previewEl, struct, getTitle, pv) {
+  // ({usePercent, percentText, nodes}); [pv] holds nav state. [getMeta] (notice
+  // mode only) returns {severity,title,subtitle,created,updated} so the preview
+  // shows the exact notice-detail header (pill + title + subtitle + date/time)
+  // the phone renders. Returns render().
+  function mountPhone(previewEl, struct, getTitle, pv, getMeta) {
+    function noticeStamp(created, updated) {
+      const c = created ? SUAR.ui.fmtDate(created) : "just now";
+      const u = updated ? SUAR.ui.fmtDate(updated) : "";
+      return (u && u !== c) ? ("Posted " + c + " · Updated " + u) : ("Posted " + c);
+    }
+    function noticeHeader(m) {
+      const sev = (m.severity || "info").toString();
+      const stamp = noticeStamp(m.created, m.updated);
+      return '<div class="pv-nhead">' +
+        '<span class="badge badge--' + SUAR.ui.esc(sev) + '">' + SUAR.ui.esc(sev.toUpperCase()) + "</span>" +
+        '<div class="pv-ntitle">' + SUAR.ui.esc(m.title || "Untitled") + "</div>" +
+        (m.subtitle ? '<div class="pv-nsub">' + SUAR.ui.esc(m.subtitle) + "</div>" : "") +
+        '<div class="pv-nstamp">' + SUAR.ui.esc(stamp) + "</div>" +
+        "</div>";
+    }
     const nodeAt = (path) => { let arr = struct.nodes, n = null; for (const s of path.split(".")) { n = arr[+s]; if (!n) return null; arr = n.children || []; } return n; };
     const levelNodes = () => { let arr = struct.nodes; for (const i of pv.path) arr = (arr[i].children || []); return arr; };
     const levelSection = () => { if (!pv.path.length) return null; let n = null, arr = struct.nodes; for (const i of pv.path) { n = arr[i]; arr = n.children || []; } return n; };
@@ -516,6 +573,7 @@ SUAR.views._docsEditor = (function () {
     // consecutive non-section top-level nodes into ONE shared pv-panel built
     // from the exact same pvRow() nested children use, same as sec's branch
     // below; only an actual section still gets its own card.
+    const isInline = (n) => n.kind === "guide" && n.layout === "inline";
     function pvTopLevel(nodes) {
       let html = "", i = 0;
       while (i < nodes.length) {
@@ -524,8 +582,14 @@ SUAR.views._docsEditor = (function () {
           i++;
           continue;
         }
+        // Inline content renders bare (no grey panel), exactly like the app.
+        if (isInline(nodes[i])) {
+          html += pvRow(nodes[i], absPath(i));
+          i++;
+          continue;
+        }
         let rows = "";
-        while (i < nodes.length && nodes[i].kind !== "section") {
+        while (i < nodes.length && nodes[i].kind !== "section" && !isInline(nodes[i])) {
           rows += pvRow(nodes[i], absPath(i));
           i++;
         }
@@ -535,7 +599,16 @@ SUAR.views._docsEditor = (function () {
     }
     function pvRow(n, ap) {
       if (n.kind === "section") { const p = n.usePercent ? Math.round(jsNodePct(n, ap, pv.checks, pv.fields)) : null; return '<div class="pv-row pv-tap" data-pvsec="' + ap + '">' + pvTitle(n) + (p !== null ? '<span class="pv-pctnum">' + p + "%</span>" : "") + '<span class="pv-chev">›</span></div>'; }
-      if (n.kind === "guide") return '<div class="pv-row pv-tap" data-pvguide="' + ap + '">' + pvTitle(n) + '<span class="pv-chev">›</span></div>';
+      if (n.kind === "guide") {
+        // Inline = render the content right here, bare (no grey box, no tap row)
+        // — one continuous block list, same as the app's inline renderer.
+        if (n.layout === "inline") {
+          const blocks = (n.pages || []).reduce((a, p) => a.concat(p.blocks || []), []);
+          const inner = blocks.map(pvBlock).join("");
+          return '<div class="pv-gpage">' + (inner || '<p class="pv-p pv-muted">No content yet.</p>') + "</div>";
+        }
+        return '<div class="pv-row pv-tap" data-pvguide="' + ap + '">' + pvTitle(n) + '<span class="pv-chev">›</span></div>';
+      }
       if (n.kind === "text" || n.kind === "number") {
         const val = pv.fields.get(ap) || "";
         return '<div class="pv-row pv-field">' + pvTitle(n) +
@@ -568,6 +641,9 @@ SUAR.views._docsEditor = (function () {
       let appbar = getTitle() || "Title", body = "", back = "";
       const sec = levelSection();
       if (sec) { appbar = sec.title || "Section"; back = '<button class="pv-back" data-pvback>‹</button>'; }
+      // Notice mode: at the top level, show the phone's notice-detail header.
+      const meta = (!pv.path.length && getMeta) ? getMeta() : null;
+      if (meta) { appbar = "Notice"; body += noticeHeader(meta); }
       if (!pv.path.length && struct.usePercent) {
         const pct = Math.round(jsOverall(struct.nodes, pv.checks, pv.fields));
         body += '<div class="pv-card"><div class="pv-ptext">' + SUAR.ui.esc((struct.percentText || "You are {p}%").replace("{p}", pct)) + '</div><div class="pv-pbar"><i style="width:' + pct + '%"></i></div></div>';
@@ -627,7 +703,12 @@ SUAR.views._docsEditor = (function () {
     window.addEventListener("popstate", onPop);
     overlay.querySelector("#v-close").addEventListener("click", close);
     overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
-    mountPhone(overlay.querySelector("#v-phone"), struct, () => doc.title, pv)();
+    // A notice row carries severity/subtitle/timestamps — feed them so the
+    // read-only preview shows the same notice-detail header as the phone.
+    const meta = doc.severity != null
+      ? () => ({ severity: doc.severity, title: doc.title, subtitle: doc.subtitle || "", created: doc.createdat, updated: doc.updatedat })
+      : null;
+    mountPhone(overlay.querySelector("#v-phone"), struct, () => doc.title, pv, meta)();
   }
 
   // ===================================================================== helpers
@@ -642,7 +723,7 @@ SUAR.views._docsEditor = (function () {
     const kind = ["section", "check", "text", "number", "guide"].includes(n.kind) ? n.kind : "section";
     const o = { title: n.title || "", subtitle: n.subtitle || "", kind, weight: Number(n.weight) || 1 };
     if (kind === "section") { o.usePercent = n.usePercent === true; o.children = Array.isArray(n.children) ? n.children.map(normNode).filter(Boolean) : []; }
-    else if (kind === "guide") { o.layout = n.layout === "scroll" ? "scroll" : "steps"; o.pages = Array.isArray(n.pages) && n.pages.length ? n.pages.map((p) => ({ title: p.title || "", subtitle: p.subtitle || "", blocks: Array.isArray(p.blocks) ? p.blocks : [] })) : [{ title: "", subtitle: "", blocks: [] }]; }
+    else if (kind === "guide") { o.layout = ["scroll", "inline"].includes(n.layout) ? n.layout : "steps"; o.pages = Array.isArray(n.pages) && n.pages.length ? n.pages.map((p) => ({ title: p.title || "", subtitle: p.subtitle || "", blocks: Array.isArray(p.blocks) ? p.blocks : [] })) : [{ title: "", subtitle: "", blocks: [] }]; }
     return o;
   }
   function newNode(kind) { const o = { title: "", subtitle: "", kind, weight: 2 }; if (kind === "section") { o.usePercent = false; o.children = []; } else if (kind === "guide") { o.layout = "steps"; o.pages = [{ title: "", subtitle: "", blocks: [{ type: "paragraph", runs: [] }] }]; } return o; }
@@ -651,7 +732,7 @@ SUAR.views._docsEditor = (function () {
       const o = { title: n.title || "", kind: n.kind, weight: Number(n.weight) || 1 };
       if (n.subtitle) o.subtitle = n.subtitle;
       if (n.kind === "section") { if (n.usePercent) o.usePercent = true; o.children = clean(n.children); }
-      else if (n.kind === "guide") { o.layout = n.layout === "scroll" ? "scroll" : "steps"; o.pages = (n.pages || []).map((p) => { const pp = { blocks: p.blocks || [] }; if (p.title) pp.title = p.title; if (p.subtitle) pp.subtitle = p.subtitle; return pp; }); }
+      else if (n.kind === "guide") { o.layout = ["scroll", "inline"].includes(n.layout) ? n.layout : "steps"; o.pages = (n.pages || []).map((p) => { const pp = { blocks: p.blocks || [] }; if (p.title) pp.title = p.title; if (p.subtitle) pp.subtitle = p.subtitle; return pp; }); }
       return o;
     });
   }

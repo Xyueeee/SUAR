@@ -20,15 +20,19 @@ SUAR.app = (function () {
   };
   const ROUTES = Object.keys(TITLES);
   const IDLE_MS = 20 * 60 * 1000; // auto sign-out after 20 min of inactivity
-  const TAB_EXPIRY_MS = 10 * 1000; // sign out if tab was closed for >10 s
-  const TAB_CLOSED_KEY = "suar_tab_closed_at";
 
   let connTimer = null;
   let idleTimer = null;
+  let keepAliveTimer = null;
+  let lastActivity = Date.now();
 
   function showLogin(opts) {
     opts = opts || {};
     document.body.classList.remove("authed");
+    // Kill any floating UI (editor overlay, modals) — they mount on <body>, so
+    // just dropping the authed class would leave a dead editor on screen and
+    // let the user keep typing into work that can no longer be saved.
+    document.querySelectorAll(".overlay, .editor-overlay").forEach((el) => el.remove());
     // Don't leave credentials sitting in the form after a sign-out.
     const em = document.getElementById("login-email");
     const pw = document.getElementById("login-password");
@@ -46,16 +50,10 @@ SUAR.app = (function () {
   }
 
   // Single entry gate: session -> backend URL set -> /admin/me passes -> show app.
+  // A plain refresh/reopen keeps you in as long as the session is still valid:
+  // real expiry is caught below (verifyAdmin 401) and by the 20-min idle timer,
+  // so there's no time-based forced sign-out to boot a still-authenticated user.
   async function tryEnterApp() {
-    // If tab was closed and enough time elapsed, treat as a new session.
-    const closedAt = localStorage.getItem(TAB_CLOSED_KEY);
-    localStorage.removeItem(TAB_CLOSED_KEY);
-    if (closedAt && (Date.now() - Number(closedAt)) > TAB_EXPIRY_MS) {
-      await SUAR.auth.signOut(true);
-      showLogin({ hint: "Signed out — please sign in again." });
-      return;
-    }
-
     const session = await SUAR.auth.getSession();
     if (!session) { showLogin(); return; }
     if (!SUAR.getBackendUrl()) { showLogin({ hint: "Set the backend URL (gear, bottom-right) to continue." }); return; }
@@ -65,6 +63,11 @@ SUAR.app = (function () {
       if (e.status === 403) { await SUAR.auth.signOut(true); showLogin({ error: "This account isn't authorized for the console." }); return; }
       if (e.status === 401) { await SUAR.auth.signOut(true); showLogin({ error: "Session expired. Please sign in again." }); return; }
       if (e.status === 503) { showLogin({ error: "Admin allowlist not configured on the server (ADMIN_EMAILS)." }); return; }
+      // status 0 = network/timeout to the backend; 502 = backend reached but it
+      // couldn't reach Supabase to verify the token. Neither is an auth failure,
+      // so the session is still valid — don't wipe it or force a re-login. A
+      // neutral hint + refresh gets them back in.
+      if (e.status === 0 || e.status === 502) { showLogin({ hint: "Can't reach the backend right now (it may be starting up, or briefly can't reach the database). Your session is fine — refresh to retry." }); return; }
       showLogin({ error: e.message || "Can't reach the backend." }); return;
     }
     await showApp();
@@ -135,23 +138,71 @@ SUAR.app = (function () {
   }
 
   // --- Idle auto sign-out ---
-  function resetIdle() {
+  async function idleSignOut() {
+    await SUAR.auth.signOut(true);
+    showLogin({ error: "Signed out after 20 minutes of inactivity." });
+  }
+  function resetIdle(e) {
+    // Browsers throttle timers in backgrounded tabs, so the sign-out timeout
+    // can silently never fire. If the first action back is already past the
+    // idle limit, kick out NOW instead of granting a fresh window — otherwise
+    // the user keeps working (clicking into oblivion) on a session that should
+    // already be dead.
+    const overdue = Date.now() - lastActivity > IDLE_MS;
+    if (overdue) {
+      // Kill THIS action before its handler runs. This listener is capture-
+      // phase (see startIdleWatch), so stopPropagation here beats any button/
+      // modal handler that calls stopPropagation itself — that bubble-phase
+      // blind spot is why earlier idle fixes let dead-session clicks fall
+      // through and do nothing. preventDefault also stops form submits / links.
+      if (e && (e.type === "click" || e.type === "keydown" || e.type === "touchstart")) {
+        e.stopPropagation();
+        e.preventDefault();
+      }
+      lastActivity = Date.now();
+      if (idleTimer) clearTimeout(idleTimer);
+      idleSignOut();
+      return;
+    }
+    lastActivity = Date.now();
     if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(async () => {
-      await SUAR.auth.signOut(true);
-      showLogin({ error: "Signed out after 20 minutes of inactivity." });
-    }, IDLE_MS);
+    idleTimer = setTimeout(idleSignOut, IDLE_MS);
+  }
+
+  // --- Token keep-alive while in use ---
+  // The Supabase JWT expires (~1h) regardless of activity, and supabase-js's
+  // background auto-refresh timer can be throttled by the browser — so a long
+  // editing session with no API calls could hit a stale token on the next
+  // save and get bounced to login mid-edit. While the user is active (same
+  // signal as the idle watch), refresh the token before it expires.
+  async function keepAliveTick() {
+    if (Date.now() - lastActivity > IDLE_MS) return; // idle — let the JWT lapse
+    try {
+      const session = await SUAR.auth.getSession();
+      if (!session || !session.expires_at) return;
+      const secondsLeft = session.expires_at - Date.now() / 1000;
+      if (secondsLeft < 10 * 60) await SUAR.auth.refreshToken();
+    } catch (_) { /* best-effort; api.js 401-retry is the backstop */ }
   }
   function startIdleWatch() {
+    // Fresh window on entry — lastActivity may be stale from a login screen
+    // that sat open >20 min, and that must not count as idle time.
+    lastActivity = Date.now();
+    // Capture phase (+ non-passive so preventDefault works) so the overdue
+    // guard in resetIdle runs BEFORE any view/modal handler and can cancel the
+    // action. Bubble phase let stopPropagation-happy handlers hide the click.
     ["mousemove", "keydown", "click", "scroll", "touchstart"].forEach((ev) =>
-      window.addEventListener(ev, resetIdle, { passive: true })
+      window.addEventListener(ev, resetIdle, { capture: true })
     );
     resetIdle();
+    if (keepAliveTimer) clearInterval(keepAliveTimer);
+    keepAliveTimer = setInterval(keepAliveTick, 60 * 1000);
   }
   function stopIdleWatch() {
     if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+    if (keepAliveTimer) { clearInterval(keepAliveTimer); keepAliveTimer = null; }
     ["mousemove", "keydown", "click", "scroll", "touchstart"].forEach((ev) =>
-      window.removeEventListener(ev, resetIdle)
+      window.removeEventListener(ev, resetIdle, { capture: true })
     );
   }
 
@@ -237,11 +288,6 @@ SUAR.app = (function () {
     );
     window.addEventListener("hashchange", () => {
       if (document.body.classList.contains("authed")) route(currentRoute());
-    });
-
-    // Record when the tab closes so tryEnterApp can detect a >10s gap on reopen.
-    window.addEventListener("beforeunload", () => {
-      localStorage.setItem(TAB_CLOSED_KEY, String(Date.now()));
     });
 
     updateUrlDot();

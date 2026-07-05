@@ -11,16 +11,49 @@ SUAR.ApiError = class extends Error {
 };
 
 SUAR.api = (function () {
+  const TIMEOUT_MS = 15000;   // abort a hung request instead of spinning forever
+  const GET_RETRIES = 3;      // ngrok/backend cold-starts: retry transient GETs
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // Single fetch with a hard timeout — a stuck ngrok tunnel otherwise leaves the
+  // request pending indefinitely (and the console looking frozen).
   async function doFetch(method, path, body, token) {
     const base = SUAR.getBackendUrl();
     const headers = { "ngrok-skip-browser-warning": "true" };
     if (token) headers["Authorization"] = "Bearer " + token;
     if (body !== undefined) headers["Content-Type"] = "application/json";
-    return fetch(base + path, {
-      method,
-      headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+    try {
+      return await fetch(base + path, {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Retry transient network failures for GET only. GETs are idempotent, so a
+  // retry can't double-apply anything; the very first request after an idle
+  // ngrok tunnel (or a backend still warming up) routinely fails then succeeds.
+  // Writes (POST/PATCH/DELETE) are NOT retried — a "failed" write may actually
+  // have landed, and replaying it could duplicate data.
+  async function doFetchWithRetry(method, path, body, token) {
+    const attempts = method === "GET" ? GET_RETRIES : 1;
+    let lastErr;
+    for (let i = 0; i < attempts; i++) {
+      try {
+        return await doFetch(method, path, body, token);
+      } catch (e) {
+        lastErr = e;
+        if (i < attempts - 1) await sleep(500 * (i + 1)); // 0.5s, 1s
+      }
+    }
+    throw lastErr;
   }
 
   async function request(method, path, body, _retried) {
@@ -32,7 +65,7 @@ SUAR.api = (function () {
 
     let res;
     try {
-      res = await doFetch(method, path, body, token);
+      res = await doFetchWithRetry(method, path, body, token);
     } catch (e) {
       throw new SUAR.ApiError("Can't reach the backend. Check the URL and that the server + ngrok are running.", 0);
     }
@@ -106,10 +139,15 @@ SUAR.api = (function () {
     async ping() {
       const base = SUAR.getBackendUrl();
       if (!base) return false;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
       try {
-        const r = await fetch(base + "/health", { headers: { "ngrok-skip-browser-warning": "true" } });
+        const r = await fetch(base + "/health", {
+          headers: { "ngrok-skip-browser-warning": "true" },
+          signal: ctrl.signal,
+        });
         return r.ok;
-      } catch { return false; }
+      } catch { return false; } finally { clearTimeout(timer); }
     },
   };
 })();

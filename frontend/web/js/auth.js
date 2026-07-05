@@ -11,7 +11,17 @@ SUAR.auth = (function () {
 
     async signIn(email, password) {
       const { data, error } = await client.auth.signInWithPassword({ email, password });
-      if (error) throw new Error(error.message);
+      if (error) {
+        // supabase-js can't reach Supabase Cloud at all (DNS/firewall/offline)
+        // and wraps that as AuthRetryableFetchError with message "Failed to
+        // fetch" — easy to mistake for a bad password, but it's a network
+        // problem: unlike the FastAPI backend (which can run fully local),
+        // Supabase Auth always needs real internet access.
+        if (error.name === "AuthRetryableFetchError" || /failed to fetch/i.test(error.message)) {
+          throw new Error("Can't reach the sign-in service — this needs internet access (the backend can be local/offline, but Supabase Auth can't). Check your connection and try again.");
+        }
+        throw new Error(error.message);
+      }
       return data;
     },
 

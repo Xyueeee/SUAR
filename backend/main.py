@@ -8,6 +8,7 @@ All data is read/written here with the service-role key; the web never touches
 Supabase directly except to log in. See CLAUDE.md Section 8/9/14 and
 docs/superpowers/specs/2026-06-24-admin-web-design.md.
 """
+import hashlib
 import logging
 import os
 import uuid
@@ -356,6 +357,27 @@ def public_docs(category: str | None = Query(None)):
     return q.order("orderindex").order("updatedat", desc=True).execute().data
 
 
+@app.get("/triage-config")
+def public_triage_config():
+    """Admin-set default triage weights/tiers/rules. A device with its own
+    local Triage Logic edits (Settings > Debugging Options) keeps those —
+    this is only the fallback default for devices that never touched it, or
+    the value their "Reset" button reverts to."""
+    rows = supabase.table("triageconfig").select("*").eq("id", 1).execute().data
+    return rows[0] if rows else None
+
+
+@app.get("/debug-lock")
+def public_debug_lock():
+    """Password gate in front of Settings > Debugging Options. Returns only
+    the hash (never the plaintext) — this is a low-stakes "keep casual users
+    out of dev tools" fence, not a real auth boundary, so shipping the hash
+    to the device (so the gate still works offline) is an acceptable
+    tradeoff here."""
+    rows = supabase.table("debuglock").select("enabled,passwordhash").eq("id", 1).execute().data
+    return rows[0] if rows else {"enabled": True, "passwordhash": None}
+
+
 # --------------------------------------------------------------------------- #
 # Admin: identity check (web re-validates the session against the allowlist)   #
 # --------------------------------------------------------------------------- #
@@ -667,3 +689,72 @@ def _register_crud(name: str, cfg: dict) -> None:
 
 for _name, _cfg in _ADMIN_RESOURCES.items():
     _register_crud(_name, _cfg)
+
+
+# --------------------------------------------------------------------------- #
+# Admin: triage config (single-row settings, not list-based CRUD)              #
+# --------------------------------------------------------------------------- #
+_TRIAGE_FIELDS = {
+    "wmotion", "wbattery", "wmic", "wbarometer", "wlight", "wproximity",
+    "scorecap", "criticalthreshold", "highthreshold", "moderatethreshold",
+    "fallenabled", "fallboost", "falllatchseconds",
+    "faintenabled", "faintboost", "faintimmobileseconds",
+    "lowbatteryenabled", "lowbatterythreshold", "lowbatteryboost",
+    "criticalbatteryenabled", "criticalbatterythreshold", "criticalbatteryboost",
+    "batterycomfortlevel", "pressuremaxdeviationhpa", "micmindb", "micmaxdb",
+    "darkbelowlux", "brightabovelux", "batteryfastdrainpermin",
+}
+
+
+@app.get("/admin/triage-config")
+def admin_get_triage_config(_=Depends(require_admin)):
+    rows = supabase.table("triageconfig").select("*").eq("id", 1).execute().data
+    return rows[0] if rows else None
+
+
+@app.patch("/admin/triage-config")
+def admin_update_triage_config(payload: dict = Body(...), _=Depends(require_admin)):
+    row = {k: v for k, v in payload.items() if k in _TRIAGE_FIELDS}
+    if not row:
+        raise HTTPException(status_code=400, detail="No editable fields supplied")
+    row["updatedat"] = _now_iso()
+    try:
+        res = supabase.table("triageconfig").update(row).eq("id", 1).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Triage config row missing")
+    return res.data[0]
+
+
+# --------------------------------------------------------------------------- #
+# Admin: debug-options password lock                                          #
+# --------------------------------------------------------------------------- #
+@app.get("/admin/debug-lock")
+def admin_get_debug_lock(_=Depends(require_admin)):
+    # Password hash is write-only from the admin's perspective — the console
+    # never needs to read it back, only set a new one.
+    rows = supabase.table("debuglock").select("enabled,updatedat").eq("id", 1).execute().data
+    return rows[0] if rows else {"enabled": True}
+
+
+@app.patch("/admin/debug-lock")
+def admin_update_debug_lock(payload: dict = Body(...), _=Depends(require_admin)):
+    row: dict = {}
+    if "enabled" in payload:
+        row["enabled"] = bool(payload["enabled"])
+    password = payload.get("password")
+    if password:
+        if not isinstance(password, str) or len(password) < 4:
+            raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+        row["passwordhash"] = hashlib.sha256(password.encode()).hexdigest()
+    if not row:
+        raise HTTPException(status_code=400, detail="No editable fields supplied")
+    row["updatedat"] = _now_iso()
+    try:
+        res = supabase.table("debuglock").update(row).eq("id", 1).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Debug lock row missing")
+    return {"enabled": res.data[0]["enabled"]}

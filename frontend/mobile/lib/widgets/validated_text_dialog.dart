@@ -14,6 +14,7 @@ Future<String?> showValidatedTextDialog({
   String initialValue = '',
   String hintText = '',
   bool allowEmpty = false,
+  bool obscureText = false,
 }) {
   return showDialog<String>(
     context: context,
@@ -24,6 +25,7 @@ Future<String?> showValidatedTextDialog({
       initialValue: initialValue,
       hintText: hintText,
       allowEmpty: allowEmpty,
+      obscureText: obscureText,
     ),
   );
 }
@@ -36,6 +38,7 @@ class _ValidatedTextDialog extends StatefulWidget {
     required this.initialValue,
     required this.hintText,
     required this.allowEmpty,
+    this.obscureText = false,
   });
 
   final String title;
@@ -44,6 +47,7 @@ class _ValidatedTextDialog extends StatefulWidget {
   final String initialValue;
   final String hintText;
   final bool allowEmpty;
+  final bool obscureText;
 
   @override
   State<_ValidatedTextDialog> createState() => _ValidatedTextDialogState();
@@ -104,6 +108,7 @@ class _ValidatedTextDialogState extends State<_ValidatedTextDialog> {
           TextField(
             controller: _controller,
             autofocus: true,
+            obscureText: widget.obscureText,
             onChanged: (_) {
               if (_error != null) setState(() => _error = null);
             },

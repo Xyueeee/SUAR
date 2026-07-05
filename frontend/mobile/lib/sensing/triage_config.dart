@@ -1,6 +1,9 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:shared_preferences/shared_preferences.dart';
+
+import '../constants.dart';
 
 /// Runtime-editable triage tuning. Replaces compile-time constants so scoring
 /// can be tuned (and reset) live from the in-app Triage Logic page.
@@ -230,21 +233,84 @@ class TriageConfig {
     );
   }
 
+  /// Parses the admin's `/triage-config` response (lowercase column names,
+  /// distinct from [toJson]'s camelCase local-storage shape). Same
+  /// tolerant-of-missing-keys fallback as [fromJson].
+  factory TriageConfig.fromServerJson(Map<String, dynamic> j) {
+    final d = TriageConfig.defaults();
+    double n(String k, double f) => (j[k] as num?)?.toDouble() ?? f;
+    bool b(String k, bool f) => j[k] as bool? ?? f;
+    return TriageConfig(
+      wMotion: n('wmotion', d.wMotion),
+      wBattery: n('wbattery', d.wBattery),
+      wMic: n('wmic', d.wMic),
+      wBarometer: n('wbarometer', d.wBarometer),
+      wLight: n('wlight', d.wLight),
+      wProximity: n('wproximity', d.wProximity),
+      scoreCap: n('scorecap', d.scoreCap),
+      criticalThreshold: n('criticalthreshold', d.criticalThreshold),
+      highThreshold: n('highthreshold', d.highThreshold),
+      moderateThreshold: n('moderatethreshold', d.moderateThreshold),
+      fallEnabled: b('fallenabled', d.fallEnabled),
+      fallBoost: n('fallboost', d.fallBoost),
+      fallLatchSeconds: n('falllatchseconds', d.fallLatchSeconds),
+      faintEnabled: b('faintenabled', d.faintEnabled),
+      faintBoost: n('faintboost', d.faintBoost),
+      faintImmobileSeconds: n('faintimmobileseconds', d.faintImmobileSeconds),
+      lowBatteryEnabled: b('lowbatteryenabled', d.lowBatteryEnabled),
+      lowBatteryThreshold: n('lowbatterythreshold', d.lowBatteryThreshold),
+      lowBatteryBoost: n('lowbatteryboost', d.lowBatteryBoost),
+      criticalBatteryEnabled:
+          b('criticalbatteryenabled', d.criticalBatteryEnabled),
+      criticalBatteryThreshold:
+          n('criticalbatterythreshold', d.criticalBatteryThreshold),
+      criticalBatteryBoost: n('criticalbatteryboost', d.criticalBatteryBoost),
+      batteryComfortLevel: n('batterycomfortlevel', d.batteryComfortLevel),
+      pressureMaxDeviationHpa:
+          n('pressuremaxdeviationhpa', d.pressureMaxDeviationHpa),
+      micMinDb: n('micmindb', d.micMinDb),
+      micMaxDb: n('micmaxdb', d.micMaxDb),
+      darkBelowLux: n('darkbelowlux', d.darkBelowLux),
+      brightAboveLux: n('brightabovelux', d.brightAboveLux),
+      batteryFastDrainPerMin:
+          n('batteryfastdrainpermin', d.batteryFastDrainPerMin),
+    );
+  }
+
   // --- Persistence + the live active instance ------------------------------
   static const String _prefsKey = 'suar_triage_config';
+
+  // Last admin default this device has ever seen (opportunistic pull, cached
+  // for offline use — same pattern as GeofenceService). Null until the first
+  // successful fetch or cache load.
+  static const String _remoteDefaultKey = 'suar_triage_remote_default';
+  static TriageConfig? remoteDefault;
 
   /// The config the running triage uses. Edits apply on the next recompute.
   static TriageConfig active = TriageConfig.defaults();
 
+  /// Precedence: a device's own local Triage Logic edits always win over the
+  /// admin-pushed default (least-surprising for a tester who dialled in
+  /// their own values); the admin default only applies where there is no
+  /// local override. Fast + offline-safe: reads cached prefs only, never
+  /// hits the network (that's [fetchRemoteDefault]'s job).
   static Future<TriageConfig> load() async {
+    final prefs = await SharedPreferences.getInstance();
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_prefsKey);
-      if (raw != null) {
-        active = TriageConfig.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+      final rawRemote = prefs.getString(_remoteDefaultKey);
+      if (rawRemote != null) {
+        remoteDefault =
+            TriageConfig.fromJson(jsonDecode(rawRemote) as Map<String, dynamic>);
       }
+    } catch (_) {/* corrupt cache — ignore, fall through to hardcoded */}
+
+    try {
+      final raw = prefs.getString(_prefsKey);
+      active = raw != null
+          ? TriageConfig.fromJson(jsonDecode(raw) as Map<String, dynamic>)
+          : (remoteDefault ?? TriageConfig.defaults());
     } catch (_) {
-      active = TriageConfig.defaults();
+      active = remoteDefault ?? TriageConfig.defaults();
     }
     return active;
   }
@@ -259,6 +325,63 @@ class TriageConfig {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_prefsKey);
     active = TriageConfig.defaults();
+    return active;
+  }
+
+  static Future<String?> _baseUrl() async {
+    final prefs = await SharedPreferences.getInstance();
+    final u = prefs.getString(backendSyncUrlPrefKey)?.trim();
+    if (u == null || u.isEmpty) return null;
+    return u.endsWith('/') ? u.substring(0, u.length - 1) : u;
+  }
+
+  /// Live pull of the admin default. On success, caches it for offline use
+  /// and — if this device has no local override — applies it to [active]
+  /// immediately (evaluate() reads [active] fresh every cycle, so this is
+  /// safe to mutate live). Returns null on any failure (no URL, offline,
+  /// bad response); callers already treat that as "use the cache instead".
+  static Future<TriageConfig?> fetchRemoteDefault() async {
+    final base = await _baseUrl();
+    if (base == null) return null;
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 6);
+    try {
+      final req = await client.getUrl(Uri.parse('$base/triage-config'));
+      req.headers.set('ngrok-skip-browser-warning', 'true');
+      final resp = await req.close().timeout(const Duration(seconds: 8));
+      if (resp.statusCode != 200) return null;
+      final body = await resp.transform(utf8.decoder).join();
+      final decoded = jsonDecode(body);
+      if (decoded is! Map) return null;
+      final cfg = TriageConfig.fromServerJson(decoded.cast<String, dynamic>());
+      remoteDefault = cfg;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_remoteDefaultKey, jsonEncode(cfg.toJson()));
+      if (prefs.getString(_prefsKey) == null) {
+        active = cfg; // no local override — admin default applies live
+      }
+      return cfg;
+    } catch (_) {
+      return null;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// What "Reset" should revert to: the freshest reachable admin default,
+  /// else the last one this device ever saw, else the hardcoded factory
+  /// defaults — in that order.
+  static Future<TriageConfig> resolveEffectiveDefault() async {
+    final live = await fetchRemoteDefault();
+    return live ?? remoteDefault ?? TriageConfig.defaults();
+  }
+
+  /// Clears this device's local override and reverts [active] to the
+  /// resolved admin default (see [resolveEffectiveDefault]) — so future
+  /// admin pushes apply automatically again, until the user tunes locally.
+  static Future<TriageConfig> resetToServerDefault() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_prefsKey);
+    active = await resolveEffectiveDefault();
     return active;
   }
 }

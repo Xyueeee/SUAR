@@ -16,6 +16,7 @@ SUAR.app = (function () {
     notices: "Notices",
     content: "Guides & Tips",
     prep: "Prep Plans",
+    system: "System Settings",
   };
   const ROUTES = Object.keys(TITLES);
   const IDLE_MS = 20 * 60 * 1000; // auto sign-out after 20 min of inactivity

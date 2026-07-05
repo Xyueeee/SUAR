@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 
 import '../services/app_lock.dart';
+import '../services/debug_lock_service.dart';
 import '../services/geofence_service.dart';
 import '../theme.dart';
 import '../widgets/back_chevron.dart';
 import '../widgets/option_card.dart';
+import '../widgets/validated_text_dialog.dart';
 import 'debug_options_screen.dart';
 import 'offline_map_management_screen.dart';
 
@@ -131,9 +133,15 @@ class SettingsScreen extends StatelessWidget {
               'Backend sync URL, local database viewer',
               style: TextStyle(color: fg.withValues(alpha: 0.54)),
             ),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const DebugOptionsScreen()),
-            ),
+            onTap: () async {
+              final locked = await DebugLockService.isEnabled();
+              if (!context.mounted) return;
+              if (locked && !await _unlockDebug(context)) return;
+              if (!context.mounted) return;
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const DebugOptionsScreen()),
+              );
+            },
           ),
         ],
       ),
@@ -153,6 +161,24 @@ Future<void> _toggleLock({
     if (!ok) return; // stay enabled
   }
   await setter(enable);
+}
+
+/// Password gate for Settings > Debugging Options (admin-toggleable, see
+/// DebugLockService). Returns true once the correct password is entered;
+/// false on cancel. Uses the same inline-validating dialog as the backend
+/// URL editor, so a wrong password just shows an error and keeps the dialog
+/// open rather than bouncing back to Settings.
+Future<bool> _unlockDebug(BuildContext context) async {
+  final result = await showValidatedTextDialog(
+    context: context,
+    title: 'Enter Debugging Password',
+    confirmLabel: 'Unlock',
+    hintText: 'Password',
+    obscureText: true,
+    validate: (value) async =>
+        await DebugLockService.checkPassword(value) ? null : 'Incorrect password',
+  );
+  return result != null;
 }
 
 // ─── Appearance page ──────────────────────────────────────────────────────────

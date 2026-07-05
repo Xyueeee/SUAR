@@ -28,6 +28,14 @@ const Color _accentInk = Color(0xFF3E6FA8); // darker shade for small text/contr
 class _TriageLogicScreenState extends State<TriageLogicScreen> {
   final SensorFusionEngine _engine = SensorFusionEngine();
   TriageConfig _cfg = TriageConfig.active;
+  // What every "Reset" button on this page reverts to: the freshest
+  // reachable admin default, else the last one this device ever saw, else
+  // the hardcoded factory defaults (see TriageConfig.resolveEffectiveDefault).
+  // Resolved once at page-open — section/rule resets reuse this snapshot
+  // rather than re-hitting the network on every tap; only the top-bar
+  // "Reset all" re-resolves live, since that's the one place staleness
+  // would actually matter.
+  TriageConfig _serverDefault = TriageConfig.defaults();
   Timer? _tick;
   TriageInputs? _inputs;
   TriageResult? _live;
@@ -43,6 +51,8 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
     await TriageConfig.load();
     if (_disposed || !mounted) return;
     setState(() => _cfg = TriageConfig.active);
+    final resolved = await TriageConfig.resolveEffectiveDefault();
+    if (!_disposed && mounted) setState(() => _serverDefault = resolved);
     final mic = await Permission.microphone.isGranted; // no prompt here
     await _engine.start(withMic: mic);
     if (_disposed) return;
@@ -70,10 +80,14 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
 
   Future<void> _resetAll() async {
     if (await _confirm('Reset all triage values?',
-        'Restores every weight, tier and rule to defaults.')) {
-      await TriageConfig.resetToDefaults();
+        'Restores every weight, tier and rule to the admin default (or the '
+        'built-in default if none has ever been reachable).')) {
+      final resolved = await TriageConfig.resetToServerDefault();
       if (!mounted) return;
-      setState(() => _cfg = TriageConfig.active);
+      setState(() {
+        _cfg = resolved;
+        _serverDefault = resolved;
+      });
     }
   }
 
@@ -123,7 +137,7 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
               'Sensor weights',
               'Points each sensor adds at full risk. A normal reading adds ~0.',
               onReset: () {
-                final d = TriageConfig.defaults();
+                final d = _serverDefault;
                 _cfg
                   ..wMotion = d.wMotion
                   ..wBattery = d.wBattery
@@ -150,7 +164,7 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
               'Score is capped, then classified. Cap defaults to 100 = the sum '
                   'of all sensor weights.',
               onReset: () {
-                final d = TriageConfig.defaults();
+                final d = _serverDefault;
                 _cfg
                   ..scoreCap = d.scoreCap
                   ..criticalThreshold = d.criticalThreshold
@@ -181,7 +195,7 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
                   enabled: _cfg.fallEnabled,
                   onEnabled: (v) => _cfg.fallEnabled = v,
                   onReset: () {
-                    final d = TriageConfig.defaults();
+                    final d = _serverDefault;
                     _cfg
                       ..fallEnabled = d.fallEnabled
                       ..fallBoost = d.fallBoost
@@ -203,7 +217,7 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
                   enabled: _cfg.faintEnabled,
                   onEnabled: (v) => _cfg.faintEnabled = v,
                   onReset: () {
-                    final d = TriageConfig.defaults();
+                    final d = _serverDefault;
                     _cfg
                       ..faintEnabled = d.faintEnabled
                       ..faintBoost = d.faintBoost
@@ -228,7 +242,7 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
                   enabled: _cfg.lowBatteryEnabled,
                   onEnabled: (v) => _cfg.lowBatteryEnabled = v,
                   onReset: () {
-                    final d = TriageConfig.defaults();
+                    final d = _serverDefault;
                     _cfg
                       ..lowBatteryEnabled = d.lowBatteryEnabled
                       ..lowBatteryThreshold = d.lowBatteryThreshold
@@ -253,7 +267,7 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
                   enabled: _cfg.criticalBatteryEnabled,
                   onEnabled: (v) => _cfg.criticalBatteryEnabled = v,
                   onReset: () {
-                    final d = TriageConfig.defaults();
+                    final d = _serverDefault;
                     _cfg
                       ..criticalBatteryEnabled = d.criticalBatteryEnabled
                       ..criticalBatteryThreshold = d.criticalBatteryThreshold
@@ -282,7 +296,7 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
               'Where each raw reading reaches full risk (and where it reads as '
                   'normal).',
               onReset: () {
-                final d = TriageConfig.defaults();
+                final d = _serverDefault;
                 _cfg
                   ..batteryComfortLevel = d.batteryComfortLevel
                   ..pressureMaxDeviationHpa = d.pressureMaxDeviationHpa
@@ -316,7 +330,7 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
   }
 
   void _resetOverrides() {
-    final d = TriageConfig.defaults();
+    final d = _serverDefault;
     _cfg
       ..fallEnabled = d.fallEnabled
       ..fallBoost = d.fallBoost

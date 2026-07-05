@@ -6,6 +6,9 @@
 /// Also owns the background poll for warning/critical notices ([_checkUrgentNotices])
 /// — unrelated to geofences, but background monitoring only needed one
 /// periodic timer, so notices ride along on it instead of running their own.
+/// The admin-pushed triage default and the debug-options password lock
+/// ([TriageConfig.fetchRemoteDefault], [DebugLockService.refresh]) piggyback
+/// on the same timer for the same reason.
 library;
 
 import 'dart:async';
@@ -19,8 +22,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../constants.dart';
 import '../content/doc_service.dart';
+import '../sensing/triage_config.dart';
 import '../storage/sqlite_repository.dart';
 import '../sync/sync_service.dart';
+import 'debug_lock_service.dart';
 import 'notification_service.dart';
 
 const String _bgMonitoringPrefKey = 'suar_bg_geofence_enabled';
@@ -109,13 +114,25 @@ class GeofenceService {
     }
   }
 
-  /// One proximity sweep. Call periodically while the app is in the foreground.
+  /// One proximity sweep, called automatically on Dashboard open, every 60s
+  /// while foregrounded, and by pull-to-refresh — this is the app's one
+  /// "opportunistic connect" check-in, not something a user has to hunt down
+  /// a debug menu to trigger.
   Future<void> check() async {
     // Piggyback: any backend touch is a chance to flush locally-stored
     // bundles to the admin (see _syncLocalBundles), not just Helper-mode
     // ones. Unawaited so a slow/offline sync never delays the zone sweep.
     unawaited(_syncLocalBundles());
+    // Triage default + debug lock run alongside the zone fetch (not after),
+    // but ARE awaited before check() returns — so pull-to-refresh genuinely
+    // waits for everything this check-in covers, not just zones, before its
+    // spinner stops.
+    final otherPulls = Future.wait([
+      TriageConfig.fetchRemoteDefault(),
+      DebugLockService.refresh(),
+    ]);
     final zones = await _fetchZones();
+    await otherPulls;
     if (zones.isEmpty) return;
     final pos = await _position();
     if (pos == null) return;
@@ -157,6 +174,8 @@ class GeofenceService {
       _cachedZones = await _fetchZones();
       await _checkUrgentNotices();
       await _syncLocalBundles();
+      await TriageConfig.fetchRemoteDefault();
+      await DebugLockService.refresh();
     });
 
     _bgSub = Geolocator.getPositionStream(

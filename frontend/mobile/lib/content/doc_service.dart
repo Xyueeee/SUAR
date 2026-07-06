@@ -66,15 +66,15 @@ class DocRepository {
     }
     for (final r in rows) {
       batch.insert('AppDoc', {
-        'DocId': r['docid'].toString(),
+        'AppDocId': r['app_doc_id'].toString(),
         'Category': (r['category'] ?? '').toString(),
         'Title': (r['title'] ?? '').toString(),
         'Version': (r['version'] as num?)?.toInt() ?? 1,
         'StructureJson':
             r['structure'] is String ? r['structure'] : jsonEncode(r['structure'] ?? {}),
-        'OrderIndex': (r['orderindex'] as num?)?.toInt() ?? 0,
-        'UsePercent': (r['usepercent'] == true) ? 1 : 0,
-        'UpdatedAt': (r['updatedat'] ?? '').toString(),
+        'OrderIndex': (r['order_index'] as num?)?.toInt() ?? 0,
+        'UsePercent': (r['use_percent'] == true) ? 1 : 0,
+        'UpdatedAt': (r['updated_at'] ?? '').toString(),
       });
     }
     await batch.commit(noResult: true);
@@ -86,7 +86,7 @@ class DocRepository {
         where: 'Category = ?', whereArgs: [category], orderBy: 'OrderIndex ASC, UpdatedAt DESC');
     return rows
         .map((m) => Doc.fromRow(
-              docid: m['DocId'] as String,
+              docId: m['AppDocId'] as String,
               category: m['Category'] as String,
               title: m['Title'] as String,
               version: m['Version'] as int,
@@ -100,19 +100,19 @@ class DocRepository {
   Future<Map<String, String>> getProgress(String docId) async {
     final db = await _db;
     final rows = await db.query('DocProgress',
-        columns: ['Path', 'Value'], where: 'DocId = ?', whereArgs: [docId]);
+        columns: ['Path', 'Value'], where: 'AppDocId = ?', whereArgs: [docId]);
     return {for (final r in rows) r['Path'] as String: r['Value'] as String};
   }
 
   Future<void> setProgress(String docId, String path, String value) async {
     final db = await _db;
     if (value.isEmpty) {
-      await db.delete('DocProgress', where: 'DocId = ? AND Path = ?', whereArgs: [docId, path]);
+      await db.delete('DocProgress', where: 'AppDocId = ? AND Path = ?', whereArgs: [docId, path]);
       return;
     }
     await db.insert(
       'DocProgress',
-      {'DocId': docId, 'Path': path, 'Value': value, 'UpdatedAt': DateTime.now().toIso8601String()},
+      {'AppDocId': docId, 'Path': path, 'Value': value, 'UpdatedAt': DateTime.now().toIso8601String()},
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }
@@ -147,7 +147,10 @@ class DocService {
     return _repo.getDocs(category);
   }
 
-  static const _noticesKey = 'suar_notices_cache';
+  // _v2: the 2026-07-06 schema rename changed the row keys (notice_id,
+  // created_at, ...). Bumping the key orphans any cache written with the old
+  // keys instead of rendering it with missing ids/dates until first refresh.
+  static const _noticesKey = 'suar_notices_cache_v2';
 
   /// Active admin notices. Refreshes from the backend when online, caches to
   /// prefs, and serves the cache offline.

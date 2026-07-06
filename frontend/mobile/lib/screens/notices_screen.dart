@@ -27,9 +27,9 @@ class _NoticeBodyState extends State<NoticeBody> {
   Future<void> _load() async {
     final raw = widget.notice['structure'];
     if (raw == null) return;
-    final id = (widget.notice['noticeid'] ?? 'notice').toString();
+    final id = (widget.notice['notice_id'] ?? 'notice').toString();
     final doc = Doc.fromRow(
-      docid: 'notice-$id',
+      docId: 'notice-$id',
       category: '',
       title: '',
       version: 0,
@@ -108,6 +108,10 @@ class NoticesScreen extends StatefulWidget {
 class _NoticesScreenState extends State<NoticesScreen> {
   final _service = DocService();
   late Future<({List<Map<String, dynamic>> notices, Set<String> seen})> _future = _load();
+  // Ids marked seen this session, applied on top of the persisted set so a row's
+  // dot clears the instant its detail opens — the reload's loadNotices() does a
+  // network fetch, so relying on it alone leaves the dot up until that resolves.
+  final Set<String> _justSeen = {};
 
   Future<({List<Map<String, dynamic>> notices, Set<String> seen})> _load() async {
     final notices = await _service.loadNotices();
@@ -126,9 +130,10 @@ class _NoticesScreenState extends State<NoticesScreen> {
   }
 
   Future<void> _open(Map<String, dynamic> n) async {
-    final id = (n['noticeid'] ?? '').toString();
+    final id = (n['notice_id'] ?? '').toString();
     await _service.markNoticesSeen([id]);
     if (!mounted) return;
+    setState(() => _justSeen.add(id)); // clear the dot immediately
     await Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => NoticeDetailScreen(notice: n)),
     );
@@ -171,9 +176,9 @@ class _NoticesScreenState extends State<NoticesScreen> {
               separatorBuilder: (context, index) => Divider(height: 1, color: cs.onSurface.withValues(alpha: 0.12), indent: 16, endIndent: 16),
               itemBuilder: (context, i) {
                 final n = notices[i];
-                final id = (n['noticeid'] ?? '').toString();
-                final unread = !seen.contains(id);
-                final when = fmtNoticeTime((n['updatedat'] ?? n['createdat'])?.toString());
+                final id = (n['notice_id'] ?? '').toString();
+                final unread = !seen.contains(id) && !_justSeen.contains(id);
+                final when = fmtNoticeTime((n['updated_at'] ?? n['created_at'])?.toString());
                 final sev = (n['severity'] ?? 'info').toString();
                 return ListTile(
                   title: Row(
@@ -230,8 +235,8 @@ class NoticeDetailScreen extends StatelessWidget {
     final sev = (notice['severity'] ?? 'info').toString();
     final subtitle = (notice['subtitle'] ?? '').toString();
     final body = (notice['body'] ?? '').toString();
-    final created = fmtNoticeTime(notice['createdat']?.toString());
-    final updated = fmtNoticeTime(notice['updatedat']?.toString());
+    final created = fmtNoticeTime(notice['created_at']?.toString());
+    final updated = fmtNoticeTime(notice['updated_at']?.toString());
     final stamp = created.isEmpty
         ? ''
         : (updated.isNotEmpty && updated != created ? 'Posted $created · Updated $updated' : 'Posted $created');

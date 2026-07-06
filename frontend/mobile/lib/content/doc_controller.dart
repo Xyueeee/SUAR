@@ -20,7 +20,7 @@ class DocController extends ChangeNotifier {
 
   Future<void> load(Doc d) async {
     doc = d;
-    _values = await repo.getProgress(d.docid);
+    _values = await repo.getProgress(d.docId);
     notifyListeners();
   }
 
@@ -43,7 +43,7 @@ class DocController extends ChangeNotifier {
       _values.remove(path);
     }
     notifyListeners();
-    await repo.setProgress(doc!.docid, path, checked ? '1' : '');
+    await repo.setProgress(doc!.docId, path, checked ? '1' : '');
   }
 
   Future<void> setText(String path, String text) async {
@@ -54,6 +54,6 @@ class DocController extends ChangeNotifier {
       _values[path] = t;
     }
     notifyListeners();
-    await repo.setProgress(doc!.docid, path, t);
+    await repo.setProgress(doc!.docId, path, t);
   }
 }

@@ -153,7 +153,7 @@ class _DocScreenState extends State<DocScreen> {
   Doc _merge(List<Doc> docs) {
     if (docs.length == 1) return docs.first;
     return Doc(
-      docid: 'cat-${widget.category}',
+      docId: 'cat-${widget.category}',
       category: widget.category,
       title: docs.first.title,
       version: 0,

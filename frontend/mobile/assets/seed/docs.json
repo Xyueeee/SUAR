@@ -1,13 +1,13 @@
 [
   {
-    "docid": "badedebd-6b3c-4b0e-9f33-1284b8559799",
+    "app_doc_id": "badedebd-6b3c-4b0e-9f33-1284b8559799",
     "category": "first_aid",
     "title": "First Aid Introduction & Disclaimer",
     "version": 25,
-    "ispublished": true,
-    "usepercent": false,
-    "orderindex": 0,
-    "updatedat": "2026-07-05T12:37:44Z",
+    "is_published": true,
+    "use_percent": false,
+    "order_index": 0,
+    "updated_at": "2026-07-05T12:37:44Z",
     "structure": {
       "nodes": [
         {
@@ -210,14 +210,14 @@
     }
   },
   {
-    "docid": "af0ecc5f-8349-41f5-86fc-5a642c479ffa",
+    "app_doc_id": "af0ecc5f-8349-41f5-86fc-5a642c479ffa",
     "category": "first_aid",
     "title": "Bleeding and Wounds",
     "version": 32,
-    "ispublished": true,
-    "usepercent": false,
-    "orderindex": 1,
-    "updatedat": "2026-07-05T12:47:46Z",
+    "is_published": true,
+    "use_percent": false,
+    "order_index": 1,
+    "updated_at": "2026-07-05T12:47:46Z",
     "structure": {
       "nodes": [
         {
@@ -1717,14 +1717,14 @@
     }
   },
   {
-    "docid": "02f532a7-efe8-43c3-985b-c76607aa05b0",
+    "app_doc_id": "02f532a7-efe8-43c3-985b-c76607aa05b0",
     "category": "first_aid",
     "title": "Fractures & Sprains",
     "version": 26,
-    "ispublished": true,
-    "usepercent": false,
-    "orderindex": 2,
-    "updatedat": "2026-07-05T12:48:21Z",
+    "is_published": true,
+    "use_percent": false,
+    "order_index": 2,
+    "updated_at": "2026-07-05T12:48:21Z",
     "structure": {
       "nodes": [
         {
@@ -3282,14 +3282,14 @@
     }
   },
   {
-    "docid": "e0360908-3c4a-4f30-b8a7-5807d3f9c8d5",
+    "app_doc_id": "e0360908-3c4a-4f30-b8a7-5807d3f9c8d5",
     "category": "first_aid",
     "title": "Bites & Stings",
     "version": 21,
-    "ispublished": true,
-    "usepercent": false,
-    "orderindex": 3,
-    "updatedat": "2026-07-05T12:48:54Z",
+    "is_published": true,
+    "use_percent": false,
+    "order_index": 3,
+    "updated_at": "2026-07-05T12:48:54Z",
     "structure": {
       "nodes": [
         {
@@ -4992,14 +4992,14 @@
     }
   },
   {
-    "docid": "303443a2-17cb-4df7-ac8b-507ed354c4fc",
+    "app_doc_id": "303443a2-17cb-4df7-ac8b-507ed354c4fc",
     "category": "first_aid",
     "title": "Burns & Scalds",
     "version": 18,
-    "ispublished": true,
-    "usepercent": false,
-    "orderindex": 4,
-    "updatedat": "2026-07-05T12:49:44Z",
+    "is_published": true,
+    "use_percent": false,
+    "order_index": 4,
+    "updated_at": "2026-07-05T12:49:44Z",
     "structure": {
       "nodes": [
         {
@@ -5939,14 +5939,14 @@
     }
   },
   {
-    "docid": "1d8363dc-640d-4d86-8fb2-03e8d5cc5789",
+    "app_doc_id": "1d8363dc-640d-4d86-8fb2-03e8d5cc5789",
     "category": "first_aid",
     "title": "Shock & Circulatory Failures",
     "version": 23,
-    "ispublished": true,
-    "usepercent": false,
-    "orderindex": 5,
-    "updatedat": "2026-07-05T12:50:24Z",
+    "is_published": true,
+    "use_percent": false,
+    "order_index": 5,
+    "updated_at": "2026-07-05T12:50:24Z",
     "structure": {
       "nodes": [
         {
@@ -7972,14 +7972,14 @@
     }
   },
   {
-    "docid": "36b5ec84-a677-4fcc-a7d7-c6f1296b8c10",
+    "app_doc_id": "36b5ec84-a677-4fcc-a7d7-c6f1296b8c10",
     "category": "first_aid",
     "title": "CPR & Basic Life Support",
     "version": 15,
-    "ispublished": true,
-    "usepercent": false,
-    "orderindex": 6,
-    "updatedat": "2026-07-05T12:50:51Z",
+    "is_published": true,
+    "use_percent": false,
+    "order_index": 6,
+    "updated_at": "2026-07-05T12:50:51Z",
     "structure": {
       "nodes": [
         {
@@ -9845,14 +9845,49 @@
     }
   },
   {
-    "docid": "bbaf08f3-4b6e-48d7-8447-d459c81504cf",
+    "app_doc_id": "6d5c4b3a-2f1e-4a8b-9c0d-7e6f5a4b3c2d",
+    "category": "prep",
+    "title": "Medical Information",
+    "version": 1,
+    "is_published": true,
+    "use_percent": true,
+    "order_index": 0,
+    "updated_at": "2026-07-06T00:00:00Z",
+    "structure": {
+      "nodes": [
+        {
+          "title": "Medical Information",
+          "kind": "section",
+          "weight": 3,
+          "subtitle": "Basic medical information for first-aiders to assist you in case that you fainted.",
+          "usePercent": true,
+          "children": [
+            {
+              "title": "Fill In Basic Information Section",
+              "kind": "check",
+              "weight": 3,
+              "subtitle": "Basic information for identification and ease for blood transfusion when needed."
+            },
+            {
+              "title": "Fill In Allergies Section",
+              "kind": "check",
+              "weight": 2,
+              "subtitle": "Additional information aiding emergency responders to avoid triggering your allergies due to some treatments."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "app_doc_id": "bbaf08f3-4b6e-48d7-8447-d459c81504cf",
     "category": "prep",
     "title": "Evacuation Bag (Go-bag)",
     "version": 13,
-    "ispublished": true,
-    "usepercent": true,
-    "orderindex": 0,
-    "updatedat": "2026-07-05T11:19:29Z",
+    "is_published": true,
+    "use_percent": true,
+    "order_index": 1,
+    "updated_at": "2026-07-05T11:19:29Z",
     "structure": {
       "nodes": [
         {
@@ -10228,14 +10263,14 @@
     }
   },
   {
-    "docid": "8c2a46ee-78d0-44ab-9987-c3dc019b485d",
+    "app_doc_id": "8c2a46ee-78d0-44ab-9987-c3dc019b485d",
     "category": "prep",
     "title": "Family Action Plan",
     "version": 5,
-    "ispublished": true,
-    "usepercent": true,
-    "orderindex": 1,
-    "updatedat": "2026-07-05T11:19:29Z",
+    "is_published": true,
+    "use_percent": true,
+    "order_index": 2,
+    "updated_at": "2026-07-05T11:19:29Z",
     "structure": {
       "nodes": [
         {
@@ -10275,14 +10310,14 @@
     }
   },
   {
-    "docid": "c9c45505-6799-4f56-a356-61632c10e62a",
+    "app_doc_id": "c9c45505-6799-4f56-a356-61632c10e62a",
     "category": "prep",
     "title": "The Stay-at-Home Kit",
     "version": 8,
-    "ispublished": true,
-    "usepercent": true,
-    "orderindex": 2,
-    "updatedat": "2026-07-05T11:19:29Z",
+    "is_published": true,
+    "use_percent": true,
+    "order_index": 3,
+    "updated_at": "2026-07-05T11:19:29Z",
     "structure": {
       "nodes": [
         {
@@ -10387,14 +10422,14 @@
     }
   },
   {
-    "docid": "8b56ac09-07db-426c-ab1e-f026fb8d283f",
+    "app_doc_id": "8b56ac09-07db-426c-ab1e-f026fb8d283f",
     "category": "prep",
     "title": "Vehicle Emergency Kit",
     "version": 9,
-    "ispublished": true,
-    "usepercent": true,
-    "orderindex": 3,
-    "updatedat": "2026-07-05T11:19:29Z",
+    "is_published": true,
+    "use_percent": true,
+    "order_index": 4,
+    "updated_at": "2026-07-05T11:19:29Z",
     "structure": {
       "nodes": [
         {
@@ -10470,14 +10505,14 @@
     }
   },
   {
-    "docid": "78e74584-7887-40cf-baa2-3949e49e2388",
+    "app_doc_id": "78e74584-7887-40cf-baa2-3949e49e2388",
     "category": "survival",
     "title": "Survival Tips Introduction & Disclaimer",
     "version": 14,
-    "ispublished": true,
-    "usepercent": false,
-    "orderindex": 0,
-    "updatedat": "2026-07-05T15:16:07Z",
+    "is_published": true,
+    "use_percent": false,
+    "order_index": 0,
+    "updated_at": "2026-07-05T15:16:07Z",
     "structure": {
       "nodes": [
         {
@@ -10711,14 +10746,14 @@
     }
   },
   {
-    "docid": "03dce396-0b31-48b8-9913-dd1d3e8e0508",
+    "app_doc_id": "03dce396-0b31-48b8-9913-dd1d3e8e0508",
     "category": "survival",
     "title": "General Emergencies",
     "version": 10,
-    "ispublished": true,
-    "usepercent": false,
-    "orderindex": 1,
-    "updatedat": "2026-07-05T15:16:07Z",
+    "is_published": true,
+    "use_percent": false,
+    "order_index": 1,
+    "updated_at": "2026-07-05T15:16:07Z",
     "structure": {
       "nodes": [
         {
@@ -12057,14 +12092,14 @@
     }
   },
   {
-    "docid": "7ea9c4cc-1f37-4996-80eb-69b17dd95400",
+    "app_doc_id": "7ea9c4cc-1f37-4996-80eb-69b17dd95400",
     "category": "survival",
     "title": "Water Disasters & Floods",
     "version": 8,
-    "ispublished": true,
-    "usepercent": false,
-    "orderindex": 2,
-    "updatedat": "2026-07-05T15:16:07Z",
+    "is_published": true,
+    "use_percent": false,
+    "order_index": 2,
+    "updated_at": "2026-07-05T15:16:07Z",
     "structure": {
       "nodes": [
         {
@@ -12949,14 +12984,14 @@
     }
   },
   {
-    "docid": "aceb709d-7165-4068-a827-672afecd5b2a",
+    "app_doc_id": "aceb709d-7165-4068-a827-672afecd5b2a",
     "category": "survival",
     "title": "Earthquakes & Structural Threats",
     "version": 10,
-    "ispublished": true,
-    "usepercent": false,
-    "orderindex": 3,
-    "updatedat": "2026-07-05T15:16:07Z",
+    "is_published": true,
+    "use_percent": false,
+    "order_index": 3,
+    "updated_at": "2026-07-05T15:16:07Z",
     "structure": {
       "nodes": [
         {
@@ -14189,14 +14224,14 @@
     }
   },
   {
-    "docid": "554bdcae-29ab-4fa6-b98d-89558a920b52",
+    "app_doc_id": "554bdcae-29ab-4fa6-b98d-89558a920b52",
     "category": "survival",
     "title": "Severe Weather & Storms",
     "version": 9,
-    "ispublished": true,
-    "usepercent": false,
-    "orderindex": 4,
-    "updatedat": "2026-07-05T15:16:07Z",
+    "is_published": true,
+    "use_percent": false,
+    "order_index": 4,
+    "updated_at": "2026-07-05T15:16:07Z",
     "structure": {
       "nodes": [
         {
@@ -14719,14 +14754,14 @@
     }
   },
   {
-    "docid": "10510cc2-35db-4941-83b3-0d509f934c09",
+    "app_doc_id": "10510cc2-35db-4941-83b3-0d509f934c09",
     "category": "survival",
     "title": "Fire Emergencies",
     "version": 8,
-    "ispublished": true,
-    "usepercent": false,
-    "orderindex": 5,
-    "updatedat": "2026-07-05T15:16:08Z",
+    "is_published": true,
+    "use_percent": false,
+    "order_index": 5,
+    "updated_at": "2026-07-05T15:16:08Z",
     "structure": {
       "nodes": [
         {

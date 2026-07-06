@@ -82,7 +82,7 @@ class DocNode {
 }
 
 class Doc {
-  final String docid;
+  final String docId;
   final String category; // survival | first_aid | preparation | prep
   final String title;
   final int version;
@@ -93,7 +93,7 @@ class Doc {
   final String updatedAt;
 
   const Doc({
-    required this.docid,
+    required this.docId,
     required this.category,
     required this.title,
     required this.version,
@@ -105,7 +105,7 @@ class Doc {
   });
 
   factory Doc.fromRow({
-    required String docid,
+    required String docId,
     required String category,
     required String title,
     required int version,
@@ -123,7 +123,7 @@ class Doc {
     }
     final m = d is Map ? d : const {};
     return Doc(
-      docid: docid,
+      docId: docId,
       category: category,
       title: title,
       version: version,
@@ -168,8 +168,32 @@ class DocRollup {
     return acc / wsum;
   }
 
+  /// Completed fraction (0..1) of the whole doc, or null if nothing counts
+  /// (pure guide / empty) — lets a caller skip such docs when averaging.
+  double? overallFraction(List<DocNode> nodes) => _childrenFrac(nodes, '');
+
   /// 0..100 overall for the whole doc.
-  double overallPercent(List<DocNode> nodes) => (_childrenFrac(nodes, '') ?? 0) * 100;
+  double overallPercent(List<DocNode> nodes) => (overallFraction(nodes) ?? 0) * 100;
+
+  /// Flat list of the first [max] incomplete field-leaf titles, no section
+  /// prefix (used by the dashboard prep card where the doc title is the header).
+  List<String> incompleteLeaves(List<DocNode> nodes, int max) {
+    final out = <String>[];
+    void walk(List<DocNode> ns, String path) {
+      for (var i = 0; i < ns.length && out.length < max; i++) {
+        final p = path.isEmpty ? '$i' : '$path.$i';
+        final n = ns[i];
+        if (n.isSection) {
+          walk(n.children, p);
+        } else if (n.isField && !done.contains(p)) {
+          out.add(n.title.isEmpty ? 'Untitled' : n.title);
+        }
+      }
+    }
+
+    walk(nodes, '');
+    return out;
+  }
 
   /// 0..100 for a single node (its internal completion).
   double nodePercent(DocNode n, String path) => (frac(n, path) ?? 0) * 100;

@@ -18,13 +18,17 @@ class SQLiteRepository {
   // v10: added AppDoc.UsePercent — % card flag moved from structure JSON to DB column.
   // v11: dropped the dead Guide/PrepPlanT/PrepProgress tables (superseded by
   //      AppDoc/DocProgress in v8; nothing has read or written them since).
-  static const int _dbVersion = 11;
+  // v12: renamed PKs to match their table (BundleId -> DistressBundleId,
+  //      ReadingId -> SensorReadingId, DocId -> AppDocId), mirroring the
+  //      cloud schema's <table>_id convention. Rebuild + copy per table, not
+  //      RENAME COLUMN — minSdk 24 ships SQLite 3.9, RENAME COLUMN needs 3.25.
+  static const int _dbVersion = 12;
 
   Database? _db;
 
   static const String _createDistressBundle = '''
     CREATE TABLE IF NOT EXISTS DistressBundle (
-      BundleId TEXT PRIMARY KEY,
+      DistressBundleId TEXT PRIMARY KEY,
       DeviceId TEXT NOT NULL,
       PriorityScore REAL NOT NULL,
       PriorityTier TEXT NOT NULL,
@@ -44,8 +48,8 @@ class SQLiteRepository {
   // link is enforced cloud-side in Supabase, not on-device.
   static const String _createSensorReading = '''
     CREATE TABLE IF NOT EXISTS SensorReading (
-      ReadingId TEXT PRIMARY KEY,
-      BundleId TEXT NOT NULL,
+      SensorReadingId TEXT PRIMARY KEY,
+      DistressBundleId TEXT NOT NULL,
       SensorType TEXT NOT NULL,
       RawValue REAL NOT NULL,
       NormalisedValue REAL NOT NULL,
@@ -58,7 +62,7 @@ class SQLiteRepository {
   // + per-user fill state keyed by positional node path.
   static const String _createAppDoc = '''
     CREATE TABLE IF NOT EXISTS AppDoc (
-      DocId TEXT PRIMARY KEY,
+      AppDocId TEXT PRIMARY KEY,
       Category TEXT NOT NULL,
       Title TEXT NOT NULL,
       Version INTEGER NOT NULL DEFAULT 1,
@@ -71,11 +75,11 @@ class SQLiteRepository {
 
   static const String _createDocProgress = '''
     CREATE TABLE IF NOT EXISTS DocProgress (
-      DocId TEXT NOT NULL,
+      AppDocId TEXT NOT NULL,
       Path TEXT NOT NULL,
       Value TEXT NOT NULL,
       UpdatedAt TEXT,
-      PRIMARY KEY (DocId, Path)
+      PRIMARY KEY (AppDocId, Path)
     )
   ''';
 
@@ -131,6 +135,58 @@ class SQLiteRepository {
           await db.execute('DROP TABLE IF EXISTS PrepPlanT');
           await db.execute('DROP TABLE IF EXISTS PrepProgress');
         }
+        if (oldVersion < 12) {
+          // PK renames (see the version-history note above). Each table is
+          // rebuilt under its own name and the rows copied across. Tables
+          // that an EARLIER block in this same upgrade run just created
+          // already have the new column names, so only rebuild the ones that
+          // actually predate this run (the oldVersion gates).
+          Future<void> rebuild(String table, String createSql,
+              String newCols, String oldCols) async {
+            await db.execute('ALTER TABLE $table RENAME TO ${table}_v11');
+            await db.execute(createSql);
+            await db.execute('INSERT INTO $table ($newCols) '
+                'SELECT $oldCols FROM ${table}_v11');
+            await db.execute('DROP TABLE ${table}_v11');
+          }
+
+          await rebuild(
+            'DistressBundle',
+            _createDistressBundle,
+            'DistressBundleId, DeviceId, PriorityScore, PriorityTier, '
+                'EstimatedLat, EstimatedLng, AccuracyMeters, EstimatedAltitude, '
+                'HopCount, IsSynced, CreatedAt, UpdatedAt, Flags',
+            'BundleId, DeviceId, PriorityScore, PriorityTier, '
+                'EstimatedLat, EstimatedLng, AccuracyMeters, EstimatedAltitude, '
+                'HopCount, IsSynced, CreatedAt, UpdatedAt, Flags',
+          );
+          if (oldVersion >= 2) {
+            await rebuild(
+              'SensorReading',
+              _createSensorReading,
+              'SensorReadingId, DistressBundleId, SensorType, RawValue, '
+                  'NormalisedValue, RecordedAt',
+              'ReadingId, BundleId, SensorType, RawValue, '
+                  'NormalisedValue, RecordedAt',
+            );
+          }
+          if (oldVersion >= 8) {
+            await rebuild(
+              'AppDoc',
+              _createAppDoc,
+              'AppDocId, Category, Title, Version, StructureJson, '
+                  'OrderIndex, UsePercent, UpdatedAt',
+              'DocId, Category, Title, Version, StructureJson, '
+                  'OrderIndex, UsePercent, UpdatedAt',
+            );
+            await rebuild(
+              'DocProgress',
+              _createDocProgress,
+              'AppDocId, Path, Value, UpdatedAt',
+              'DocId, Path, Value, UpdatedAt',
+            );
+          }
+        }
       },
     );
     _db = opened;
@@ -158,7 +214,7 @@ class SQLiteRepository {
       final existing = await txn.query(
         'DistressBundle',
         columns: ['UpdatedAt'],
-        where: 'BundleId = ?',
+        where: 'DistressBundleId = ?',
         whereArgs: [bundle.bundleId],
         limit: 1,
       );
@@ -174,16 +230,16 @@ class SQLiteRepository {
         await txn.update(
           'DistressBundle',
           bundle.toMap(),
-          where: 'BundleId = ?',
+          where: 'DistressBundleId = ?',
           whereArgs: [bundle.bundleId],
         );
         // Replace the readings snapshot with the newer one.
         await txn.delete('SensorReading',
-            where: 'BundleId = ?', whereArgs: [bundle.bundleId]);
+            where: 'DistressBundleId = ?', whereArgs: [bundle.bundleId]);
       }
       for (final raw in bundle.sensorReadings) {
         // Re-stamp the FK to this bundle in case the transported reading's
-        // bundleId drifted; dedup on ReadingId.
+        // bundleId drifted; dedup on SensorReadingId.
         final reading = SensorReadingModel.fromJson({
           ...raw,
           'bundleId': bundle.bundleId,
@@ -201,7 +257,7 @@ class SQLiteRepository {
     final db = await _getDb();
     final rows = await db.query(
       'SensorReading',
-      where: 'BundleId = ?',
+      where: 'DistressBundleId = ?',
       whereArgs: [bundleId],
       orderBy: 'RecordedAt',
     );
@@ -225,7 +281,7 @@ class SQLiteRepository {
     await db.update(
       'DistressBundle',
       {'IsSynced': 1},
-      where: 'BundleId = ?',
+      where: 'DistressBundleId = ?',
       whereArgs: [bundleId],
     );
   }
@@ -235,8 +291,8 @@ class SQLiteRepository {
   Future<void> deleteBundle(String bundleId) async {
     final db = await _getDb();
     await db.transaction((txn) async {
-      await txn.delete('SensorReading', where: 'BundleId = ?', whereArgs: [bundleId]);
-      await txn.delete('DistressBundle', where: 'BundleId = ?', whereArgs: [bundleId]);
+      await txn.delete('SensorReading', where: 'DistressBundleId = ?', whereArgs: [bundleId]);
+      await txn.delete('DistressBundle', where: 'DistressBundleId = ?', whereArgs: [bundleId]);
     });
   }
 

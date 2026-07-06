@@ -101,7 +101,7 @@ class SyncService {
     var n = 0;
     for (final r in rows) {
       if (r is! Map) continue;
-      final created = DateTime.tryParse((r['createdat'] ?? '').toString());
+      final created = DateTime.tryParse((r['created_at'] ?? '').toString());
       if (created == null || created.toUtc().isBefore(cutoff)) continue;
       try {
         await repo.saveBundle(_fromBackend(r));
@@ -134,17 +134,17 @@ class SyncService {
   }
 
   DistressBundleModel _fromBackend(Map r) => DistressBundleModel(
-        bundleId: (r['bundleid'] ?? '').toString(),
-        deviceId: (r['deviceid'] ?? '').toString(),
-        priorityScore: (r['priorityscore'] as num?)?.toDouble() ?? 0,
-        priorityTier: (r['prioritytier'] ?? 'None').toString(),
-        estimatedLat: (r['estimatedlat'] as num?)?.toDouble(),
-        estimatedLng: (r['estimatedlng'] as num?)?.toDouble(),
-        accuracyMeters: (r['accuracymeters'] as num?)?.toDouble(),
-        estimatedAltitude: (r['estimatedaltitude'] as num?)?.toDouble(),
-        hopCount: (r['hopcount'] as num?)?.toInt() ?? 0,
+        bundleId: (r['distress_bundle_id'] ?? '').toString(),
+        deviceId: (r['device_id'] ?? '').toString(),
+        priorityScore: (r['priority_score'] as num?)?.toDouble() ?? 0,
+        priorityTier: (r['priority_tier'] ?? 'None').toString(),
+        estimatedLat: (r['estimated_lat'] as num?)?.toDouble(),
+        estimatedLng: (r['estimated_lng'] as num?)?.toDouble(),
+        accuracyMeters: (r['accuracy_meters'] as num?)?.toDouble(),
+        estimatedAltitude: (r['estimated_altitude'] as num?)?.toDouble(),
+        hopCount: (r['hop_count'] as num?)?.toInt() ?? 0,
         isSynced: true,
-        createdAt: DateTime.tryParse((r['createdat'] ?? '').toString()) ?? DateTime.now().toUtc(),
-        updatedAt: DateTime.tryParse((r['updatedat'] ?? '').toString()) ?? DateTime.now().toUtc(),
+        createdAt: DateTime.tryParse((r['created_at'] ?? '').toString()) ?? DateTime.now().toUtc(),
+        updatedAt: DateTime.tryParse((r['updated_at'] ?? '').toString()) ?? DateTime.now().toUtc(),
       );
 }

@@ -93,10 +93,10 @@ SUAR.views.dashboard = (function () {
     document.getElementById("dash-recent").innerHTML = recent.length
       ? '<table class="data"><thead><tr><th>Tier</th><th>Score</th><th>Device</th><th>When</th></tr></thead><tbody>' +
         recent.map((b) =>
-          "<tr><td>" + SUAR.ui.tierBadge(b.prioritytier) + "</td>" +
-          '<td class="mono-cell">' + (b.priorityscore != null ? b.priorityscore.toFixed(2) : "—") + "</td>" +
-          '<td class="id-trunc">' + SUAR.ui.truncId(b.deviceid, 10) + "</td>" +
-          '<td class="muted">' + SUAR.ui.fmtRelative(b.createdat) + "</td></tr>"
+          "<tr><td>" + SUAR.ui.tierBadge(b.priority_tier) + "</td>" +
+          '<td class="mono-cell">' + (b.priority_score != null ? b.priority_score.toFixed(2) : "—") + "</td>" +
+          '<td class="id-trunc">' + SUAR.ui.truncId(b.device_id, 10) + "</td>" +
+          '<td class="muted">' + SUAR.ui.fmtRelative(b.created_at) + "</td></tr>"
         ).join("") + "</tbody></table>"
       : SUAR.ui.empty("No bundles yet", "They'll appear once a Helper syncs.");
 
@@ -131,15 +131,15 @@ SUAR.views.dashboard = (function () {
     }));
 
     // Map pins (map already initialised above)
-    const located = recent.filter((b) => b.estimatedlat != null && b.estimatedlng != null);
+    const located = recent.filter((b) => b.estimated_lat != null && b.estimated_lng != null);
     if (located.length) {
       const pts = [];
       located.forEach((b) => {
-        const color = TIER_COLORS[b.prioritytier] || "#9aa4b2";
-        L.circleMarker([b.estimatedlat, b.estimatedlng], {
+        const color = TIER_COLORS[b.priority_tier] || "#9aa4b2";
+        L.circleMarker([b.estimated_lat, b.estimated_lng], {
           radius: 7, color: "#fff", weight: 2, fillColor: color, fillOpacity: 0.95,
         }).addTo(map);
-        pts.push([b.estimatedlat, b.estimatedlng]);
+        pts.push([b.estimated_lat, b.estimated_lng]);
       });
       map.fitBounds(pts, { padding: [30, 30], maxZoom: 15 });
     }

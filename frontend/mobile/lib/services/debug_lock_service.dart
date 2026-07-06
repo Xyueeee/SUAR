@@ -50,7 +50,7 @@ class DebugLockService {
       final decoded = jsonDecode(body);
       if (decoded is! Map) return;
       final enabled = decoded['enabled'] as bool?;
-      final passwordHash = decoded['passwordhash'] as String?;
+      final passwordHash = decoded['password_hash'] as String?;
       if (enabled == null) return;
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_enabledKey, enabled);

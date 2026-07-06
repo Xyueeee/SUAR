@@ -1,7 +1,7 @@
 /* Unified content editor — ONE editor + renderer for survival / first_aid /
  * prep. A doc is a tree of nodes: a `section` groups children and can show/tally
  * a %; a leaf is a checklist field (check/text/number) or a `guide` (pages of
- * blocks). Stored in `appdoc.structure`; the Flutter app renders this
+ * blocks). Stored in `app_doc.structure`; the Flutter app renders this
  * identically, and the right-pane phone preview is an interactive mirror.
  * Both the "Guides & Tips" and "Prep Plans" nav routes use this same module. */
 window.SUAR = window.SUAR || {};
@@ -18,8 +18,8 @@ SUAR.views._docsEditor = (function () {
     opts = opts || {};
     const NOTICE = !!opts.notice;                       // announcements mode
     const EP = NOTICE ? "/admin/notices" : "/admin/docs";
-    const PK = NOTICE ? "noticeid" : "docid";
-    const STATUS = NOTICE ? "isactive" : "ispublished"; // "active" vs "published"
+    const PK = NOTICE ? "notice_id" : "app_doc_id";
+    const STATUS = NOTICE ? "is_active" : "is_published"; // "active" vs "published"
     const LEVELS = ["info", "advisory", "warning", "critical"];
     const lvlLabel = (v) => v ? v.charAt(0).toUpperCase() + v.slice(1) : "";
     let active = categories[0];
@@ -74,10 +74,10 @@ SUAR.views._docsEditor = (function () {
       const q = search.trim().toLowerCase();
       if (q) rows = rows.filter((d) => (d.title || "").toLowerCase().includes(q));
       rows.sort((a, b) => {
-        if (sortKey === "order") return (a.orderindex || 0) - (b.orderindex || 0) || new Date(a.updatedat || 0) - new Date(b.updatedat || 0);
+        if (sortKey === "order") return (a.order_index || 0) - (b.order_index || 0) || new Date(a.updated_at || 0) - new Date(b.updated_at || 0);
         if (sortKey === "title") return (a.title || "").localeCompare(b.title || "");
         if (sortKey === "status") return (b[STATUS] ? 1 : 0) - (a[STATUS] ? 1 : 0);
-        return new Date(b.updatedat || 0) - new Date(a.updatedat || 0);
+        return new Date(b.updated_at || 0) - new Date(a.updated_at || 0);
       });
       return rows;
     }
@@ -98,7 +98,7 @@ SUAR.views._docsEditor = (function () {
             mid = '<td>' + SUAR.ui.severityBadge(d.severity || "info") + "</td>";
           } else {
             const s = parseStruct(d.structure); const c = countNodes(s.nodes);
-            mid = '<td class="muted">' + c.sections + " sec / " + c.items + " items" + (d.usepercent ? " · %" : "") + "</td>";
+            mid = '<td class="muted">' + c.sections + " sec / " + c.items + " items" + (d.use_percent ? " · %" : "") + "</td>";
           }
           const acts = (NOTICE ? "" : '<button class="icon-btn" data-up title="Move up">↑</button><button class="icon-btn" data-down title="Move down">↓</button>') +
             '<button class="btn btn--ghost btn--sm" data-edit>Edit</button><button class="btn btn--danger btn--sm" data-del>Delete</button>';
@@ -106,7 +106,7 @@ SUAR.views._docsEditor = (function () {
             '<td><input type="checkbox" class="d-sel"' + (selected.has(d[PK]) ? " checked" : "") + "></td>" +
             '<td><b>' + SUAR.ui.esc(d.title) + "</b></td>" +
             mid +
-            '<td class="muted">' + SUAR.ui.fmtRelative(d.updatedat) + "</td>" +
+            '<td class="muted">' + SUAR.ui.fmtRelative(d.updated_at) + "</td>" +
             '<td><label class="switch switch--sm"><input type="checkbox" class="d-pubsw"' + (d[STATUS] ? " checked" : "") + '><span class="switch__track"></span></label></td>' +
             '<td class="cell-actions">' + acts + "</td></tr>";
         }).join("") + "</tbody></table>";
@@ -154,8 +154,8 @@ SUAR.views._docsEditor = (function () {
       } catch (e) { SUAR.ui.toast(e.message, "err"); load(); }
     }
 
-    // Reorder a doc up/down; persists positions to orderindex so the app shows
-    // the same order (it sorts published docs by orderindex).
+    // Reorder a doc up/down; persists positions to order_index so the app shows
+    // the same order (it sorts published docs by order_index).
     async function reorder(d, dir) {
       const rows = visibleRows();
       const i = rows.findIndex((r) => r[PK] === d[PK]);
@@ -163,7 +163,7 @@ SUAR.views._docsEditor = (function () {
       if (i < 0 || j < 0 || j >= rows.length) return;
       const tmp = rows[i]; rows[i] = rows[j]; rows[j] = tmp;
       try {
-        await Promise.all(rows.map((r, idx) => SUAR.api.patch(EP + "/" + encodeURIComponent(r[PK]), { orderindex: idx })));
+        await Promise.all(rows.map((r, idx) => SUAR.api.patch(EP + "/" + encodeURIComponent(r[PK]), { order_index: idx })));
         load();
       } catch (e) { SUAR.ui.toast(e.message, "err"); }
     }
@@ -178,13 +178,13 @@ SUAR.views._docsEditor = (function () {
     function syncPctToggle() {
       const el = document.getElementById("d-pct-cat");
       if (!el) return;
-      catUsePercent = allRows.some((r) => r.usepercent === true);
+      catUsePercent = allRows.some((r) => r.use_percent === true);
       el.checked = catUsePercent;
     }
 
     async function toggleCategoryPercent(val) {
       for (const row of allRows) {
-        try { await SUAR.api.patch(EP + "/" + encodeURIComponent(row[PK]), { usepercent: val }); row.usepercent = val; }
+        try { await SUAR.api.patch(EP + "/" + encodeURIComponent(row[PK]), { use_percent: val }); row.use_percent = val; }
         catch (e) { SUAR.ui.toast(e.message, "err"); return; }
       }
       catUsePercent = val;
@@ -206,10 +206,10 @@ SUAR.views._docsEditor = (function () {
         category: NOTICE ? ((d && d.severity) || category || "info") : category,
         title: (d && d.title) || "",
         subtitle: (d && d.subtitle) || "",
-        ispublished: NOTICE ? (d ? d.isactive !== false : true) : (d ? !!d.ispublished : false),
-        usePercent: d ? !!d.usepercent : catUsePercent, percentText: s.percentText, nodes: s.nodes,
+        is_published: NOTICE ? (d ? d.is_active !== false : true) : (d ? !!d.is_published : false),
+        usePercent: d ? !!d.use_percent : catUsePercent, percentText: s.percentText, nodes: s.nodes,
       };
-      const _snapTitle = state.title, _snapCat = state.category, _snapSub = state.subtitle, _snapPub = state.ispublished;
+      const _snapTitle = state.title, _snapCat = state.category, _snapSub = state.subtitle, _snapPub = state.is_published;
       const _snapNodes = JSON.stringify(state.nodes);
       function isDirty() {
         const catEl = overlay.querySelector("#d-cat");
@@ -235,7 +235,7 @@ SUAR.views._docsEditor = (function () {
           '<input class="input editor__title" id="d-title" placeholder="' + (NOTICE ? "Notice title" : "Document title") + '" value="' + SUAR.ui.esc(state.title) + '">' +
           catControl +
           (NOTICE ? '<input class="input" id="d-sub" placeholder="Subtitle (one line)" value="' + SUAR.ui.esc(state.subtitle) + '" style="flex:1;min-width:200px">' : "") +
-          '<label class="switch switch--inline"><input type="checkbox" id="d-pub"' + (state.ispublished ? " checked" : "") + '><span class="switch__track"></span> ' + (NOTICE ? "Active" : "Published") + "</label>" +
+          '<label class="switch switch--inline"><input type="checkbox" id="d-pub"' + (state.is_published ? " checked" : "") + '><span class="switch__track"></span> ' + (NOTICE ? "Active" : "Published") + "</label>" +
           '<span class="spacer"></span>' +
           '<button class="btn btn--ghost btn--sm" id="d-cancel">Cancel</button>' +
           '<button class="btn btn--primary btn--sm" id="d-save">' + (editing ? "Save changes" : "Create") + "</button>" +
@@ -259,8 +259,8 @@ SUAR.views._docsEditor = (function () {
             severity: (overlay.querySelector("#d-cat") || {}).value || "info",
             title: overlay.querySelector("#d-title").value,
             subtitle: (overlay.querySelector("#d-sub") || {}).value || "",
-            created: d ? d.createdat : "",
-            updated: d ? d.updatedat : "",
+            created: d ? d.created_at : "",
+            updated: d ? d.updated_at : "",
           })
         : null;
       const renderPreview = mountPhone(previewEl, state, () => overlay.querySelector("#d-title").value, pv, noticeMeta);
@@ -501,7 +501,7 @@ SUAR.views._docsEditor = (function () {
             title,
             subtitle: overlay.querySelector("#d-sub").value.trim(),
             severity: level,
-            isactive: overlay.querySelector("#d-pub").checked,
+            is_active: overlay.querySelector("#d-pub").checked,
             structure,
             body: "",
           };
@@ -509,9 +509,9 @@ SUAR.views._docsEditor = (function () {
           payload = {
             category: categories.length > 1 ? level : state.category,
             title, structure,
-            ispublished: overlay.querySelector("#d-pub").checked,
+            is_published: overlay.querySelector("#d-pub").checked,
           };
-          if (!editing) payload.usepercent = catUsePercent;
+          if (!editing) payload.use_percent = catUsePercent;
         }
         btn.disabled = true;
         // Semi-transparent blocker so the user can't edit or cancel mid-save.
@@ -676,7 +676,7 @@ SUAR.views._docsEditor = (function () {
   // Read-only viewer (opened by clicking a list row).
   function openViewer(doc) {
     const struct = parseStruct(doc.structure);
-    struct.usePercent = !!doc.usepercent;
+    struct.usePercent = !!doc.use_percent;
     const pv = { path: [], guide: null, gpage: 0, checks: new Set(), fields: new Map() };
     const overlay = document.createElement("div");
     overlay.className = "editor-overlay";
@@ -706,7 +706,7 @@ SUAR.views._docsEditor = (function () {
     // A notice row carries severity/subtitle/timestamps — feed them so the
     // read-only preview shows the same notice-detail header as the phone.
     const meta = doc.severity != null
-      ? () => ({ severity: doc.severity, title: doc.title, subtitle: doc.subtitle || "", created: doc.createdat, updated: doc.updatedat })
+      ? () => ({ severity: doc.severity, title: doc.title, subtitle: doc.subtitle || "", created: doc.created_at, updated: doc.updated_at })
       : null;
     mountPhone(overlay.querySelector("#v-phone"), struct, () => doc.title, pv, meta)();
   }

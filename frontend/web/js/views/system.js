@@ -13,39 +13,39 @@ SUAR.views.system = (function () {
   // Mirrors TriageConfig.defaults() in triage_config.dart — kept in sync by
   // hand since it's a small, stable, hand-picked calibration, not generated.
   const DEFAULTS = {
-    wmotion: 38, wbattery: 22, wmic: 18, wbarometer: 12, wlight: 6, wproximity: 4,
-    scorecap: 200, criticalthreshold: 75, highthreshold: 50, moderatethreshold: 25,
-    fallenabled: true, fallboost: 25, falllatchseconds: 45,
-    faintenabled: true, faintboost: 55, faintimmobileseconds: 20,
-    lowbatteryenabled: true, lowbatterythreshold: 30, lowbatteryboost: 40,
-    criticalbatteryenabled: true, criticalbatterythreshold: 15, criticalbatteryboost: 80,
-    batterycomfortlevel: 40, pressuremaxdeviationhpa: 5, micmindb: 55, micmaxdb: 90,
-    darkbelowlux: 40, brightabovelux: 25000, batteryfastdrainpermin: 2,
+    w_motion: 38, w_battery: 22, w_mic: 18, w_barometer: 12, w_light: 6, w_proximity: 4,
+    score_cap: 200, critical_threshold: 75, high_threshold: 50, moderate_threshold: 25,
+    fall_enabled: true, fall_boost: 25, fall_latch_seconds: 45,
+    faint_enabled: true, faint_boost: 55, faint_immobile_seconds: 20,
+    low_battery_enabled: true, low_battery_threshold: 30, low_battery_boost: 40,
+    critical_battery_enabled: true, critical_battery_threshold: 15, critical_battery_boost: 80,
+    battery_comfort_level: 40, pressure_max_deviation_hpa: 5, mic_min_db: 55, mic_max_db: 90,
+    dark_below_lux: 40, bright_above_lux: 25000, battery_fast_drain_per_min: 2,
   };
 
   const FIELD_GROUPS = [
     { title: "Sensor weights", fields: [
-      ["wmotion", "Motion (accel + gyro)"], ["wbattery", "Battery"], ["wmic", "Microphone"],
-      ["wbarometer", "Barometer"], ["wlight", "Ambient light"], ["wproximity", "Proximity"],
+      ["w_motion", "Motion (accel + gyro)"], ["w_battery", "Battery"], ["w_mic", "Microphone"],
+      ["w_barometer", "Barometer"], ["w_light", "Ambient light"], ["w_proximity", "Proximity"],
     ] },
     { title: "Score & tiers", fields: [
-      ["scorecap", "Score cap"], ["criticalthreshold", "Critical at"],
-      ["highthreshold", "High at"], ["moderatethreshold", "Moderate at"],
+      ["score_cap", "Score cap"], ["critical_threshold", "Critical at"],
+      ["high_threshold", "High at"], ["moderate_threshold", "Moderate at"],
     ] },
     { title: "Fall / faint rules", fields: [
-      ["fallboost", "Fall: adds"], ["falllatchseconds", "Fall: stays on for (s)"],
-      ["faintboost", "Faint: adds"], ["faintimmobileseconds", "Faint: no movement for (s)"],
+      ["fall_boost", "Fall: adds"], ["fall_latch_seconds", "Fall: stays on for (s)"],
+      ["faint_boost", "Faint: adds"], ["faint_immobile_seconds", "Faint: no movement for (s)"],
     ] },
     { title: "Battery rules", fields: [
-      ["lowbatterythreshold", "Low battery at (%)"], ["lowbatteryboost", "Low battery: adds"],
-      ["criticalbatterythreshold", "Critical battery at (%)"], ["criticalbatteryboost", "Critical battery: adds"],
-      ["batterycomfortlevel", "Battery healthy above (%)"],
+      ["low_battery_threshold", "Low battery at (%)"], ["low_battery_boost", "Low battery: adds"],
+      ["critical_battery_threshold", "Critical battery at (%)"], ["critical_battery_boost", "Critical battery: adds"],
+      ["battery_comfort_level", "Battery healthy above (%)"],
     ] },
     { title: "Normalisation ranges", fields: [
-      ["pressuremaxdeviationhpa", "Pressure: full risk at (hPa)"],
-      ["micmindb", "Mic: quiet floor (dB)"], ["micmaxdb", "Mic: loud ceiling (dB)"],
-      ["darkbelowlux", "Light: dark below (lx)"], ["brightabovelux", "Light: bright above (lx)"],
-      ["batteryfastdrainpermin", "Battery: fast drain at (%/min)"],
+      ["pressure_max_deviation_hpa", "Pressure: full risk at (hPa)"],
+      ["mic_min_db", "Mic: quiet floor (dB)"], ["mic_max_db", "Mic: loud ceiling (dB)"],
+      ["dark_below_lux", "Light: dark below (lx)"], ["bright_above_lux", "Light: bright above (lx)"],
+      ["battery_fast_drain_per_min", "Battery: fast drain at (%/min)"],
     ] },
   ];
 
@@ -53,22 +53,22 @@ SUAR.views.system = (function () {
   FIELD_GROUPS.forEach((g) => g.fields.forEach(([k, l]) => { FIELD_LABELS[k] = l; }));
 
   const TOGGLE_FIELDS = [
-    ["fallenabled", "Fall detection enabled"],
-    ["faintenabled", "Faint detection enabled"],
-    ["lowbatteryenabled", "Low-battery rule enabled"],
-    ["criticalbatteryenabled", "Critical-battery rule enabled"],
+    ["fall_enabled", "Fall detection enabled"],
+    ["faint_enabled", "Faint detection enabled"],
+    ["low_battery_enabled", "Low-battery rule enabled"],
+    ["critical_battery_enabled", "Critical-battery rule enabled"],
   ];
 
   // Same 6-color set already used across the console (dashboard tier chips,
   // stat accents, the connection pill) — not tier-severity colors here, just
   // reusing the existing palette so this reads as part of the same design.
   const SENSOR_METERS = [
-    ["wmotion", "Motion", "var(--critical)"],
-    ["wbattery", "Battery", "var(--high)"],
-    ["wmic", "Microphone", "var(--moderate)"],
-    ["wbarometer", "Barometer", "var(--accent)"],
-    ["wlight", "Ambient light", "var(--accent-soft)"],
-    ["wproximity", "Proximity", "var(--ok)"],
+    ["w_motion", "Motion", "var(--critical)"],
+    ["w_battery", "Battery", "var(--high)"],
+    ["w_mic", "Microphone", "var(--moderate)"],
+    ["w_barometer", "Barometer", "var(--accent)"],
+    ["w_light", "Ambient light", "var(--accent-soft)"],
+    ["w_proximity", "Proximity", "var(--ok)"],
   ];
 
   let cfg = null;
@@ -214,8 +214,8 @@ SUAR.views.system = (function () {
     }
     // Device-side tier classification is first-match-wins (critical, then
     // high, then moderate), so out-of-order thresholds silently kill tiers.
-    if (!(payload.criticalthreshold > payload.highthreshold &&
-          payload.highthreshold > payload.moderatethreshold)) {
+    if (!(payload.critical_threshold > payload.high_threshold &&
+          payload.high_threshold > payload.moderate_threshold)) {
       SUAR.ui.toast("Tier thresholds must descend: Critical > High > Moderate", "err");
       return null;
     }

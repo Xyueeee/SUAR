@@ -269,9 +269,9 @@ class _HelperModeScreenState extends State<HelperModeScreen>
               ),
               const SizedBox(height: 4),
               Text(
-                '${(z['hazardtype'] ?? 'hazard').toString()} · '
+                '${(z['hazard_type'] ?? 'hazard').toString()} · '
                 '${(z['severity'] ?? 'warning').toString()}'
-                '${z['isactive'] == false ? ' · inactive' : ''}',
+                '${z['is_active'] == false ? ' · inactive' : ''}',
                 style: const TextStyle(color: Colors.black54, fontSize: 12),
               ),
               const SizedBox(height: 8),
@@ -320,14 +320,14 @@ class _HelperModeScreenState extends State<HelperModeScreen>
               ),
             ),
             const SizedBox(height: 12),
-            _DetailRow('Hazard type', (z['hazardtype'] ?? '—').toString()),
+            _DetailRow('Hazard type', (z['hazard_type'] ?? '—').toString()),
             _DetailRow('Severity', (z['severity'] ?? '—').toString()),
             _DetailRow('Shape', (z['shape'] ?? '—').toString()),
-            _DetailRow('Active', z['isactive'] == false ? 'No' : 'Yes'),
-            if (z['createdat'] != null)
-              _DetailRow('Created', z['createdat'].toString()),
-            if (z['updatedat'] != null)
-              _DetailRow('Updated', z['updatedat'].toString()),
+            _DetailRow('Active', z['is_active'] == false ? 'No' : 'Yes'),
+            if (z['created_at'] != null)
+              _DetailRow('Created', z['created_at'].toString()),
+            if (z['updated_at'] != null)
+              _DetailRow('Updated', z['updated_at'].toString()),
           ],
         ),
       ),
@@ -1129,38 +1129,49 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                 style: TextStyle(color: Colors.white, fontSize: 15),
               ),
               const SizedBox(height: 16),
-              Align(
-                alignment: Alignment.centerRight,
-                child: InkWell(
-                  onTap: () => setState(() => _mapMinimized = !_mapMinimized),
-                  borderRadius: BorderRadius.circular(8),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 2,
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          // Hidden: filled map ("tap to bring the map back").
-                          // Shown: outlined map ("tap to put it away").
-                          _mapMinimized ? Icons.map : Icons.map_outlined,
-                          color: Colors.white70,
-                          size: 18,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          _mapMinimized ? 'Show map' : 'Hide map',
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ],
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    _controller.deviceId == null
+                        ? 'Helper'
+                        : 'Helper-${deviceNameSuffix(_controller.deviceId!)}',
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 12,
                     ),
                   ),
-                ),
+                  InkWell(
+                    onTap: () => setState(() => _mapMinimized = !_mapMinimized),
+                    borderRadius: BorderRadius.circular(8),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 2,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            // Hidden: filled map ("tap to bring the map back").
+                            // Shown: outlined map ("tap to put it away").
+                            _mapMinimized ? Icons.map : Icons.map_outlined,
+                            color: Colors.white70,
+                            size: 18,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            _mapMinimized ? 'Show map' : 'Hide map',
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 6),
               // Letting the user collapse the map (instead of just hiding the
@@ -1298,7 +1309,7 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                                       PolygonLayer(
                                         polygons: [
                                           for (final z in _geofences)
-                                            if (z['isactive'] != false &&
+                                            if (z['is_active'] != false &&
                                                 z['shape'] == 'polygon')
                                               Polygon(
                                                 points: _geofencePolygonPoints(
@@ -1317,7 +1328,7 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                                       CircleLayer(
                                         circles: [
                                           for (final z in _geofences)
-                                            if (z['isactive'] != false &&
+                                            if (z['is_active'] != false &&
                                                 z['shape'] == 'circle' &&
                                                 _geofenceCircleCenter(z) !=
                                                     null)
@@ -1349,7 +1360,7 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                                       MarkerLayer(
                                         markers: [
                                           for (final z in _geofences)
-                                            if (z['isactive'] != false &&
+                                            if (z['is_active'] != false &&
                                                 _geofenceLabelPoint(z) != null)
                                               Marker(
                                                 point: _geofenceLabelPoint(

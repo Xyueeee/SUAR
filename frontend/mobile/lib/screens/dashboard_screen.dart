@@ -6,7 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../constants.dart';
-import '../content/doc_controller.dart';
+import '../content/doc_models.dart';
 import '../help/help_tour.dart';
 import '../onboarding.dart';
 import '../services/app_lock.dart';
@@ -657,12 +657,18 @@ class _MedField extends StatelessWidget {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(label, style: TextStyle(fontSize: 14, color: cs.onSurface.withValues(alpha: 0.54))),
-              const Spacer(),
-              Text(
-                value,
-                style: TextStyle(fontSize: 15, color: cs.onSurface, fontWeight: FontWeight.w500),
+              const SizedBox(width: 16),
+              // Expanded + wrap so a long value grows the box's height instead
+              // of overflowing the row horizontally.
+              Expanded(
+                child: Text(
+                  value,
+                  textAlign: TextAlign.end,
+                  style: TextStyle(fontSize: 15, color: cs.onSurface, fontWeight: FontWeight.w500),
+                ),
               ),
             ],
           ),
@@ -1227,9 +1233,13 @@ class _PrepSummaryCard extends StatefulWidget {
 
 class _PrepSummaryCardState extends State<_PrepSummaryCard> with WidgetsBindingObserver {
   final _service = DocService();
-  late final DocController _ctrl = DocController(_service.repo);
   bool _loading = true;
   bool _hasPlan = false;
+  double _pct = 0;
+  String _percentTemplate = '';
+  // Flat display rows across all prep docs: a doc-title header or an item line.
+  List<({bool header, String text})> _lines = const [];
+  int _moreCount = 0;
 
   @override
   void initState() {
@@ -1241,7 +1251,6 @@ class _PrepSummaryCardState extends State<_PrepSummaryCard> with WidgetsBindingO
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _ctrl.dispose();
     super.dispose();
   }
 
@@ -1254,12 +1263,50 @@ class _PrepSummaryCardState extends State<_PrepSummaryCard> with WidgetsBindingO
   /// Pull-to-refresh hook for the dashboard.
   Future<void> reload() => _load();
 
+  // Aggregate every prep doc: overall % is the equal-weight average of each
+  // doc's own weighted %, and the "to be improved" list is filled across docs
+  // in order up to a fixed row budget so one short plan doesn't hog the card.
+  // ponytail: equal weight per doc; weight by item count if that ever matters.
   Future<void> _load() async {
     final docs = await _service.loadDocs('prep');
-    if (docs.isNotEmpty) {
-      await _ctrl.load(docs.first);
-      _hasPlan = true;
+    final loaded = <({Doc doc, Set<String> done})>[];
+    for (final d in docs) {
+      final vals = await _service.repo.getProgress(d.docId);
+      loaded.add((doc: d, done: vals.keys.toSet()));
     }
+
+    double fracSum = 0;
+    var fracCount = 0;
+    var totalIncomplete = 0;
+    for (final e in loaded) {
+      final roll = DocRollup(e.done);
+      final fr = roll.overallFraction(e.doc.nodes);
+      if (fr != null) {
+        fracSum += fr;
+        fracCount++;
+      }
+      totalIncomplete += roll.incompleteCount(e.doc.nodes);
+    }
+
+    const budget = 7; // rows shown before the "…and more" line
+    final lines = <({bool header, String text})>[];
+    for (final e in loaded) {
+      final room = budget - lines.length;
+      if (room < 2) break; // no space left for a header + at least one item
+      final leaves = DocRollup(e.done).incompleteLeaves(e.doc.nodes, room - 1);
+      if (leaves.isEmpty) continue; // this plan is complete — skip it
+      lines.add((header: true, text: e.doc.title));
+      for (final l in leaves) {
+        lines.add((header: false, text: l));
+      }
+    }
+
+    final shownItems = lines.where((l) => !l.header).length;
+    _hasPlan = docs.isNotEmpty;
+    _pct = fracCount == 0 ? 0 : fracSum / fracCount * 100;
+    _percentTemplate = loaded.isNotEmpty ? loaded.first.doc.percentText : '';
+    _lines = lines;
+    _moreCount = totalIncomplete - shownItems;
     if (mounted) setState(() => _loading = false);
   }
 
@@ -1269,19 +1316,13 @@ class _PrepSummaryCardState extends State<_PrepSummaryCard> with WidgetsBindingO
         builder: (_) => const DocScreen(category: 'prep', title: 'Disaster Preparation'),
       ),
     );
-    // Fill-state may have changed — refresh progress + the %.
-    if (_hasPlan && _ctrl.doc != null && mounted) {
-      await _ctrl.load(_ctrl.doc!);
-      setState(() {});
-    }
+    // Fill-state may have changed in the tracker — recompute % + rows.
+    if (mounted) await _load();
   }
 
   @override
   Widget build(BuildContext context) {
-    final pct = _hasPlan ? _ctrl.overallPercent : 0.0;
-    final groups = _hasPlan ? _ctrl.incompleteGroups : const <MapEntry<String, List<String>>>[];
-    final shownCount = groups.fold<int>(0, (a, g) => a + g.value.length);
-    final moreCount = _hasPlan ? (_ctrl.incompleteTotal - shownCount) : 0;
+    final pct = _hasPlan ? _pct : 0.0;
     final cs = Theme.of(context).colorScheme;
     return Container(
       width: double.infinity,
@@ -1300,8 +1341,8 @@ class _PrepSummaryCardState extends State<_PrepSummaryCard> with WidgetsBindingO
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  _hasPlan && _ctrl.doc != null
-                      ? _ctrl.doc!.percentText.replaceAll('{p}', pct.round().toString())
+                  _hasPlan && _percentTemplate.isNotEmpty
+                      ? _percentTemplate.replaceAll('{p}', pct.round().toString())
                       : 'Set up your emergency preparedness:',
                   style: TextStyle(color: cs.onSurface, fontSize: 12),
                 ),
@@ -1315,7 +1356,7 @@ class _PrepSummaryCardState extends State<_PrepSummaryCard> with WidgetsBindingO
                     color: const Color(0xFF62E24B),
                   ),
                 ),
-                if (groups.isNotEmpty) ...[
+                if (_lines.isNotEmpty) ...[
                   const SizedBox(height: 12),
                   Text(
                     'To be improved:',
@@ -1323,27 +1364,30 @@ class _PrepSummaryCardState extends State<_PrepSummaryCard> with WidgetsBindingO
                         color: cs.onSurface, fontSize: 12, fontWeight: FontWeight.w500),
                   ),
                   const SizedBox(height: 6),
-                  for (final g in groups)
+                  for (final l in _lines)
                     Padding(
-                      padding: const EdgeInsets.only(bottom: 6),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(g.key,
-                              style: TextStyle(
-                                  color: cs.onSurface, fontSize: 12, fontWeight: FontWeight.bold)),
-                          for (final item in g.value)
-                            Padding(
-                              padding: const EdgeInsets.only(left: 8, top: 1),
-                              child: Text('- $item',
-                                  style: TextStyle(color: cs.onSurface.withValues(alpha: 0.87), fontSize: 12, height: 1.4)),
-                            ),
-                        ],
+                      padding: EdgeInsets.only(
+                          left: l.header ? 0 : 8,
+                          top: l.header ? 4 : 1,
+                          bottom: l.header ? 2 : 0),
+                      child: Text(
+                        l.header ? l.text : '- ${l.text}',
+                        style: TextStyle(
+                          color: l.header
+                              ? cs.onSurface
+                              : cs.onSurface.withValues(alpha: 0.87),
+                          fontSize: 12,
+                          height: 1.4,
+                          fontWeight: l.header ? FontWeight.bold : FontWeight.normal,
+                        ),
                       ),
                     ),
-                  if (moreCount > 0)
-                    Text('…and $moreCount more',
-                        style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54), fontSize: 12)),
+                  if (_moreCount > 0)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text('…and $_moreCount more',
+                          style: TextStyle(color: cs.onSurface.withValues(alpha: 0.54), fontSize: 12)),
+                    ),
                 ],
                 const SizedBox(height: 12),
                 Center(
@@ -1394,7 +1438,7 @@ class _NoticesBellState extends State<_NoticesBell> {
   Future<void> reload() async {
     final notices = await _service.loadNotices();
     final seen = await _service.seenNoticeIds();
-    final unseen = notices.any((n) => !seen.contains((n['noticeid'] ?? '').toString()));
+    final unseen = notices.any((n) => !seen.contains((n['notice_id'] ?? '').toString()));
     if (mounted) setState(() => _unseen = unseen);
   }
 
@@ -1544,7 +1588,7 @@ class _DangerZoneCard extends StatelessWidget {
         });
         final sev = (z['severity'] ?? 'warning').toString();
         final name = (z['name'] ?? 'Hazard zone').toString();
-        final hazard = (z['hazardtype'] ?? 'hazard').toString();
+        final hazard = (z['hazard_type'] ?? 'hazard').toString();
         return _AlertCard(
           color: _alertColor(sev),
           icon: Icons.warning_amber_rounded,
@@ -1586,7 +1630,7 @@ class _NoticesBannerState extends State<_NoticesBanner> {
     final banners = all
         .where((n) =>
             const ['advisory', 'warning', 'critical'].contains((n['severity'] ?? '').toString()) &&
-            !seen.contains((n['noticeid'] ?? '').toString()))
+            !seen.contains((n['notice_id'] ?? '').toString()))
         .toList();
     if (mounted) setState(() => _banners = banners);
 
@@ -1594,7 +1638,7 @@ class _NoticesBannerState extends State<_NoticesBanner> {
     final notified = await _service.notifiedNoticeIds();
     final toNotify = all.where((n) =>
         const ['warning', 'critical'].contains((n['severity'] ?? '').toString()) &&
-        !notified.contains((n['noticeid'] ?? '').toString())).toList();
+        !notified.contains((n['notice_id'] ?? '').toString())).toList();
     for (final n in toNotify) {
       await NotificationService.instance.show(
         (n['title'] ?? '').toString(),
@@ -1603,19 +1647,19 @@ class _NoticesBannerState extends State<_NoticesBanner> {
       );
     }
     if (toNotify.isNotEmpty) {
-      await _service.markNoticesNotified(toNotify.map((n) => (n['noticeid'] ?? '').toString()));
+      await _service.markNoticesNotified(toNotify.map((n) => (n['notice_id'] ?? '').toString()));
     }
 
     // Critical auto-opens its full page once (newest unseen critical).
     Map<String, dynamic>? crit;
     for (final n in all) {
-      if ((n['severity'] ?? '') == 'critical' && !seen.contains((n['noticeid'] ?? '').toString())) {
+      if ((n['severity'] ?? '') == 'critical' && !seen.contains((n['notice_id'] ?? '').toString())) {
         crit = n;
         break;
       }
     }
     if (crit != null && mounted) {
-      await _service.markNoticesSeen([(crit['noticeid'] ?? '').toString()]);
+      await _service.markNoticesSeen([(crit['notice_id'] ?? '').toString()]);
       if (mounted) {
         Navigator.of(context).push(MaterialPageRoute(builder: (_) => NoticeDetailScreen(notice: crit!)));
       }
@@ -1643,7 +1687,7 @@ class _NoticesBannerState extends State<_NoticesBanner> {
       title: (n['title'] ?? '').toString(),
       subtitle: subtitle,
       onTap: () async {
-        await _service.markNoticesSeen([(n['noticeid'] ?? '').toString()]);
+        await _service.markNoticesSeen([(n['notice_id'] ?? '').toString()]);
         if (context.mounted) {
           await Navigator.of(context).push(MaterialPageRoute(builder: (_) => NoticeDetailScreen(notice: n)));
         }

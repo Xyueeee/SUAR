@@ -73,7 +73,7 @@ void main() {
       ],
     });
     final doc = Doc.fromRow(
-        docid: 'd1', category: 'first_aid', title: 'T', version: 1, updatedAt: '', structure: structure);
+        docId: 'd1', category: 'first_aid', title: 'T', version: 1, updatedAt: '', structure: structure);
     expect(doc.usePercent, true);
     expect(doc.percentText.replaceAll('{p}', '42'), 'You are 42% ready');
     final guide = doc.nodes[0].children[0];

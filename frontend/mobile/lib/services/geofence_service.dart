@@ -225,7 +225,7 @@ class GeofenceService {
     final toNotify = all
         .where((n) =>
             const ['warning', 'critical'].contains((n['severity'] ?? '').toString()) &&
-            !notified.contains((n['noticeid'] ?? '').toString()))
+            !notified.contains((n['notice_id'] ?? '').toString()))
         .toList();
     if (toNotify.isEmpty) return;
     for (final n in toNotify) {
@@ -235,14 +235,14 @@ class GeofenceService {
         high: true,
       );
     }
-    await service.markNoticesNotified(toNotify.map((n) => (n['noticeid'] ?? '').toString()));
+    await service.markNoticesNotified(toNotify.map((n) => (n['notice_id'] ?? '').toString()));
   }
 
   Future<void> _evaluate(List<Map<String, dynamic>> zones, Position pos) async {
     final currentlyInside = <Map<String, dynamic>>[];
     for (final z in zones) {
-      if (z['isactive'] == false) continue;
-      final id = (z['geofenceid'] ?? '').toString();
+      if (z['is_active'] == false) continue;
+      final id = (z['geofence_id'] ?? '').toString();
       // One zone with malformed geometry (bad admin edit / raw-JSON typo)
       // must not abort the whole sweep — the geometry casts in _isInside
       // throw on non-numeric values, and this also runs unawaited from the
@@ -258,7 +258,7 @@ class GeofenceService {
         if (!_inside.contains(id)) {
           _inside.add(id);
           final name = (z['name'] ?? 'Danger zone').toString();
-          final hazard = (z['hazardtype'] ?? 'hazard').toString();
+          final hazard = (z['hazard_type'] ?? 'hazard').toString();
           final sev = (z['severity'] ?? 'warning').toString();
           // info = quiet; warning/danger = heads-up alert.
           await NotificationService.instance.show(

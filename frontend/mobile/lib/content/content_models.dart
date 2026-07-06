@@ -1,6 +1,6 @@
 /// Inline runs + blocks for admin-authored content (block-JSON), fully offline.
 /// Consumed by block_renderer.dart and doc_models.dart — the doc tree that
-/// carries these blocks lives in doc_models.dart (the unified appdoc model).
+/// carries these blocks lives in doc_models.dart (the unified app_doc model).
 ///
 /// Pure parsing (no Flutter) so it stays unit-testable. Colour parsing returns
 /// an int ARGB to keep this file widget-free; the renderer turns it into a

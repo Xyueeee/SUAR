@@ -82,7 +82,7 @@ class DistressBundleModel {
   /// sqflite DistressBundle table has no SensorReading column in Increment 1.
   Map<String, dynamic> toMap() {
     return {
-      'BundleId': bundleId,
+      'DistressBundleId': bundleId,
       'DeviceId': deviceId,
       'PriorityScore': priorityScore,
       'PriorityTier': priorityTier,
@@ -100,7 +100,7 @@ class DistressBundleModel {
 
   factory DistressBundleModel.fromMap(Map<String, dynamic> map) {
     return DistressBundleModel(
-      bundleId: map['BundleId'] as String,
+      bundleId: map['DistressBundleId'] as String,
       deviceId: map['DeviceId'] as String,
       priorityScore: (map['PriorityScore'] as num).toDouble(),
       priorityTier: map['PriorityTier'] as String,

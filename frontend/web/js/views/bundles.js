@@ -60,7 +60,7 @@ SUAR.views.bundles = (function () {
     const el = document.getElementById("b-selall");
     if (!el) return;
     const rows = visibleRows();
-    el.checked = rows.length > 0 && rows.every((b) => selected.has(b.bundleid));
+    el.checked = rows.length > 0 && rows.every((b) => selected.has(b.distress_bundle_id));
   }
 
   async function bulkDelete() {
@@ -77,12 +77,12 @@ SUAR.views.bundles = (function () {
   function visibleRows() {
     let rows = allRows.slice();
     const q = search.trim().toLowerCase();
-    if (q) rows = rows.filter((b) => (b.deviceid || "").toLowerCase().includes(q) || (b.bundleid || "").toLowerCase().includes(q));
+    if (q) rows = rows.filter((b) => (b.device_id || "").toLowerCase().includes(q) || (b.distress_bundle_id || "").toLowerCase().includes(q));
     rows.sort((a, b) => {
-      if (sortKey === "updated") return new Date(b.updatedat || 0) - new Date(a.updatedat || 0);
-      if (sortKey === "score") return (b.priorityscore ?? -1) - (a.priorityscore ?? -1);
-      if (sortKey === "tier") return TIERS.indexOf(a.prioritytier) - TIERS.indexOf(b.prioritytier);
-      return new Date(b.createdat || 0) - new Date(a.createdat || 0);
+      if (sortKey === "updated") return new Date(b.updated_at || 0) - new Date(a.updated_at || 0);
+      if (sortKey === "score") return (b.priority_score ?? -1) - (a.priority_score ?? -1);
+      if (sortKey === "tier") return TIERS.indexOf(a.priority_tier) - TIERS.indexOf(b.priority_tier);
+      return new Date(b.created_at || 0) - new Date(a.created_at || 0);
     });
     return rows;
   }
@@ -95,15 +95,15 @@ SUAR.views.bundles = (function () {
     wrap.innerHTML =
       '<table class="data"><thead><tr><th style="width:34px"><input type="checkbox" id="b-selall"></th><th>Tier</th><th>Score</th><th>Device</th><th>Hops</th><th>Location</th><th>Activity</th><th>Created</th></tr></thead><tbody>' +
       rows.map((b) =>
-        '<tr class="clickable row-accent" data-id="' + SUAR.ui.esc(b.bundleid) + '" style="border-left-color:' + tierColor(b.prioritytier) + '">' +
-        '<td><input type="checkbox" class="b-sel"' + (selected.has(b.bundleid) ? " checked" : "") + "></td>" +
-        "<td>" + SUAR.ui.tierBadge(b.prioritytier) + "</td>" +
-        '<td class="mono-cell">' + (b.priorityscore != null ? b.priorityscore.toFixed(3) : "—") + "</td>" +
-        '<td class="id-trunc">' + SUAR.ui.truncId(b.deviceid, 12) + "</td>" +
-        '<td class="mono-cell">' + (b.hopcount ?? 0) + "</td>" +
-        '<td class="mono-cell">' + SUAR.ui.fmtCoord(b.estimatedlat, b.estimatedlng) + "</td>" +
-        "<td>" + activityChip(b.updatedat) + "</td>" +
-        '<td class="muted">' + SUAR.ui.fmtRelative(b.createdat) + "</td>" +
+        '<tr class="clickable row-accent" data-id="' + SUAR.ui.esc(b.distress_bundle_id) + '" style="border-left-color:' + tierColor(b.priority_tier) + '">' +
+        '<td><input type="checkbox" class="b-sel"' + (selected.has(b.distress_bundle_id) ? " checked" : "") + "></td>" +
+        "<td>" + SUAR.ui.tierBadge(b.priority_tier) + "</td>" +
+        '<td class="mono-cell">' + (b.priority_score != null ? b.priority_score.toFixed(3) : "—") + "</td>" +
+        '<td class="id-trunc">' + SUAR.ui.truncId(b.device_id, 12) + "</td>" +
+        '<td class="mono-cell">' + (b.hop_count ?? 0) + "</td>" +
+        '<td class="mono-cell">' + SUAR.ui.fmtCoord(b.estimated_lat, b.estimated_lng) + "</td>" +
+        "<td>" + activityChip(b.updated_at) + "</td>" +
+        '<td class="muted">' + SUAR.ui.fmtRelative(b.created_at) + "</td>" +
         "</tr>"
       ).join("") + "</tbody></table>";
 
@@ -119,7 +119,7 @@ SUAR.views.bundles = (function () {
     const selall = wrap.querySelector("#b-selall");
     selall.addEventListener("click", (e) => e.stopPropagation());
     selall.addEventListener("change", (e) => {
-      rows.forEach((b) => e.target.checked ? selected.add(b.bundleid) : selected.delete(b.bundleid));
+      rows.forEach((b) => e.target.checked ? selected.add(b.distress_bundle_id) : selected.delete(b.distress_bundle_id));
       updateBulkBar(); renderTable();
     });
     syncSelAll();
@@ -156,26 +156,26 @@ SUAR.views.bundles = (function () {
     const relays = d.relayLogs || [];
 
     const kv = [
-      former("Bundle ID", '<span class="mono">' + SUAR.ui.esc(b.bundleid) + "</span>"),
-      former("Device", '<span class="mono">' + SUAR.ui.esc(b.deviceid) + "</span>"),
-      former("Tier", SUAR.ui.tierBadge(b.prioritytier)),
-      former("Score", '<span class="mono">' + (b.priorityscore != null ? b.priorityscore.toFixed(4) : "—") + "</span>"),
-      former("Location", '<span class="mono">' + SUAR.ui.fmtCoord(b.estimatedlat, b.estimatedlng) + "</span>"),
-      former("Accuracy", b.accuracymeters != null ? '<span class="mono">±' + Math.round(b.accuracymeters) + " m</span>" : "—"),
-      former("Hops", '<span class="mono">' + (b.hopcount ?? 0) + "</span>"),
-      former("Activity", activityChip(b.updatedat)),
-      former("Created", SUAR.ui.fmtDate(b.createdat)),
+      former("Bundle ID", '<span class="mono">' + SUAR.ui.esc(b.distress_bundle_id) + "</span>"),
+      former("Device", '<span class="mono">' + SUAR.ui.esc(b.device_id) + "</span>"),
+      former("Tier", SUAR.ui.tierBadge(b.priority_tier)),
+      former("Score", '<span class="mono">' + (b.priority_score != null ? b.priority_score.toFixed(4) : "—") + "</span>"),
+      former("Location", '<span class="mono">' + SUAR.ui.fmtCoord(b.estimated_lat, b.estimated_lng) + "</span>"),
+      former("Accuracy", b.accuracy_meters != null ? '<span class="mono">±' + Math.round(b.accuracy_meters) + " m</span>" : "—"),
+      former("Hops", '<span class="mono">' + (b.hop_count ?? 0) + "</span>"),
+      former("Activity", activityChip(b.updated_at)),
+      former("Created", SUAR.ui.fmtDate(b.created_at)),
     ].join("");
 
     const readingsRows = readings
       .map((r) =>
-        `<tr><td>${SUAR.ui.esc(r.sensortype)}</td><td class="mono-cell">${fmtNum(r.rawvalue)}</td>` +
-        `<td class="mono-cell">${fmtNum(r.normalisedvalue)}</td><td class="muted">${SUAR.ui.fmtDate(r.recordedat)}</td></tr>`)
+        `<tr><td>${SUAR.ui.esc(r.sensor_type)}</td><td class="mono-cell">${fmtNum(r.raw_value)}</td>` +
+        `<td class="mono-cell">${fmtNum(r.normalised_value)}</td><td class="muted">${SUAR.ui.fmtDate(r.recorded_at)}</td></tr>`)
       .join("");
     const relaysRows = relays
       .map((r) =>
-        `<tr><td class="mono-cell">${r.hopsequence ?? "-"}</td><td class="id-trunc">${SUAR.ui.truncId(r.deviceid, 10)}</td>` +
-        `<td class="id-trunc">${SUAR.ui.truncId(r.nexthopdeviceid, 10)}</td><td>${SUAR.ui.esc(r.protocol)}</td></tr>`)
+        `<tr><td class="mono-cell">${r.hop_sequence ?? "-"}</td><td class="id-trunc">${SUAR.ui.truncId(r.device_id, 10)}</td>` +
+        `<td class="id-trunc">${SUAR.ui.truncId(r.next_hop_device_id, 10)}</td><td>${SUAR.ui.esc(r.protocol)}</td></tr>`)
       .join("");
 
     const noneRow = `<p class="muted" style="font-size:13px">None.</p>`;
@@ -191,13 +191,13 @@ SUAR.views.bundles = (function () {
         : noneRow);
 
     const dr = SUAR.ui.drawer({
-      title: "Bundle " + SUAR.ui.truncId(b.bundleid, 8),
+      title: "Bundle " + SUAR.ui.truncId(b.distress_bundle_id, 8),
       body,
       actions: [
         { label: "Delete", className: "btn--danger", onClick: async (close) => {
             const ok = await SUAR.ui.confirm({ title: "Delete bundle?", message: "This also removes its sensor readings, relay logs and sync record. Cannot be undone.", confirmLabel: "Delete", danger: true });
             if (!ok) return;
-            await SUAR.api.del("/admin/bundles/" + encodeURIComponent(b.bundleid));
+            await SUAR.api.del("/admin/bundles/" + encodeURIComponent(b.distress_bundle_id));
             SUAR.ui.toast("Bundle deleted", "ok"); close(); load(); SUAR.app.refreshCounts();
           } },
         { label: "Edit", className: "btn--primary", onClick: (close) => { close(); openEdit(b); } },
@@ -212,12 +212,12 @@ SUAR.views.bundles = (function () {
       body:
         '<div class="form-row">' +
           '<div class="field"><label>Tier</label><select class="select" id="e-tier">' +
-            TIERS.map((t) => '<option' + (b.prioritytier === t ? " selected" : "") + ">" + t + "</option>").join("") + "</select></div>" +
-          '<div class="field"><label>Score (0–1)</label><input class="input" id="e-score" type="number" step="0.001" min="0" max="1" value="' + (b.priorityscore ?? "") + '"></div>' +
+            TIERS.map((t) => '<option' + (b.priority_tier === t ? " selected" : "") + ">" + t + "</option>").join("") + "</select></div>" +
+          '<div class="field"><label>Score (0–1)</label><input class="input" id="e-score" type="number" step="0.001" min="0" max="1" value="' + (b.priority_score ?? "") + '"></div>' +
         "</div>" +
         '<div class="form-row">' +
-          '<div class="field"><label>Latitude</label><input class="input" id="e-lat" type="number" step="any" min="-90" max="90" value="' + (b.estimatedlat ?? "") + '"></div>' +
-          '<div class="field"><label>Longitude</label><input class="input" id="e-lng" type="number" step="any" min="-180" max="180" value="' + (b.estimatedlng ?? "") + '"></div>' +
+          '<div class="field"><label>Latitude</label><input class="input" id="e-lat" type="number" step="any" min="-90" max="90" value="' + (b.estimated_lat ?? "") + '"></div>' +
+          '<div class="field"><label>Longitude</label><input class="input" id="e-lng" type="number" step="any" min="-180" max="180" value="' + (b.estimated_lng ?? "") + '"></div>' +
         "</div>",
       actions: [
         { label: "Cancel", className: "btn--ghost", onClick: (c) => c() },
@@ -229,14 +229,14 @@ SUAR.views.bundles = (function () {
             if (lat !== null && Math.abs(lat) > 90) { SUAR.ui.toast("Latitude must be between -90 and 90", "err"); return; }
             if (lng !== null && Math.abs(lng) > 180) { SUAR.ui.toast("Longitude must be between -180 and 180", "err"); return; }
             const patch = {
-              prioritytier: document.getElementById("e-tier").value,
-              priorityscore: score,
-              estimatedlat: lat,
-              estimatedlng: lng,
+              priority_tier: document.getElementById("e-tier").value,
+              priority_score: score,
+              estimated_lat: lat,
+              estimated_lng: lng,
             };
             btn.disabled = true;
             try {
-              await SUAR.api.patch("/admin/bundles/" + encodeURIComponent(b.bundleid), patch);
+              await SUAR.api.patch("/admin/bundles/" + encodeURIComponent(b.distress_bundle_id), patch);
               SUAR.ui.toast("Bundle updated", "ok"); close(); load();
             } catch (e) { SUAR.ui.toast(e.message, "err"); btn.disabled = false; }
           } },

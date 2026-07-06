@@ -46,7 +46,7 @@ SUAR.views.devices = (function () {
     const el = document.getElementById("dv-selall");
     if (!el) return;
     const rows = visibleRows();
-    el.checked = rows.length > 0 && rows.every((d) => selected.has(d.deviceid));
+    el.checked = rows.length > 0 && rows.every((d) => selected.has(d.device_id));
   }
 
   async function bulkDelete() {
@@ -64,13 +64,13 @@ SUAR.views.devices = (function () {
     let rows = allRows.slice();
     const q = search.trim().toLowerCase();
     if (q) rows = rows.filter((d) =>
-      (d.deviceid || "").toLowerCase().includes(q) ||
-      (d.hardwareid || "").toLowerCase().includes(q));
+      (d.device_id || "").toLowerCase().includes(q) ||
+      (d.hardware_id || "").toLowerCase().includes(q));
     rows.sort((a, b) => {
       if (sortKey === "bundles") return (b.bundleCount ?? 0) - (a.bundleCount ?? 0);
-      if (sortKey === "mode") return (a.applicationmode || "").localeCompare(b.applicationmode || "");
-      if (sortKey === "version") return (a.applicationversion || "").localeCompare(b.applicationversion || "");
-      return new Date(b.lastseenat || 0) - new Date(a.lastseenat || 0);
+      if (sortKey === "mode") return (a.application_mode || "").localeCompare(b.application_mode || "");
+      if (sortKey === "version") return (a.application_version || "").localeCompare(b.application_version || "");
+      return new Date(b.last_seen_at || 0) - new Date(a.last_seen_at || 0);
     });
     return rows;
   }
@@ -86,20 +86,20 @@ SUAR.views.devices = (function () {
 
   // deviceId is a random UUID that resets on reinstall/data-clear, so the
   // same physical phone can show up as several rows over its lifetime.
-  // hardwareid (Settings.Secure.ANDROID_ID) survives that — count how many
+  // hardware_id (Settings.Secure.ANDROID_ID) survives that — count how many
   // rows share one, so a repeat can be flagged instead of silently miscounted
   // as separate devices.
   function hardwareIdCounts(rows) {
     const counts = {};
-    rows.forEach((d) => { if (d.hardwareid) counts[d.hardwareid] = (counts[d.hardwareid] || 0) + 1; });
+    rows.forEach((d) => { if (d.hardware_id) counts[d.hardware_id] = (counts[d.hardware_id] || 0) + 1; });
     return counts;
   }
 
   function hardwareIdCell(d, counts) {
-    if (!d.hardwareid) return '<span class="muted">—</span>';
-    const dup = counts[d.hardwareid] > 1;
+    if (!d.hardware_id) return '<span class="muted">—</span>';
+    const dup = counts[d.hardware_id] > 1;
     return '<span class="mono-cell"' + (dup ? ' title="Same physical phone as another device ID"' : '') + '>' +
-      SUAR.ui.truncId(d.hardwareid, 12) + (dup ? ' <span class="chip chip--on">dup</span>' : '') + '</span>';
+      SUAR.ui.truncId(d.hardware_id, 12) + (dup ? ' <span class="chip chip--on">dup</span>' : '') + '</span>';
   }
 
   function renderTable() {
@@ -112,14 +112,14 @@ SUAR.views.devices = (function () {
       '<table class="data"><thead><tr><th style="width:34px"><input type="checkbox" id="dv-selall"></th><th>Device ID</th><th>Hardware ID</th><th>Mode</th><th>Version</th><th>Bundles</th><th>Registered</th><th>Last seen</th><th></th></tr></thead><tbody>' +
       rows.map((d) =>
         '<tr class="clickable">' +
-        '<td><input type="checkbox" class="dv-sel"' + (selected.has(d.deviceid) ? " checked" : "") + "></td>" +
-        '<td class="mono-cell">' + SUAR.ui.esc(d.deviceid) + "</td>" +
+        '<td><input type="checkbox" class="dv-sel"' + (selected.has(d.device_id) ? " checked" : "") + "></td>" +
+        '<td class="mono-cell">' + SUAR.ui.esc(d.device_id) + "</td>" +
         "<td>" + hardwareIdCell(d, hwCounts) + "</td>" +
-        "<td>" + modeChip(d.applicationmode) + "</td>" +
-        '<td class="mono-cell">' + SUAR.ui.esc(d.applicationversion || "—") + "</td>" +
+        "<td>" + modeChip(d.application_mode) + "</td>" +
+        '<td class="mono-cell">' + SUAR.ui.esc(d.application_version || "—") + "</td>" +
         '<td class="mono-cell">' + (d.bundleCount ?? 0) + "</td>" +
-        '<td class="muted">' + SUAR.ui.fmtRelative(d.registeredat) + "</td>" +
-        "<td>" + lastSeenCell(d.lastseenat) + "</td>" +
+        '<td class="muted">' + SUAR.ui.fmtRelative(d.registered_at) + "</td>" +
+        "<td>" + lastSeenCell(d.last_seen_at) + "</td>" +
         '<td class="cell-actions">' +
           '<button class="btn btn--danger btn--sm" data-del>Delete</button>' +
         "</td></tr>"
@@ -129,12 +129,12 @@ SUAR.views.devices = (function () {
       const tr = wrap.querySelectorAll("tbody tr")[i];
       tr.addEventListener("click", () => openDetail(d));
       tr.querySelector(".dv-sel").addEventListener("click", (e) => e.stopPropagation());
-      tr.querySelector(".dv-sel").addEventListener("change", (e) => { e.target.checked ? selected.add(d.deviceid) : selected.delete(d.deviceid); updateBulkBar(); syncSelAll(); });
+      tr.querySelector(".dv-sel").addEventListener("change", (e) => { e.target.checked ? selected.add(d.device_id) : selected.delete(d.device_id); updateBulkBar(); syncSelAll(); });
       tr.querySelector("[data-del]").addEventListener("click", (e) => { e.stopPropagation(); del(d); });
     });
     const selall = wrap.querySelector("#dv-selall");
     selall.addEventListener("change", (e) => {
-      rows.forEach((d) => e.target.checked ? selected.add(d.deviceid) : selected.delete(d.deviceid));
+      rows.forEach((d) => e.target.checked ? selected.add(d.device_id) : selected.delete(d.device_id));
       updateBulkBar(); renderTable();
     });
     syncSelAll();
@@ -147,7 +147,7 @@ SUAR.views.devices = (function () {
     _detailOpen = true;
     let bundles;
     try {
-      bundles = await SUAR.api.get("/admin/bundles?device=" + encodeURIComponent(d.deviceid));
+      bundles = await SUAR.api.get("/admin/bundles?device=" + encodeURIComponent(d.device_id));
     } catch (e) {
       SUAR.ui.toast(e.message, "err");
       return;
@@ -159,21 +159,21 @@ SUAR.views.devices = (function () {
       .map((t) => SUAR.ui.tierBadge(t) + " &times;" + tc[t]).join("  ");
 
     const kv = [
-      former("Device ID", '<span class="mono">' + SUAR.ui.esc(d.deviceid) + "</span>"),
+      former("Device ID", '<span class="mono">' + SUAR.ui.esc(d.device_id) + "</span>"),
       former("Hardware ID", hardwareIdCell(d, hardwareIdCounts(allRows))),
-      former("Mode", modeChip(d.applicationmode)),
-      former("App version", '<span class="mono">' + SUAR.ui.esc(d.applicationversion || "—") + "</span>"),
-      former("Registered", SUAR.ui.fmtDate(d.registeredat)),
-      former("Last seen", SUAR.ui.fmtDate(d.lastseenat)),
+      former("Mode", modeChip(d.application_mode)),
+      former("App version", '<span class="mono">' + SUAR.ui.esc(d.application_version || "—") + "</span>"),
+      former("Registered", SUAR.ui.fmtDate(d.registered_at)),
+      former("Last seen", SUAR.ui.fmtDate(d.last_seen_at)),
       former("Bundles", (d.bundleCount ?? 0) + (tierBadges ? " &nbsp; " + tierBadges : "")),
     ].join("");
 
     const bundleRows = bundles.map((b) =>
       "<tr>" +
-      "<td>" + SUAR.ui.tierBadge(b.prioritytier) + "</td>" +
-      '<td class="mono-cell">' + (b.priorityscore != null ? b.priorityscore.toFixed(3) : "—") + "</td>" +
-      '<td class="id-trunc">' + SUAR.ui.truncId(b.bundleid, 14) + "</td>" +
-      '<td class="muted">' + SUAR.ui.fmtRelative(b.createdat) + "</td>" +
+      "<td>" + SUAR.ui.tierBadge(b.priority_tier) + "</td>" +
+      '<td class="mono-cell">' + (b.priority_score != null ? b.priority_score.toFixed(3) : "—") + "</td>" +
+      '<td class="id-trunc">' + SUAR.ui.truncId(b.distress_bundle_id, 14) + "</td>" +
+      '<td class="muted">' + SUAR.ui.fmtRelative(b.created_at) + "</td>" +
       "</tr>"
     ).join("");
 
@@ -185,13 +185,13 @@ SUAR.views.devices = (function () {
         : '<p class="muted" style="font-size:13px">No bundles yet.</p>');
 
     SUAR.ui.drawer({
-      title: "Device " + SUAR.ui.truncId(d.deviceid, 14),
+      title: "Device " + SUAR.ui.truncId(d.device_id, 14),
       body,
       actions: [
         { label: "Delete", className: "btn--danger", onClick: async (close) => {
             const ok = await SUAR.ui.confirm({ title: "Delete device?", message: "Also deletes " + (d.bundleCount ?? 0) + " bundle(s). Cannot be undone.", confirmLabel: "Delete", danger: true });
             if (!ok) return;
-            try { await SUAR.api.del("/admin/devices/" + encodeURIComponent(d.deviceid)); SUAR.ui.toast("Deleted", "ok"); close(); load(); SUAR.app.refreshCounts(); }
+            try { await SUAR.api.del("/admin/devices/" + encodeURIComponent(d.device_id)); SUAR.ui.toast("Deleted", "ok"); close(); load(); SUAR.app.refreshCounts(); }
             catch (e) { SUAR.ui.toast(e.message, "err"); }
           } },
       ],
@@ -207,12 +207,12 @@ SUAR.views.devices = (function () {
   async function del(d) {
     const ok = await SUAR.ui.confirm({
       title: "Delete device?",
-      message: "Deleting " + SUAR.ui.truncId(d.deviceid, 12) + " also deletes its " + (d.bundleCount ?? 0) + " bundle(s) and their data. Cannot be undone.",
+      message: "Deleting " + SUAR.ui.truncId(d.device_id, 12) + " also deletes its " + (d.bundleCount ?? 0) + " bundle(s) and their data. Cannot be undone.",
       confirmLabel: "Delete", danger: true,
     });
     if (!ok) return;
     try {
-      await SUAR.api.del("/admin/devices/" + encodeURIComponent(d.deviceid));
+      await SUAR.api.del("/admin/devices/" + encodeURIComponent(d.device_id));
       SUAR.ui.toast("Device deleted", "ok"); load(); SUAR.app.refreshCounts();
     } catch (e) { SUAR.ui.toast(e.message, "err"); }
   }

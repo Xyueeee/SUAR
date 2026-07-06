@@ -68,19 +68,19 @@ SUAR.views.map = (function () {
     victimsLayer.clearLayers();
     let rows = [];
     try { rows = await SUAR.api.get("/admin/bundles?limit=500"); } catch (_) { return; }
-    rows.filter((b) => b.estimatedlat != null && b.estimatedlng != null).forEach((b) => {
-      const color = TIER_COLORS[b.prioritytier] || "#9aa4b2";
-      if (b.accuracymeters) {
-        L.circle([b.estimatedlat, b.estimatedlng], {
-          radius: b.accuracymeters, color, weight: 1, fillColor: color, fillOpacity: 0.08,
+    rows.filter((b) => b.estimated_lat != null && b.estimated_lng != null).forEach((b) => {
+      const color = TIER_COLORS[b.priority_tier] || "#9aa4b2";
+      if (b.accuracy_meters) {
+        L.circle([b.estimated_lat, b.estimated_lng], {
+          radius: b.accuracy_meters, color, weight: 1, fillColor: color, fillOpacity: 0.08,
         }).addTo(victimsLayer);
       }
-      L.circleMarker([b.estimatedlat, b.estimatedlng], {
+      L.circleMarker([b.estimated_lat, b.estimated_lng], {
         radius: 7, color: "#fff", weight: 2, fillColor: color, fillOpacity: 0.95,
       }).bindPopup(
-        "<b>" + SUAR.ui.esc(b.prioritytier) + "</b> · score " + (b.priorityscore != null ? b.priorityscore.toFixed(2) : "—") +
-        "<br><span class='mono' style='font-size:11px'>" + SUAR.ui.esc(b.deviceid) + "</span>" +
-        "<br>" + SUAR.ui.fmtCoord(b.estimatedlat, b.estimatedlng)
+        "<b>" + SUAR.ui.esc(b.priority_tier) + "</b> · score " + (b.priority_score != null ? b.priority_score.toFixed(2) : "—") +
+        "<br><span class='mono' style='font-size:11px'>" + SUAR.ui.esc(b.device_id) + "</span>" +
+        "<br>" + SUAR.ui.fmtCoord(b.estimated_lat, b.estimated_lng)
       ).addTo(victimsLayer);
     });
   }
@@ -95,7 +95,7 @@ SUAR.views.map = (function () {
 
   function drawZone(z) {
     const color = SEV_COLORS[z.severity] || SEV_COLORS.warning;
-    const opts = { color, weight: 2, fillColor: color, fillOpacity: z.isactive ? 0.18 : 0.05, dashArray: z.isactive ? null : "5,5" };
+    const opts = { color, weight: 2, fillColor: color, fillOpacity: z.is_active ? 0.18 : 0.05, dashArray: z.is_active ? null : "5,5" };
     let layer = null;
     try {
       if (z.shape === "circle" && z.geometry && z.geometry.center) {
@@ -106,8 +106,8 @@ SUAR.views.map = (function () {
     } catch (_) { return; }
     if (!layer) return;
     layer.bindPopup(
-      "<b>" + SUAR.ui.esc(z.name) + "</b><br>" + SUAR.ui.esc(z.hazardtype) + " · " + SUAR.ui.esc(z.severity) +
-      (z.isactive ? "" : " · inactive")
+      "<b>" + SUAR.ui.esc(z.name) + "</b><br>" + SUAR.ui.esc(z.hazard_type) + " · " + SUAR.ui.esc(z.severity) +
+      (z.is_active ? "" : " · inactive")
     );
     layer.addTo(zonesLayer);
   }
@@ -120,11 +120,11 @@ SUAR.views.map = (function () {
       zones.map((z) =>
         "<tr>" +
         "<td><b>" + SUAR.ui.esc(z.name) + "</b></td>" +
-        '<td><span class="chip">' + SUAR.ui.esc(z.hazardtype) + "</span></td>" +
+        '<td><span class="chip">' + SUAR.ui.esc(z.hazard_type) + "</span></td>" +
         "<td>" + SUAR.ui.severityBadge(z.severity) + "</td>" +
         '<td class="muted">' + SUAR.ui.esc(z.shape) + "</td>" +
-        "<td>" + (z.isactive ? '<span class="chip chip--on">active</span>' : '<span class="chip chip--off">inactive</span>') + "</td>" +
-        '<td class="muted">' + SUAR.ui.fmtRelative(z.createdat) + "</td>" +
+        "<td>" + (z.is_active ? '<span class="chip chip--on">active</span>' : '<span class="chip chip--off">inactive</span>') + "</td>" +
+        '<td class="muted">' + SUAR.ui.fmtRelative(z.created_at) + "</td>" +
         '<td class="cell-actions"><button class="btn btn--ghost btn--sm" data-edit>Edit</button><button class="btn btn--danger btn--sm" data-del>Delete</button></td>' +
         "</tr>"
       ).join("") + "</tbody></table>";
@@ -151,18 +151,18 @@ SUAR.views.map = (function () {
   }
 
   function zoneFormBody(z) {
-    const isCustom = z.hazardtype && !HAZARDS.includes(z.hazardtype);
-    const sel = isCustom ? "other" : (z.hazardtype || HAZARDS[0]);
+    const isCustom = z.hazard_type && !HAZARDS.includes(z.hazard_type);
+    const sel = isCustom ? "other" : (z.hazard_type || HAZARDS[0]);
     return (
       '<div class="field"><label>Name</label><input class="input" id="z-name" placeholder="e.g. Riverside flood area" value="' + SUAR.ui.esc(z.name || "") + '"></div>' +
       '<div class="form-row">' +
         '<div class="field"><label>Hazard type</label><select class="select" id="z-hazard">' +
           HAZARDS.map((h) => '<option' + (sel === h ? " selected" : "") + ">" + h + "</option>").join("") + "</select>" +
-          '<input class="input" id="z-hazard-custom" placeholder="Custom hazard type" style="margin-top:6px;' + (sel === "other" ? "" : "display:none") + '" value="' + SUAR.ui.esc(isCustom ? z.hazardtype : "") + '"></div>' +
+          '<input class="input" id="z-hazard-custom" placeholder="Custom hazard type" style="margin-top:6px;' + (sel === "other" ? "" : "display:none") + '" value="' + SUAR.ui.esc(isCustom ? z.hazard_type : "") + '"></div>' +
         '<div class="field"><label>Severity</label><select class="select" id="z-sev">' +
           ["info", "warning", "danger"].map((sv) => '<option' + (z.severity === sv ? " selected" : "") + ">" + sv + "</option>").join("") + "</select></div>" +
       "</div>" +
-      '<label class="switch"><input type="checkbox" id="z-active"' + (z.isactive === false ? "" : " checked") + '><span class="switch__track"></span> Active</label>'
+      '<label class="switch"><input type="checkbox" id="z-active"' + (z.is_active === false ? "" : " checked") + '><span class="switch__track"></span> Active</label>'
     );
   }
 
@@ -176,16 +176,16 @@ SUAR.views.map = (function () {
   }
 
   function readZoneForm() {
-    let hazardtype = document.getElementById("z-hazard").value;
-    if (hazardtype === "other") {
+    let hazard_type = document.getElementById("z-hazard").value;
+    if (hazard_type === "other") {
       const custom = document.getElementById("z-hazard-custom").value.trim();
-      if (custom) hazardtype = custom;
+      if (custom) hazard_type = custom;
     }
     return {
       name: document.getElementById("z-name").value.trim(),
-      hazardtype: hazardtype,
+      hazard_type: hazard_type,
       severity: document.getElementById("z-sev").value,
-      isactive: document.getElementById("z-active").checked,
+      is_active: document.getElementById("z-active").checked,
     };
   }
 
@@ -193,7 +193,7 @@ SUAR.views.map = (function () {
   function openZoneForm(drawn, onCancel) {
     const m = SUAR.ui.modal({
       title: "New hazard zone",
-      body: zoneFormBody({ severity: "danger", isactive: true }),
+      body: zoneFormBody({ severity: "danger", is_active: true }),
       actions: [
         { label: "Discard", className: "btn--ghost", onClick: (c) => { onCancel(); c(); } },
         { label: "Save zone", className: "btn--primary", onClick: async (close, btn) => {
@@ -229,7 +229,7 @@ SUAR.views.map = (function () {
             if (!f.name) { SUAR.ui.toast("Name required", "err"); return; }
             btn.disabled = true;
             try {
-              await SUAR.api.patch("/admin/geofences/" + encodeURIComponent(z.geofenceid), f);
+              await SUAR.api.patch("/admin/geofences/" + encodeURIComponent(z.geofence_id), f);
               SUAR.ui.toast("Zone updated", "ok"); close(); loadZones();
             } catch (e) { SUAR.ui.toast(e.message, "err"); btn.disabled = false; }
           } },
@@ -242,7 +242,7 @@ SUAR.views.map = (function () {
     const ok = await SUAR.ui.confirm({ title: "Delete zone?", message: 'Remove "' + z.name + '"?', confirmLabel: "Delete", danger: true });
     if (!ok) return;
     try {
-      await SUAR.api.del("/admin/geofences/" + encodeURIComponent(z.geofenceid));
+      await SUAR.api.del("/admin/geofences/" + encodeURIComponent(z.geofence_id));
       SUAR.ui.toast("Zone deleted", "ok"); loadZones(); SUAR.app.refreshCounts();
     } catch (e) { SUAR.ui.toast(e.message, "err"); }
   }

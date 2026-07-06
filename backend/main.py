@@ -158,7 +158,7 @@ def ensure_device(
     touch_lastseen: bool = True,
     hardware_id: str | None = None,
 ) -> None:
-    existing = supabase.table("device").select("deviceid").eq("deviceid", device_id).execute()
+    existing = supabase.table("device").select("device_id").eq("device_id", device_id).execute()
     if existing.data:
         if touch_lastseen:
             # touch_lastseen=True only on the device's OWN /sync call (not the
@@ -169,21 +169,21 @@ def ensure_device(
             # registered with, so a device that started as Victim looked
             # permanently "victim" in the admin console even once it moved to
             # Helper mode and was syncing fine.
-            update = {"lastseenat": _now_iso(), "applicationmode": mode}
+            update = {"last_seen_at": _now_iso(), "application_mode": mode}
             if version is not None:
-                update["applicationversion"] = version
+                update["application_version"] = version
             if hardware_id is not None:
-                update["hardwareid"] = hardware_id
-            supabase.table("device").update(update).eq("deviceid", device_id).execute()
+                update["hardware_id"] = hardware_id
+            supabase.table("device").update(update).eq("device_id", device_id).execute()
     else:
         supabase.table("device").insert(
             {
-                "deviceid": device_id,
-                "applicationmode": mode,
-                "applicationversion": version,
-                "hardwareid": hardware_id,
-                "registeredat": _now_iso(),
-                "lastseenat": _now_iso(),
+                "device_id": device_id,
+                "application_mode": mode,
+                "application_version": version,
+                "hardware_id": hardware_id,
+                "registered_at": _now_iso(),
+                "last_seen_at": _now_iso(),
             }
         ).execute()
 
@@ -198,9 +198,9 @@ def get_bundles():
     """Legacy public listing kept for backward compat (RLS already exposes
     these read-only). The admin web uses /admin/bundles instead."""
     result = (
-        supabase.table("distressbundle")
+        supabase.table("distress_bundle")
         .select("*")
-        .order("createdat", desc=True)
+        .order("created_at", desc=True)
         .limit(100)
         .execute()
     )
@@ -227,9 +227,9 @@ def sync(payload: SyncRequest):
         try:
             lat, lng = _sane_coords(bundle.estimatedLat, bundle.estimatedLng)
             existing = (
-                supabase.table("distressbundle")
-                .select("bundleid,updatedat")
-                .eq("bundleid", bundle.bundleId)
+                supabase.table("distress_bundle")
+                .select("distress_bundle_id,updated_at")
+                .eq("distress_bundle_id", bundle.bundleId)
                 .execute()
             )
             if existing.data:
@@ -241,95 +241,95 @@ def sync(payload: SyncRequest):
                 # Timestamp-based conflict resolution (FR 5.x): the same bundle
                 # can arrive via multiple relay paths — a stale copy (older
                 # updatedAt than what's stored) must not clobber fresher data.
-                if not _is_newer(bundle.updatedAt, existing.data[0].get("updatedat")):
-                    supabase.table("syncrecord").upsert(
-                        {"bundleid": bundle.bundleId, "syncedat": _now_iso(), "serverstatus": "duplicate"},
-                        on_conflict="bundleid",
+                if not _is_newer(bundle.updatedAt, existing.data[0].get("updated_at")):
+                    supabase.table("sync_record").upsert(
+                        {"distress_bundle_id": bundle.bundleId, "synced_at": _now_iso(), "server_status": "duplicate"},
+                        on_conflict="distress_bundle_id",
                     ).execute()
                     duplicates += 1
                     continue
-                supabase.table("distressbundle").update(
+                supabase.table("distress_bundle").update(
                     {
-                        "priorityscore": bundle.priorityScore,
-                        "prioritytier": bundle.priorityTier,
-                        "estimatedlat": lat,
-                        "estimatedlng": lng,
-                        "accuracymeters": bundle.accuracyMeters,
-                        "estimatedaltitude": bundle.estimatedAltitude,
-                        "hopcount": bundle.hopCount,
-                        "updatedat": bundle.updatedAt.isoformat(),
+                        "priority_score": bundle.priorityScore,
+                        "priority_tier": bundle.priorityTier,
+                        "estimated_lat": lat,
+                        "estimated_lng": lng,
+                        "accuracy_meters": bundle.accuracyMeters,
+                        "estimated_altitude": bundle.estimatedAltitude,
+                        "hop_count": bundle.hopCount,
+                        "updated_at": bundle.updatedAt.isoformat(),
                     }
-                ).eq("bundleid", bundle.bundleId).execute()
-                supabase.table("syncrecord").upsert(
-                    {"bundleid": bundle.bundleId, "syncedat": _now_iso(), "serverstatus": "duplicate"},
-                    on_conflict="bundleid",
+                ).eq("distress_bundle_id", bundle.bundleId).execute()
+                supabase.table("sync_record").upsert(
+                    {"distress_bundle_id": bundle.bundleId, "synced_at": _now_iso(), "server_status": "duplicate"},
+                    on_conflict="distress_bundle_id",
                 ).execute()
                 duplicates += 1
                 continue
 
             ensure_device(bundle.deviceId, "victim", version="unknown", touch_lastseen=False)
 
-            supabase.table("distressbundle").insert(
+            supabase.table("distress_bundle").insert(
                 {
-                    "bundleid": bundle.bundleId,
-                    "deviceid": bundle.deviceId,
-                    "priorityscore": bundle.priorityScore,
-                    "prioritytier": bundle.priorityTier,
-                    "estimatedlat": lat,
-                    "estimatedlng": lng,
-                    "accuracymeters": bundle.accuracyMeters,
-                    "estimatedaltitude": bundle.estimatedAltitude,
-                    "hopcount": bundle.hopCount,
-                    "issynced": True,
-                    "createdat": bundle.createdAt.isoformat(),
-                    "updatedat": bundle.updatedAt.isoformat(),
+                    "distress_bundle_id": bundle.bundleId,
+                    "device_id": bundle.deviceId,
+                    "priority_score": bundle.priorityScore,
+                    "priority_tier": bundle.priorityTier,
+                    "estimated_lat": lat,
+                    "estimated_lng": lng,
+                    "accuracy_meters": bundle.accuracyMeters,
+                    "estimated_altitude": bundle.estimatedAltitude,
+                    "hop_count": bundle.hopCount,
+                    "is_synced": True,
+                    "created_at": bundle.createdAt.isoformat(),
+                    "updated_at": bundle.updatedAt.isoformat(),
                 }
             ).execute()
 
             if bundle.sensorReadings:
-                supabase.table("sensorreading").insert(
+                supabase.table("sensor_reading").insert(
                     [
                         {
-                            "bundleid": bundle.bundleId,
-                            "sensortype": r.sensorType,
-                            "rawvalue": r.rawValue,
-                            "normalisedvalue": r.normalisedValue,
-                            "recordedat": r.recordedAt.isoformat(),
+                            "distress_bundle_id": bundle.bundleId,
+                            "sensor_type": r.sensorType,
+                            "raw_value": r.rawValue,
+                            "normalised_value": r.normalisedValue,
+                            "recorded_at": r.recordedAt.isoformat(),
                         }
                         for r in bundle.sensorReadings
                     ]
                 ).execute()
 
             if bundle.relayLogs:
-                supabase.table("relaylog").insert(
+                supabase.table("relay_log").insert(
                     [
                         {
-                            "bundleid": bundle.bundleId,
-                            "deviceid": r.deviceId,
-                            "nexthopdeviceid": r.nextHopDeviceId,
-                            "hopsequence": r.hopSequence,
+                            "distress_bundle_id": bundle.bundleId,
+                            "device_id": r.deviceId,
+                            "next_hop_device_id": r.nextHopDeviceId,
+                            "hop_sequence": r.hopSequence,
                             "protocol": r.protocol,
-                            "relayedat": r.relayedAt.isoformat(),
+                            "relayed_at": r.relayedAt.isoformat(),
                         }
                         for r in bundle.relayLogs
                     ]
                 ).execute()
 
-            supabase.table("syncrecord").upsert(
-                {"bundleid": bundle.bundleId, "syncedat": _now_iso(), "serverstatus": "success"},
-                on_conflict="bundleid",
+            supabase.table("sync_record").upsert(
+                {"distress_bundle_id": bundle.bundleId, "synced_at": _now_iso(), "server_status": "success"},
+                on_conflict="distress_bundle_id",
             ).execute()
             inserted += 1
 
         except Exception as exc:
             logger.error(f"Bundle {bundle.bundleId} failed: {exc}")
             try:
-                supabase.table("syncrecord").upsert(
-                    {"bundleid": bundle.bundleId, "syncedat": _now_iso(), "serverstatus": "error"},
-                    on_conflict="bundleid",
+                supabase.table("sync_record").upsert(
+                    {"distress_bundle_id": bundle.bundleId, "synced_at": _now_iso(), "server_status": "error"},
+                    on_conflict="distress_bundle_id",
                 ).execute()
             except Exception as inner_exc:
-                logger.error(f"Could not record error syncrecord for {bundle.bundleId}: {inner_exc}")
+                logger.error(f"Could not record error sync_record for {bundle.bundleId}: {inner_exc}")
             errors += 1
 
     return SyncResponse(
@@ -345,11 +345,11 @@ def sync(payload: SyncRequest):
 # --------------------------------------------------------------------------- #
 @app.get("/notices")
 def public_notices():
-    rows = supabase.table("notice").select("*").eq("isactive", True).order("createdat", desc=True).execute().data
+    rows = supabase.table("notice").select("*").eq("is_active", True).order("created_at", desc=True).execute().data
     now = datetime.now(timezone.utc)
 
     def _unexpired(r):
-        exp = r.get("expiresat")
+        exp = r.get("expires_at")
         if not exp:
             return True
         try:
@@ -368,7 +368,7 @@ def public_notices():
 
 @app.get("/geofences")
 def public_geofences():
-    return supabase.table("geofence").select("*").eq("isactive", True).order("createdat", desc=True).execute().data
+    return supabase.table("geofence").select("*").eq("is_active", True).order("created_at", desc=True).execute().data
 
 
 @app.get("/appdocs")
@@ -378,10 +378,10 @@ def public_docs(category: str | None = Query(None)):
     NOTE: must NOT be '/docs' — FastAPI reserves '/docs' for its Swagger UI,
     which would shadow this route and return HTML instead of JSON.
     """
-    q = supabase.table("appdoc").select("*").eq("ispublished", True)
+    q = supabase.table("app_doc").select("*").eq("is_published", True)
     if category:
         q = q.eq("category", category)
-    return q.order("orderindex").order("updatedat", desc=True).execute().data
+    return q.order("order_index").order("updated_at", desc=True).execute().data
 
 
 @app.get("/triage-config")
@@ -390,7 +390,7 @@ def public_triage_config():
     local Triage Logic edits (Settings > Debugging Options) keeps those —
     this is only the fallback default for devices that never touched it, or
     the value their "Reset" button reverts to."""
-    rows = supabase.table("triageconfig").select("*").eq("id", 1).execute().data
+    rows = supabase.table("triage_config").select("*").eq("triage_config_id", 1).execute().data
     return rows[0] if rows else None
 
 
@@ -401,8 +401,8 @@ def public_debug_lock():
     out of dev tools" fence, not a real auth boundary, so shipping the hash
     to the device (so the gate still works offline) is an acceptable
     tradeoff here."""
-    rows = supabase.table("debuglock").select("enabled,passwordhash").eq("id", 1).execute().data
-    return rows[0] if rows else {"enabled": True, "passwordhash": None}
+    rows = supabase.table("debug_lock").select("enabled,password_hash").eq("debug_lock_id", 1).execute().data
+    return rows[0] if rows else {"enabled": True, "password_hash": None}
 
 
 # --------------------------------------------------------------------------- #
@@ -419,15 +419,15 @@ def admin_me(user=Depends(require_admin)):
 @app.get("/admin/stats")
 def admin_stats(_=Depends(require_admin)):
     bundles = (
-        supabase.table("distressbundle")
-        .select("bundleid,deviceid,prioritytier,priorityscore,createdat,updatedat,estimatedlat,estimatedlng")
-        .order("createdat", desc=True)
+        supabase.table("distress_bundle")
+        .select("distress_bundle_id,device_id,priority_tier,priority_score,created_at,updated_at,estimated_lat,estimated_lng")
+        .order("created_at", desc=True)
         .execute()
         .data
     )
 
-    tiers = Counter(b["prioritytier"] for b in bundles)
-    # issynced is hard-coded True on every insert (see /sync) and never
+    tiers = Counter(b["priority_tier"] for b in bundles)
+    # is_synced is hard-coded True on every insert (see /sync) and never
     # flipped back — a row can't exist here unless it already synced, so
     # counting "unsynced" rows always returns 0. "Active" (touched in the
     # last 24h, the same idle window the bundle-reuse logic uses) is the
@@ -437,11 +437,11 @@ def admin_stats(_=Depends(require_admin)):
     active = 0
     for b in bundles:
         try:
-            if (now - datetime.fromisoformat(b["updatedat"])) < timedelta(hours=24):
+            if (now - datetime.fromisoformat(b["updated_at"])) < timedelta(hours=24):
                 active += 1
         except (ValueError, TypeError, KeyError):
             continue
-    located = sum(1 for b in bundles if b.get("estimatedlat") is not None and b.get("estimatedlng") is not None)
+    located = sum(1 for b in bundles if b.get("estimated_lat") is not None and b.get("estimated_lng") is not None)
 
     # Activity over the last 14 days, keyed by UTC date.
     today = datetime.now(timezone.utc).date()
@@ -449,13 +449,13 @@ def admin_stats(_=Depends(require_admin)):
     per_day = defaultdict(int)
     for b in bundles:
         try:
-            d = datetime.fromisoformat(b["createdat"]).date().isoformat()
+            d = datetime.fromisoformat(b["created_at"]).date().isoformat()
             per_day[d] += 1
         except (ValueError, TypeError, KeyError):
             continue
     activity = [{"date": d, "count": per_day.get(d, 0)} for d in days]
 
-    per_device = Counter(b["deviceid"] for b in bundles)
+    per_device = Counter(b["device_id"] for b in bundles)
 
     def _count(table, col=None, val=None):
         q = supabase.table(table).select("*", count="exact", head=True)
@@ -476,16 +476,16 @@ def admin_stats(_=Depends(require_admin)):
         "inactiveCount": len(bundles) - active,
         "locatedCount": located,
         "deviceCount": _count("device"),
-        "sensorReadingCount": _count("sensorreading"),
-        "geofenceCount": _count("geofence", "isactive", True),
-        "noticeCount": _count("notice", "isactive", True),
-        # Guides/tips + prep plans both moved to the unified "appdoc" table
-        # (one tree-structure editor for survival/first_aid/prep) — the old
-        # appcontent/prepplan tables are dead, always-empty leftovers from
-        # before that unification, so counting them always read 0.
-        "contentCount": _count("appdoc", "category", "survival")
-        + _count("appdoc", "category", "first_aid"),
-        "prepPlanCount": _count("appdoc", "category", "prep"),
+        "sensorReadingCount": _count("sensor_reading"),
+        "geofenceCount": _count("geofence", "is_active", True),
+        "noticeCount": _count("notice", "is_active", True),
+        # Guides/tips + prep plans both moved to the unified "app_doc" table
+        # (one tree-structure editor for survival/first_aid/prep); the legacy
+        # appcontent/prepplan tables were dropped in the snake_case rename
+        # migration once verified dead.
+        "contentCount": _count("app_doc", "category", "survival")
+        + _count("app_doc", "category", "first_aid"),
+        "prepPlanCount": _count("app_doc", "category", "prep"),
         "activityByDay": activity,
         "topDevices": [{"deviceId": d, "count": c} for d, c in per_device.most_common(5)],
         "recentBundles": bundles[:8],
@@ -503,24 +503,24 @@ def admin_list_bundles(
     device: str | None = Query(None),
     limit: int = Query(200, ge=1, le=1000),
 ):
-    q = supabase.table("distressbundle").select("*")
+    q = supabase.table("distress_bundle").select("*")
     if tier:
-        q = q.eq("prioritytier", tier)
+        q = q.eq("priority_tier", tier)
     if synced is not None:
-        q = q.eq("issynced", synced)
+        q = q.eq("is_synced", synced)
     if device:
-        q = q.eq("deviceid", device)
-    return q.order("createdat", desc=True).limit(limit).execute().data
+        q = q.eq("device_id", device)
+    return q.order("created_at", desc=True).limit(limit).execute().data
 
 
 @app.get("/admin/bundles/{bundle_id}")
 def admin_bundle_detail(bundle_id: str, _=Depends(require_admin)):
-    bundle = supabase.table("distressbundle").select("*").eq("bundleid", bundle_id).execute().data
+    bundle = supabase.table("distress_bundle").select("*").eq("distress_bundle_id", bundle_id).execute().data
     if not bundle:
         raise HTTPException(status_code=404, detail="Bundle not found")
-    readings = supabase.table("sensorreading").select("*").eq("bundleid", bundle_id).order("recordedat").execute().data
-    relays = supabase.table("relaylog").select("*").eq("bundleid", bundle_id).order("hopsequence").execute().data
-    sync = supabase.table("syncrecord").select("*").eq("bundleid", bundle_id).execute().data
+    readings = supabase.table("sensor_reading").select("*").eq("distress_bundle_id", bundle_id).order("recorded_at").execute().data
+    relays = supabase.table("relay_log").select("*").eq("distress_bundle_id", bundle_id).order("hop_sequence").execute().data
+    sync = supabase.table("sync_record").select("*").eq("distress_bundle_id", bundle_id).execute().data
     return {
         "bundle": bundle[0],
         "sensorReadings": readings,
@@ -529,7 +529,7 @@ def admin_bundle_detail(bundle_id: str, _=Depends(require_admin)):
     }
 
 
-_BUNDLE_EDITABLE = {"prioritytier", "priorityscore", "estimatedlat", "estimatedlng", "issynced"}
+_BUNDLE_EDITABLE = {"priority_tier", "priority_score", "estimated_lat", "estimated_lng", "is_synced"}
 
 
 @app.patch("/admin/bundles/{bundle_id}")
@@ -537,13 +537,13 @@ def admin_update_bundle(bundle_id: str, payload: dict = Body(...), _=Depends(req
     row = {k: v for k, v in payload.items() if k in _BUNDLE_EDITABLE}
     if not row:
         raise HTTPException(status_code=400, detail="No editable fields supplied")
-    for key, lo, hi in (("estimatedlat", -90, 90), ("estimatedlng", -180, 180)):
+    for key, lo, hi in (("estimated_lat", -90, 90), ("estimated_lng", -180, 180)):
         v = row.get(key)
         if v is not None and (not isinstance(v, (int, float)) or not lo <= v <= hi):
             raise HTTPException(status_code=400, detail=f"{key} must be between {lo} and {hi}")
-    row["updatedat"] = _now_iso()
+    row["updated_at"] = _now_iso()
     try:
-        res = supabase.table("distressbundle").update(row).eq("bundleid", bundle_id).execute()
+        res = supabase.table("distress_bundle").update(row).eq("distress_bundle_id", bundle_id).execute()
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if not res.data:
@@ -554,7 +554,7 @@ def admin_update_bundle(bundle_id: str, payload: dict = Body(...), _=Depends(req
 @app.delete("/admin/bundles/{bundle_id}")
 def admin_delete_bundle(bundle_id: str, _=Depends(require_admin)):
     # Sensor readings / relay logs / sync record cascade on FK delete.
-    supabase.table("distressbundle").delete().eq("bundleid", bundle_id).execute()
+    supabase.table("distress_bundle").delete().eq("distress_bundle_id", bundle_id).execute()
     return {"deleted": bundle_id}
 
 
@@ -563,13 +563,13 @@ def admin_delete_bundle(bundle_id: str, _=Depends(require_admin)):
 # --------------------------------------------------------------------------- #
 @app.get("/admin/devices")
 def admin_list_devices(_=Depends(require_admin)):
-    devices = supabase.table("device").select("*").order("lastseenat", desc=True).execute().data
-    bundles = supabase.table("distressbundle").select("deviceid,prioritytier").execute().data
+    devices = supabase.table("device").select("*").order("last_seen_at", desc=True).execute().data
+    bundles = supabase.table("distress_bundle").select("device_id,priority_tier").execute().data
     tier_by_device: dict[str, Counter] = defaultdict(Counter)
     for b in bundles:
-        tier_by_device[b["deviceid"]][b["prioritytier"]] += 1
+        tier_by_device[b["device_id"]][b["priority_tier"]] += 1
     for d in devices:
-        tc = tier_by_device.get(d["deviceid"], Counter())
+        tc = tier_by_device.get(d["device_id"], Counter())
         d["bundleCount"] = sum(tc.values())
         d["tierCounts"] = {t: tc[t] for t in ["Critical", "High", "Moderate", "Low"] if tc[t]}
     return devices
@@ -577,11 +577,11 @@ def admin_list_devices(_=Depends(require_admin)):
 
 @app.patch("/admin/devices/{device_id}")
 def admin_update_device(device_id: str, payload: dict = Body(...), _=Depends(require_admin)):
-    row = {k: v for k, v in payload.items() if k in {"applicationmode", "applicationversion"}}
+    row = {k: v for k, v in payload.items() if k in {"application_mode", "application_version"}}
     if not row:
         raise HTTPException(status_code=400, detail="No editable fields supplied")
     try:
-        res = supabase.table("device").update(row).eq("deviceid", device_id).execute()
+        res = supabase.table("device").update(row).eq("device_id", device_id).execute()
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if not res.data:
@@ -591,8 +591,8 @@ def admin_update_device(device_id: str, payload: dict = Body(...), _=Depends(req
 
 @app.delete("/admin/devices/{device_id}")
 def admin_delete_device(device_id: str, _=Depends(require_admin)):
-    # WARNING: distressbundle.deviceid cascades — deletes that device's bundles.
-    supabase.table("device").delete().eq("deviceid", device_id).execute()
+    # WARNING: distress_bundle.device_id cascades — deletes that device's bundles.
+    supabase.table("device").delete().eq("device_id", device_id).execute()
     return {"deleted": device_id}
 
 
@@ -634,24 +634,24 @@ async def admin_upload(file: UploadFile = File(...), _=Depends(require_admin)):
 # --------------------------------------------------------------------------- #
 # Admin: generic CRUD for the four simple admin-authored tables                #
 # --------------------------------------------------------------------------- #
-# geofence / notice / appdoc share an identical CRUD shape, so one registrar
+# geofence / notice / app_doc share an identical CRUD shape, so one registrar
 # covers them instead of ~100 lines of copy-paste. (The legacy appcontent /
-# prepplan resources were removed once the unified appdoc table replaced them;
-# the empty cloud tables still exist but nothing reads or writes them.)
+# prepplan resources were removed once the unified app_doc table replaced
+# them; the dead cloud tables themselves were dropped in the rename migration.)
 _ADMIN_RESOURCES = {
     "geofences": dict(
-        table="geofence", pk="geofenceid",
-        fields=["name", "hazardtype", "shape", "geometry", "severity", "isactive"],
+        table="geofence", pk="geofence_id",
+        fields=["name", "hazard_type", "shape", "geometry", "severity", "is_active"],
         versioned=False,
     ),
     "notices": dict(
-        table="notice", pk="noticeid",
-        fields=["title", "subtitle", "body", "severity", "isactive", "expiresat", "structure"],
+        table="notice", pk="notice_id",
+        fields=["title", "subtitle", "body", "severity", "is_active", "expires_at", "structure"],
         versioned=False,
     ),
     "docs": dict(
-        table="appdoc", pk="docid",
-        fields=["category", "title", "structure", "ispublished", "orderindex", "usepercent"],
+        table="app_doc", pk="app_doc_id",
+        fields=["category", "title", "structure", "is_published", "order_index", "use_percent"],
         versioned=True,
     ),
 }
@@ -661,7 +661,7 @@ def _register_crud(name: str, cfg: dict) -> None:
     table, pk, fields, versioned = cfg["table"], cfg["pk"], cfg["fields"], cfg["versioned"]
 
     def list_all(_=Depends(require_admin)):
-        return supabase.table(table).select("*").order("createdat", desc=True).execute().data
+        return supabase.table(table).select("*").order("created_at", desc=True).execute().data
 
     def create(payload: dict = Body(...), _=Depends(require_admin)):
         row = {k: payload[k] for k in fields if k in payload}
@@ -677,7 +677,7 @@ def _register_crud(name: str, cfg: dict) -> None:
         row = {k: payload[k] for k in fields if k in payload}
         if not row:
             raise HTTPException(status_code=400, detail="No editable fields supplied")
-        row["updatedat"] = _now_iso()
+        row["updated_at"] = _now_iso()
         if versioned:
             cur = supabase.table(table).select("version").eq(pk, item_id).execute().data
             row["version"] = (cur[0]["version"] + 1) if cur else 1
@@ -714,23 +714,23 @@ for _name, _cfg in _ADMIN_RESOURCES.items():
 # Admin: triage config (single-row settings, not list-based CRUD)              #
 # --------------------------------------------------------------------------- #
 _TRIAGE_FIELDS = {
-    "wmotion", "wbattery", "wmic", "wbarometer", "wlight", "wproximity",
-    "scorecap", "criticalthreshold", "highthreshold", "moderatethreshold",
-    "fallenabled", "fallboost", "falllatchseconds",
-    "faintenabled", "faintboost", "faintimmobileseconds",
-    "lowbatteryenabled", "lowbatterythreshold", "lowbatteryboost",
-    "criticalbatteryenabled", "criticalbatterythreshold", "criticalbatteryboost",
-    "batterycomfortlevel", "pressuremaxdeviationhpa", "micmindb", "micmaxdb",
-    "darkbelowlux", "brightabovelux", "batteryfastdrainpermin",
+    "w_motion", "w_battery", "w_mic", "w_barometer", "w_light", "w_proximity",
+    "score_cap", "critical_threshold", "high_threshold", "moderate_threshold",
+    "fall_enabled", "fall_boost", "fall_latch_seconds",
+    "faint_enabled", "faint_boost", "faint_immobile_seconds",
+    "low_battery_enabled", "low_battery_threshold", "low_battery_boost",
+    "critical_battery_enabled", "critical_battery_threshold", "critical_battery_boost",
+    "battery_comfort_level", "pressure_max_deviation_hpa", "mic_min_db", "mic_max_db",
+    "dark_below_lux", "bright_above_lux", "battery_fast_drain_per_min",
 }
 _TRIAGE_BOOL_FIELDS = {
-    "fallenabled", "faintenabled", "lowbatteryenabled", "criticalbatteryenabled",
+    "fall_enabled", "faint_enabled", "low_battery_enabled", "critical_battery_enabled",
 }
 
 
 @app.get("/admin/triage-config")
 def admin_get_triage_config(_=Depends(require_admin)):
-    rows = supabase.table("triageconfig").select("*").eq("id", 1).execute().data
+    rows = supabase.table("triage_config").select("*").eq("triage_config_id", 1).execute().data
     return rows[0] if rows else None
 
 
@@ -756,11 +756,11 @@ def admin_update_triage_config(payload: dict = Body(...), _=Depends(require_admi
     # triage_calculator.dart), so the thresholds must strictly descend or
     # whole tiers become unreachable. Merge with the stored row so a partial
     # PATCH can't sneak an inversion past the check.
-    _tiers = ("criticalthreshold", "highthreshold", "moderatethreshold")
+    _tiers = ("critical_threshold", "high_threshold", "moderate_threshold")
     if any(k in row for k in _tiers):
         merged = {k: row[k] for k in _tiers if k in row}
         if len(merged) < 3:  # partial PATCH — fill gaps from the stored row
-            stored = supabase.table("triageconfig").select(",".join(_tiers)).eq("id", 1).execute().data
+            stored = supabase.table("triage_config").select(",".join(_tiers)).eq("triage_config_id", 1).execute().data
             merged = {**(stored[0] if stored else {}), **merged}
         c, h, m = (merged.get(k) for k in _tiers)
         if None not in (c, h, m) and not (c > h > m):
@@ -769,9 +769,9 @@ def admin_update_triage_config(payload: dict = Body(...), _=Depends(require_admi
                 detail="Tier thresholds must descend: Critical > High > Moderate "
                        f"(got {c} / {h} / {m})",
             )
-    row["updatedat"] = _now_iso()
+    row["updated_at"] = _now_iso()
     try:
-        res = supabase.table("triageconfig").update(row).eq("id", 1).execute()
+        res = supabase.table("triage_config").update(row).eq("triage_config_id", 1).execute()
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if not res.data:
@@ -786,7 +786,7 @@ def admin_update_triage_config(payload: dict = Body(...), _=Depends(require_admi
 def admin_get_debug_lock(_=Depends(require_admin)):
     # Password hash is write-only from the admin's perspective — the console
     # never needs to read it back, only set a new one.
-    rows = supabase.table("debuglock").select("enabled,updatedat").eq("id", 1).execute().data
+    rows = supabase.table("debug_lock").select("enabled,updated_at").eq("debug_lock_id", 1).execute().data
     return rows[0] if rows else {"enabled": True}
 
 
@@ -801,12 +801,12 @@ def admin_update_debug_lock(payload: dict = Body(...), _=Depends(require_admin))
     if password:
         if not isinstance(password, str) or len(password) < 4:
             raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
-        row["passwordhash"] = hashlib.sha256(password.encode()).hexdigest()
+        row["password_hash"] = hashlib.sha256(password.encode()).hexdigest()
     if not row:
         raise HTTPException(status_code=400, detail="No editable fields supplied")
-    row["updatedat"] = _now_iso()
+    row["updated_at"] = _now_iso()
     try:
-        res = supabase.table("debuglock").update(row).eq("id", 1).execute()
+        res = supabase.table("debug_lock").update(row).eq("debug_lock_id", 1).execute()
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if not res.data:

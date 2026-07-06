@@ -67,8 +67,8 @@ class SensorReadingModel {
 
   /// PascalCase — matches the SQLite SensorReading columns (schema v2).
   Map<String, Object?> toMap() => {
-        'ReadingId': readingId,
-        'BundleId': bundleId,
+        'SensorReadingId': readingId,
+        'DistressBundleId': bundleId,
         'SensorType': sensorType,
         'RawValue': rawValue,
         'NormalisedValue': normalisedValue,
@@ -77,8 +77,8 @@ class SensorReadingModel {
 
   factory SensorReadingModel.fromMap(Map<String, dynamic> map) =>
       SensorReadingModel(
-        readingId: map['ReadingId'] as String?,
-        bundleId: map['BundleId'] as String,
+        readingId: map['SensorReadingId'] as String?,
+        bundleId: map['DistressBundleId'] as String,
         sensorType: map['SensorType'] as String,
         rawValue: (map['RawValue'] as num).toDouble(),
         normalisedValue: (map['NormalisedValue'] as num).toDouble(),

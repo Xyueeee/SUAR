@@ -122,6 +122,7 @@ class _VictimModeScreenState extends State<VictimModeScreen> {
         targetKey: _kRadioPill,
         title: 'Your connection status',
         body: const [
+          'Tap this pill to pause broadcasting; tap again to start again from the beginning. The dot turns gray while paused.',
           'Broadcasting means nearby helpers can find you.',
           'It moves through Connecting to Sending as a helper picks up your signal.',
         ],
@@ -259,6 +260,17 @@ class _VictimModeScreenState extends State<VictimModeScreen> {
     _sosTimer = Timer(Duration(milliseconds: ms), _stepSos);
   }
 
+  /// Radio pill tap: pause cancels whatever phase is in flight; resume
+  /// restarts broadcasting from the beginning. Controller serializes rapid
+  /// taps, so fire-and-forget is safe here.
+  void _toggleRadioPause() {
+    if (_controller.isPaused) {
+      unawaited(_controller.resumeVictimMode());
+    } else {
+      unawaited(_controller.pauseVictimMode());
+    }
+  }
+
   // ─── Exit gate ───────────────────────────────────────────────────────────
 
   /// Leave victim mode. When the exit lock is on, require the device lock first
@@ -349,26 +361,30 @@ class _VictimModeScreenState extends State<VictimModeScreen> {
               'Sending'    => Colors.amber,
               'Connecting' => const Color(0xFF4CAF50),
               'BT Link'    => const Color(0xFF6AA8D5),
+              'Paused'     => Colors.grey,
               _            => const Color(0xFFE05555),
             };
             final label = status == 'BT Link' ? 'Connecting' : status;
-            return Container(
-              key: _kRadioPill,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 7, height: 7,
-                    decoration: BoxDecoration(shape: BoxShape.circle, color: dotColor),
-                  ),
-                  const SizedBox(width: 5),
-                  Text(label, style: const TextStyle(color: Colors.white, fontSize: 13)),
-                ],
+            return GestureDetector(
+              onTap: _toggleRadioPause,
+              child: Container(
+                key: _kRadioPill,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 7, height: 7,
+                      decoration: BoxDecoration(shape: BoxShape.circle, color: dotColor),
+                    ),
+                    const SizedBox(width: 5),
+                    Text(label, style: const TextStyle(color: Colors.white, fontSize: 13)),
+                  ],
+                ),
               ),
             );
           },

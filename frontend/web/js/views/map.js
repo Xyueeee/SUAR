@@ -27,7 +27,9 @@ SUAR.views.map = (function () {
       '<div class="card"><div class="card__head"><h3>Hazard zones</h3><span class="spacer"></span><span class="eyebrow" id="zone-count"></span></div>' +
         '<div class="table-wrap" id="zone-list">' + SUAR.ui.spinner() + "</div></div>";
 
-    map = L.map("zone-map");
+    // minZoom/maxZoom bound the camera: without minZoom the user can pinch out
+    // to whole-globe (z0); maxZoom caps at OSM's deepest real tile (z19).
+    map = L.map("zone-map", { minZoom: 3, maxZoom: 19 });
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19, attribution: "&copy; OpenStreetMap",
     }).addTo(map);

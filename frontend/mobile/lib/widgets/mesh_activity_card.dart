@@ -15,8 +15,16 @@ String _twoDigits(int n) => n.toString().padLeft(2, '0');
 /// translucent card listing dot-prefixed rows separated by thin dividers.
 /// Used as the live status log for Increment 1 hardware testing.
 ///
-/// Newest entry first — during testing, new lines arriving at the bottom
-/// meant constantly scrolling down to see what just happened.
+/// Newest entry at the TOP, and the view must never move when a new entry
+/// arrives while the user is scrolled down reading/screenshotting. A plain
+/// top-anchored ListView can't do that: a prepend shifts everything the same
+/// frame and any jumpTo correction lands one frame late (a visible flinch).
+/// Instead this is a center-anchored CustomScrollView: the scroll offset is
+/// measured from an anchor sliver, entries newer than the anchor snapshot
+/// live in a sliver that grows UPWARD from it, so a new entry only extends
+/// minScrollExtent — nothing currently on screen moves, by construction.
+/// Only when the user is already at the very top does the card follow the
+/// newest entry (matching the old behaviour of new lines sliding in).
 class MeshActivityCard extends StatefulWidget {
   const MeshActivityCard({
     super.key,
@@ -36,32 +44,75 @@ class MeshActivityCard extends StatefulWidget {
 class _MeshActivityCardState extends State<MeshActivityCard> {
   ScrollController? _ownController;
 
+  // Anchor for the two-sliver viewport in build(). Stable across rebuilds
+  // (state field) so the viewport keeps measuring offsets from the same
+  // sliver for the lifetime of the card.
+  final Key _centerKey = UniqueKey();
+
+  // lines[0.._anchorCount) render in the center sliver (downward from the
+  // anchor); lines[_anchorCount..] render in the sliver above it, which grows
+  // upward into negative scroll offsets. Because the offset is measured from
+  // the anchor, entries added above extend minScrollExtent without moving
+  // anything the user is currently looking at.
+  // Assigned in initState, NOT as `late =` field initializers: a late lazy
+  // initializer evaluates at first READ, and _lastCount's first read is
+  // inside didUpdateWidget — after the list already grew — which silently
+  // made every growth check compare the new length against itself.
+  late List<LogEntry> _boundTo;
+  late int _anchorCount;
+  // The screens mutate the SAME List instance in place (_rawLog.add) and
+  // rebuild — oldWidget.lines IS widget.lines, so growth is only detectable
+  // against this snapshot.
+  late int _lastCount;
+
+  @override
+  void initState() {
+    super.initState();
+    _boundTo = widget.lines;
+    _anchorCount = widget.lines.length;
+    _lastCount = widget.lines.length;
+  }
+
   ScrollController get _controller =>
       widget.scrollController ?? (_ownController ??= ScrollController());
 
   @override
   void didUpdateWidget(MeshActivityCard oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.lines.length <= oldWidget.lines.length) return;
-    final controller = _controller;
-    if (!controller.hasClients) return;
-    final offset = controller.position.pixels;
-    // Already at the top (or never scrolled) — let the new entry slide into
-    // view normally instead of fighting the user's view.
-    if (offset <= 1) return;
-    final oldMaxExtent = controller.position.maxScrollExtent;
-    // The new entry isn't laid out yet at this point in the frame — wait for
-    // the frame that adds it, then jump forward by exactly the height it
-    // added, so whatever the user was reading stays in the same screen
-    // position instead of being pushed down.
+    if (!identical(_boundTo, widget.lines)) {
+      // The Settings detailed-logging toggle swaps which List backs the card
+      // (_rawLog vs _displayLog) — the anchor split is meaningless against
+      // the new list. Rebase on it and show its newest entries.
+      _boundTo = widget.lines;
+      _anchorCount = widget.lines.length;
+      _lastCount = widget.lines.length;
+      _jumpToTopAfterFrame();
+      return;
+    }
+    final grew = widget.lines.length > _lastCount;
+    _lastCount = widget.lines.length;
+    if (!grew) return;
+    if (!_controller.hasClients) {
+      // No scroll view attached yet — the empty-state placeholder was showing
+      // (or the list hasn't laid out). Rebase so this build puts everything in
+      // the center sliver; without this, entries added before first layout
+      // would live above the anchor and render off-screen with no way to
+      // follow them.
+      _anchorCount = widget.lines.length;
+      return;
+    }
+    final pos = _controller.position;
+    // At the very top when this entry arrived → keep following, so the new
+    // line slides into view. Scrolled down → do nothing at all; the center
+    // anchor already holds the view perfectly still.
+    if (pos.pixels <= pos.minScrollExtent + 1) _jumpToTopAfterFrame();
+  }
+
+  void _jumpToTopAfterFrame() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!controller.hasClients) return;
-      final delta = controller.position.maxScrollExtent - oldMaxExtent;
-      if (delta > 0) {
-        controller.jumpTo(
-          (offset + delta).clamp(0.0, controller.position.maxScrollExtent),
-        );
-      }
+      if (!mounted) return;
+      final c = _controller;
+      if (c.hasClients) c.jumpTo(c.position.minScrollExtent);
     });
   }
 
@@ -92,7 +143,8 @@ class _MeshActivityCardState extends State<MeshActivityCard> {
     if (lower.contains('fail') || lower.contains('error')) {
       return Colors.redAccent;
     }
-    if (lower.contains('unexpectedly') ||
+    if (lower.startsWith('paused ') ||
+        lower.contains('unexpectedly') ||
         lower.contains('will retry') ||
         lower.contains('cannot initiate') ||
         lower.contains('no wi-fi direct peers') ||
@@ -125,6 +177,10 @@ class _MeshActivityCardState extends State<MeshActivityCard> {
   @override
   Widget build(BuildContext context) {
     final lines = widget.lines;
+    // Defensive: never index past the live list if it somehow shrank.
+    final anchorCount =
+        _anchorCount <= lines.length ? _anchorCount : lines.length;
+    final newCount = lines.length - anchorCount;
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
@@ -140,30 +196,61 @@ class _MeshActivityCardState extends State<MeshActivityCard> {
                 fontSize: widget.fontSize,
               ),
             )
-          : ListView.separated(
+          : CustomScrollView(
               controller: _controller,
-              itemCount: lines.length,
-              separatorBuilder: (_, _) => const Padding(
-                padding: EdgeInsets.symmetric(vertical: 10),
-                child: Divider(height: 1, color: Colors.white24),
-              ),
-              itemBuilder: (context, index) {
-                // Reversed: index 0 is the most recent entry.
-                final entry = lines[lines.length - 1 - index];
-                final isSessionStart = _isSessionStart(entry.message);
-                return _LogRow(
-                  entry: entry,
-                  // A unique color (not reused by any of the 4 semantic
-                  // categories below) so a new session's start is easy to
-                  // spot at a glance while scrolling a long mixed log.
-                  dotColor: isSessionStart
-                      ? Colors.purpleAccent
-                      : _dotColorFor(entry.message),
-                  fontSize: widget.fontSize,
-                  isSessionStart: isSessionStart,
-                );
-              },
+              center: _centerKey,
+              slivers: [
+                // Entries newer than the anchor snapshot. This sliver sits
+                // BEFORE the center, so it grows upward: child 0 is the row
+                // just above the center sliver, and the newest entry ends up
+                // at the very top — the visual order stays newest→oldest
+                // across both slivers.
+                SliverList(
+                  delegate: SliverChildBuilderDelegate(
+                    (context, index) => _buildEntry(lines, anchorCount + index),
+                    childCount: newCount,
+                  ),
+                ),
+                // The anchor: entries that existed when the card was built
+                // (or when the log-detail toggle rebased it), newest first.
+                SliverList(
+                  key: _centerKey,
+                  delegate: SliverChildBuilderDelegate(
+                    (context, index) =>
+                        _buildEntry(lines, anchorCount - 1 - index),
+                    childCount: anchorCount,
+                  ),
+                ),
+              ],
             ),
+    );
+  }
+
+  /// One log row plus the divider below it — reproduces the old
+  /// ListView.separated look. The bottom-most row (entry 0, the oldest)
+  /// carries no divider.
+  Widget _buildEntry(List<LogEntry> lines, int i) {
+    final entry = lines[i];
+    final isSessionStart = _isSessionStart(entry.message);
+    return Column(
+      children: [
+        _LogRow(
+          entry: entry,
+          // A unique color (not reused by any of the 4 semantic categories
+          // in _dotColorFor) so a new session's start is easy to spot at a
+          // glance while scrolling a long mixed log.
+          dotColor: isSessionStart
+              ? Colors.purpleAccent
+              : _dotColorFor(entry.message),
+          fontSize: widget.fontSize,
+          isSessionStart: isSessionStart,
+        ),
+        if (i > 0)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 10),
+            child: Divider(height: 1, color: Colors.white24),
+          ),
+      ],
     );
   }
 }

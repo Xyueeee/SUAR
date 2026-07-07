@@ -102,6 +102,7 @@ class _HelperModeScreenState extends State<HelperModeScreen>
       targetKey: _kRadioPill,
       title: 'Your connection status',
       body: const [
+        'Tap this pill to pause searching; tap again to start again from the beginning. The dot turns gray while paused.',
         'Searching means you are listening for people who need help.',
         'It changes to Connecting then Receiving as a victim signal comes in.',
       ],
@@ -164,6 +165,8 @@ class _HelperModeScreenState extends State<HelperModeScreen>
     // quiet periods when no victims or helpers are nearby.
     _scanHeartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (!mounted) return;
+      // "Still scanning…" would be a lie while the user has paused searching.
+      if (_controller.isPaused) return;
       if (DateTime.now().difference(_lastActivityTime).inSeconds < 12) return;
       setState(() {
         _displayLog.add(LogEntry('Still scanning for people who need help…'));
@@ -1057,10 +1060,37 @@ class _HelperModeScreenState extends State<HelperModeScreen>
     );
   }
 
+  /// Radio pill tap: pause cancels whatever phase is in flight; resume
+  /// restarts searching from the beginning. Controller serializes rapid
+  /// taps, so fire-and-forget is safe here.
+  void _toggleRadioPause() {
+    if (_controller.isPaused) {
+      unawaited(_controller.resumeHelperMode());
+    } else {
+      unawaited(_controller.pauseHelperMode());
+    }
+  }
+
+  /// Single exit path for the chevron and the hardware/predictive back
+  /// button. If the help tour is open, back closes it immediately instead of
+  /// leaving Helper mode (same behaviour as the Victim screen).
+  void _handleExit() {
+    if (_help.isShowing) {
+      _help.dismiss();
+      return;
+    }
+    Navigator.of(context).pop();
+  }
+
   @override
   Widget build(BuildContext context) {
     final pins = _victimPins;
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _handleExit();
+      },
+      child: Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
         child: Padding(
@@ -1071,7 +1101,7 @@ class _HelperModeScreenState extends State<HelperModeScreen>
               Row(
                 children: [
                   IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
+                    onPressed: _handleExit,
                     icon: const Icon(
                       Icons.chevron_left,
                       color: Colors.white,
@@ -1096,26 +1126,30 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                         'Receiving'  => Colors.amber,
                         'Connecting' => const Color(0xFF4CAF50),
                         'BT Link'    => const Color(0xFF6AA8D5),
+                        'Paused'     => Colors.grey,
                         _            => const Color(0xFFE05555),
                       };
                       final label = status == 'BT Link' ? 'Connecting' : status;
-                      return Container(
-                        key: _kRadioPill,
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(14),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Container(
-                              width: 7, height: 7,
-                              decoration: BoxDecoration(shape: BoxShape.circle, color: dotColor),
-                            ),
-                            const SizedBox(width: 5),
-                            Text(label, style: const TextStyle(color: Colors.white, fontSize: 13)),
-                          ],
+                      return GestureDetector(
+                        onTap: _toggleRadioPause,
+                        child: Container(
+                          key: _kRadioPill,
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 7, height: 7,
+                                decoration: BoxDecoration(shape: BoxShape.circle, color: dotColor),
+                              ),
+                              const SizedBox(width: 5),
+                              Text(label, style: const TextStyle(color: Colors.white, fontSize: 13)),
+                            ],
+                          ),
                         ),
                       );
                     },
@@ -1255,6 +1289,8 @@ class _HelperModeScreenState extends State<HelperModeScreen>
                                     options: MapOptions(
                                       initialCenter: defaultMapCenter,
                                       initialZoom: defaultMapZoom,
+                                      minZoom: minMapZoom,
+                                      maxZoom: maxMapZoom,
                                       // Transparent (not a flat fill) so the radar
                                       // backdrop above shows through missing tiles —
                                       // see the Positioned.fill comment above.
@@ -1741,6 +1777,7 @@ class _HelperModeScreenState extends State<HelperModeScreen>
             ],
           ),
         ),
+      ),
       ),
     );
   }

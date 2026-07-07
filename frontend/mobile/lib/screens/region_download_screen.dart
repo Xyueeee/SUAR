@@ -404,6 +404,8 @@ class _RegionDownloadScreenState extends State<RegionDownloadScreen> {
                 options: const MapOptions(
                   initialCenter: defaultMapCenter,
                   initialZoom: defaultMapZoom,
+                  minZoom: minMapZoom,
+                  maxZoom: maxMapZoom,
                   // Keeps screenOffsetToLatLng (used to convert the box's
                   // corners) accurate — that math assumes a north-up map.
                   interactionOptions: InteractionOptions(

@@ -215,6 +215,8 @@ class _LocationDebugScreenState extends State<LocationDebugScreen> {
                           ? LatLng(fix.latitude, fix.longitude)
                           : defaultMapCenter,
                       initialZoom: 16,
+                      minZoom: minMapZoom,
+                      maxZoom: maxMapZoom,
                       // Tap to drop / move the spoof pin (auto-enables spoofing).
                       onTap: (_, latlng) => _dropSpoofAt(latlng),
                       interactionOptions: const InteractionOptions(

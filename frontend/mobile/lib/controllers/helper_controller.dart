@@ -32,6 +32,48 @@ class HelperController {
   /// 'Connecting' → Wi-Fi Direct handshake; 'Receiving' → pulling bundle.
   final ValueNotifier<String> radioLabel = ValueNotifier('Searching');
 
+  /// True while the user has paused searching via the status pill.
+  bool get isPaused => _paused;
+  bool _paused = false;
+  // Serializes pause/resume — a rapid double-tap on the pill must not run
+  // startHelperMode while stopHelperMode is still tearing down.
+  bool _pauseBusy = false;
+
+  // In-flight radio ops (an ack/pull/relay mid-await when the user paused or
+  // exited) resolve later and would overwrite the 'Paused' label — every
+  // label change on an async path goes through this instead.
+  void _setRadio(String label) {
+    if (!_stopped) radioLabel.value = label;
+  }
+
+  /// User pause from the status pill: full teardown (whatever phase is in
+  /// flight — acking, connecting, receiving — is cancelled by the same path a
+  /// real stop uses). Resume restarts scanning from the beginning.
+  Future<void> pauseHelperMode() async {
+    if (_paused || _pauseBusy) return;
+    _pauseBusy = true;
+    _paused = true;
+    try {
+      await stopHelperMode(quiet: true);
+      radioLabel.value = 'Paused';
+      _emit('Paused searching. Tap the status pill to resume.');
+    } finally {
+      _pauseBusy = false;
+    }
+  }
+
+  Future<void> resumeHelperMode() async {
+    if (!_paused || _pauseBusy) return;
+    _pauseBusy = true;
+    _paused = false;
+    try {
+      _emit('Resumed searching.');
+      await startHelperMode(quiet: true);
+    } finally {
+      _pauseBusy = false;
+    }
+  }
+
   // Opportunistic cloud sync: push unsynced bundles + pull the last 24h when online.
   final SyncService _sync = SyncService();
   Timer? _syncTimer;
@@ -238,7 +280,7 @@ class HelperController {
     if (!_statusController.isClosed) _statusController.add(line);
   }
 
-  Future<void> startHelperMode() async {
+  Future<void> startHelperMode({bool quiet = false}) async {
     try {
       // Defensive against a double-start (e.g. a rapid back-then-reopen on
       // the screen): without cancelling first, a second call leaked the old
@@ -247,7 +289,10 @@ class HelperController {
       _stopped = false;
 
       deviceId = await _loadOrCreateDeviceId();
-      _emit('Helper mode started (deviceId=$deviceId)');
+      // quiet = a pause/resume cycle, not a real mode start — the resume path
+      // emits its own line, and this one would render as a bold new-session
+      // marker in the activity log.
+      if (!quiet) _emit('Helper mode started (deviceId=$deviceId)');
       _syncTimer?.cancel();
       _syncTimer = Timer.periodic(_syncInterval, (_) => _syncNow());
       unawaited(_syncNow());
@@ -342,6 +387,8 @@ class HelperController {
       });
 
       await bleManager.startScanning(_onPeerDetected);
+      // Resets a resume's leftover 'Paused' label; harmless on a fresh start.
+      _setRadio('Searching');
 
       // Covers all three radios this mode depends on — Android can silently
       // kill any of them in the background (confirmed real for BLE scan on
@@ -432,14 +479,14 @@ class HelperController {
     // run the association-aware group-owner decision, and reused locally below.
     final myAssociated =
         (await WiFiDirectManager.getStaInfo())?['associated'] as bool? ?? false;
-    radioLabel.value = 'BT Link';
+    _setRadio('BT Link');
     final result = await bleManager.sendRssiAck(
       device,
       rssi,
       myAssociated: myAssociated,
     );
     _ackInFlight.remove(victimDeviceId);
-    if (!_stopped) radioLabel.value = 'Searching';
+    _setRadio('Searching');
     if (_stopped) return;
 
     if (result.success) {
@@ -562,7 +609,7 @@ class HelperController {
       // connect() call itself, and this is the only path that runs whether the
       // connect succeeds or times out below. See _attemptCooldown.
       _attemptedRecentlyAt[victimDeviceId] = DateTime.now();
-      radioLabel.value = 'Connecting';
+      _setRadio('Connecting');
       final connectionInfo = await wifiDirectManager.connectToHelper(
         peerAddress,
         myDeviceId: deviceId ?? '',
@@ -580,7 +627,7 @@ class HelperController {
         // next retry instead of leaving that for the next attempt to collide
         // with.
         await wifiDirectManager.disconnect();
-        if (!_stopped) radioLabel.value = 'Searching';
+        _setRadio('Searching');
         return;
       }
       // Connection formed — peer is reachable, reset its backoff and mark its
@@ -630,10 +677,10 @@ class HelperController {
         return;
       }
       final groupOwnerAddress = connectionInfo['groupOwnerAddress'] as String;
-      radioLabel.value = 'Receiving';
+      _setRadio('Receiving');
       final json = await wifiDirectManager.requestBundle(groupOwnerAddress);
       await wifiDirectManager.disconnect();
-      if (!_stopped) radioLabel.value = 'Searching';
+      _setRadio('Searching');
       if (_stopped) return;
       if (json == null || json.isEmpty) {
         _emit('Pull from $victimDeviceId returned nothing');
@@ -878,7 +925,7 @@ class HelperController {
       // connect() call itself, whether it succeeds or times out below. See
       // _attemptCooldown.
       _attemptedRecentlyAt[peerHelperDeviceId] = DateTime.now();
-      radioLabel.value = 'Connecting';
+      _setRadio('Connecting');
       final connectionInfo = await wifiDirectManager.connectToHelper(
         peerAddress,
         myDeviceId: deviceId ?? '',
@@ -895,7 +942,7 @@ class HelperController {
         _attemptFailStreak[peerHelperDeviceId] =
             (_attemptFailStreak[peerHelperDeviceId] ?? 0) + 1;
         await wifiDirectManager.disconnect();
-        if (!_stopped) radioLabel.value = 'Searching';
+        _setRadio('Searching');
         return;
       }
       // Got a real connection this cycle — the stack is healthy, clear the
@@ -921,16 +968,16 @@ class HelperController {
         _emit(
           'Connected to $peerHelperDeviceId as group owner. Will relay once it contacts this device first.',
         );
-        if (!_stopped) radioLabel.value = 'Searching';
+        _setRadio('Searching');
         return;
       }
       final groupOwnerAddress = connectionInfo['groupOwnerAddress'] as String;
-      radioLabel.value = 'Receiving';
+      _setRadio('Receiving');
       await _savePulledBundles(
         await dtnManager.relayMissing(groupOwnerAddress, peerHelperDeviceId),
       );
       await wifiDirectManager.disconnect();
-      if (!_stopped) radioLabel.value = 'Searching';
+      _setRadio('Searching');
     } finally {
       _explicitWifiDirectInFlight = false;
     }
@@ -987,7 +1034,7 @@ class HelperController {
     return generated;
   }
 
-  Future<void> stopHelperMode() async {
+  Future<void> stopHelperMode({bool quiet = false}) async {
     try {
       _stopped = true;
       _radioWatchdog?.cancel();
@@ -1016,7 +1063,7 @@ class HelperController {
       // the user explicitly stopped Helper mode.
       await wifiDirectManager.disconnect();
       await _cancelSubs();
-      _emit('Helper mode stopped');
+      if (!quiet) _emit('Helper mode stopped');
     } catch (e) {
       _emit('Helper mode stop failed: $e');
     }

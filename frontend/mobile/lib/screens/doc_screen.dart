@@ -51,6 +51,7 @@ class RadioPill extends StatelessWidget {
           'Sending'    => Colors.amber,
           'Connecting' => const Color(0xFF4CAF50),
           'BT Link'    => const Color(0xFF6AA8D5),
+          'Paused'     => Colors.grey,
           _            => const Color(0xFFE05555),
         };
         final label = status == 'BT Link' ? 'Connecting' : status;

@@ -47,6 +47,48 @@ class VictimController {
   /// handshake in progress; 'Sending' → active bundle transfer.
   final ValueNotifier<String> radioLabel = ValueNotifier('Broadcasting');
 
+  /// True while the user has paused broadcasting via the status pill.
+  bool get isPaused => _paused;
+  bool _paused = false;
+  // Serializes pause/resume — a rapid double-tap on the pill must not run
+  // startVictimMode while stopVictimMode is still tearing down.
+  bool _pauseBusy = false;
+
+  // In-flight radio ops (a connect/send that was mid-await when the user
+  // paused or exited) resolve later and would overwrite the 'Paused' label —
+  // every label change on an async path goes through this instead.
+  void _setRadio(String label) {
+    if (!_stopped) radioLabel.value = label;
+  }
+
+  /// User pause from the status pill: full teardown (whatever phase is in
+  /// flight — connecting, transferring — is cancelled by the same path a real
+  /// stop uses). Resume restarts the whole broadcast cycle from the beginning.
+  Future<void> pauseVictimMode() async {
+    if (_paused || _pauseBusy) return;
+    _pauseBusy = true;
+    _paused = true;
+    try {
+      await stopVictimMode(quiet: true);
+      radioLabel.value = 'Paused';
+      _emit('Paused broadcasting. Tap the status pill to resume.');
+    } finally {
+      _pauseBusy = false;
+    }
+  }
+
+  Future<void> resumeVictimMode() async {
+    if (!_paused || _pauseBusy) return;
+    _pauseBusy = true;
+    _paused = false;
+    try {
+      _emit('Resumed broadcasting.');
+      await startVictimMode(quiet: true);
+    } finally {
+      _pauseBusy = false;
+    }
+  }
+
   final _statusController = StreamController<String>.broadcast();
   Stream<String> get statusStream => _statusController.stream;
 
@@ -362,7 +404,7 @@ class VictimController {
     }
   }
 
-  Future<void> startVictimMode() async {
+  Future<void> startVictimMode({bool quiet = false}) async {
     try {
       // Defensive against a double-start (e.g. a rapid back-then-reopen on
       // the screen): without cancelling first, a second call leaked the old
@@ -374,7 +416,10 @@ class VictimController {
       _sensorsReady = false;
 
       deviceId = await _loadOrCreateDeviceId();
-      _emit('Victim mode started (deviceId=$deviceId)');
+      // quiet = a pause/resume cycle, not a real mode start — the resume path
+      // emits its own line, and this one would render as a bold new-session
+      // marker in the activity log.
+      if (!quiet) _emit('Victim mode started (deviceId=$deviceId)');
 
       _bleStatusSub = bleManager.statusStream.listen(_emit);
       _wifiStatusSub = wifiDirectManager.statusStream.listen(_emit);
@@ -515,7 +560,7 @@ class VictimController {
           _emit(
             'Connection formed (pull mode). Pushing bundle to $groupOwnerAddress.',
           );
-          radioLabel.value = 'Sending';
+          _setRadio('Sending');
           final sent = await wifiDirectManager.sendBundle(
             groupOwnerAddress,
             _bundle!.toJson(),
@@ -524,7 +569,7 @@ class VictimController {
             _emit('Bundle ${_bundle!.bundleId} transmitted (pull mode)');
           }
           await wifiDirectManager.disconnect();
-          radioLabel.value = 'Broadcasting';
+          _setRadio('Broadcasting');
         } finally {
           _pushInFlight = false;
         }
@@ -556,7 +601,7 @@ class VictimController {
       });
 
       await bleManager.startAdvertising(deviceId!);
-      radioLabel.value = 'Broadcasting';
+      _setRadio('Broadcasting');
 
       _rssiWindowTimer?.cancel();
       _rssiWindowTimer = Timer(
@@ -717,7 +762,7 @@ class VictimController {
       // (no peers, became-GO) set 'BT Link' inside _tryDeliverBundle and may
       // not reset it. GO-passive / pull-mode / cooldown paths never touch the
       // label, so this is a no-op for them.
-      if (!sent) radioLabel.value = 'Broadcasting';
+      if (!sent) _setRadio('Broadcasting');
       if (sent) {
         _deliveredTo[bestHelper.key] = DateTime.now();
         _helperRssiMap.remove(bestHelper.key);
@@ -808,7 +853,7 @@ class VictimController {
     // Only enter BT Link state here — past all early exits (GO-passive,
     // pull-mode, cooldown) — so the pill only transitions when we actually
     // start Wi-Fi Direct discovery.
-    radioLabel.value = 'BT Link';
+    _setRadio('BT Link');
     final peers = await wifiDirectManager.discoverPeers();
     if (peers.isEmpty) {
       await _recordDiscoveryOutcome(succeeded: false);
@@ -831,7 +876,7 @@ class VictimController {
     // can't pair with isn't re-dialled/re-prompted every ~8s RSSI window. See
     // _attemptCooldown.
     _connectedRecentlyAt[helperDeviceId] = DateTime.now();
-    radioLabel.value = 'Connecting';
+    _setRadio('Connecting');
     final connectionInfo = await wifiDirectManager.connectToHelper(
       peerAddress,
       myDeviceId: deviceId ?? '',
@@ -847,7 +892,7 @@ class VictimController {
       // Only the success path used to clean up; do it here too so the next
       // retry starts from an actually-clean slate instead of colliding.
       await wifiDirectManager.disconnect();
-      radioLabel.value = 'Broadcasting';
+      _setRadio('Broadcasting');
       return false;
     }
     // Connection formed — Helper is reachable, reset its backoff.
@@ -872,7 +917,7 @@ class VictimController {
       return false;
     }
     final groupOwnerAddress = connectionInfo['groupOwnerAddress'] as String;
-    radioLabel.value = 'Sending';
+    _setRadio('Sending');
     final sent = await wifiDirectManager.sendBundle(
       groupOwnerAddress,
       _bundle!.toJson(),
@@ -885,7 +930,7 @@ class VictimController {
     // (a likely contributor to the groupFormed=false races seen on retry).
     // Each delivery attempt now starts from a clean slate.
     await wifiDirectManager.disconnect();
-    radioLabel.value = 'Broadcasting';
+    _setRadio('Broadcasting');
     return sent;
   }
 
@@ -1017,7 +1062,7 @@ class VictimController {
     await _bundleDeliveredSub?.cancel();
   }
 
-  Future<void> stopVictimMode() async {
+  Future<void> stopVictimMode({bool quiet = false}) async {
     try {
       _stopped = true;
       _rssiWindowTimer?.cancel();
@@ -1033,8 +1078,10 @@ class VictimController {
       await wifiDirectManager.setLocalBundle(null);
       await wifiDirectManager.stopServer();
       await wifiDirectManager.disconnect();
-      radioLabel.value = 'Broadcasting';
-      _emit('Victim mode stopped');
+      // Label is NOT reset here: a real stop is followed by screen disposal,
+      // and a pause (quiet) sets 'Paused' right after; startVictimMode sets
+      // 'Broadcasting' again on any (re)start.
+      if (!quiet) _emit('Victim mode stopped');
     } catch (e) {
       _emit('Victim mode stop failed: $e');
     }

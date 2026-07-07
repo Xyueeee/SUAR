@@ -13,6 +13,13 @@ const double defaultMapZoom = 12.0;
 const double minDownloadZoom = 10.0;
 const double maxDownloadZoom = 17.0;
 
+// Camera zoom bounds shared by every interactive FlutterMap. Without these,
+// flutter_map lets the user pinch out to whole-globe (z0, tiny) and in past
+// OSM's native z19 (blank/blurry over-scaled tiles). z3 ≈ continent view is as
+// far out as this app ever needs; z19 is OSM's deepest real tile.
+const double minMapZoom = 3.0;
+const double maxMapZoom = 19.0;
+
 // A victim's last-known position/status is only as good as how recently it
 // was actually observed. Past this age, a pin showing on the Helper's map
 // risks sending someone to a spot the victim (or the situation) has already

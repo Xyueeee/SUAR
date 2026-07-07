@@ -72,7 +72,7 @@ SUAR.views.dashboard = (function () {
       "</div>";
 
     // Init map immediately — tile loading starts in parallel with the stats fetch.
-    map = L.map("dash-map", { zoomControl: false, attributionControl: false });
+    map = L.map("dash-map", { zoomControl: false, attributionControl: false, minZoom: 3, maxZoom: 19 });
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(map);
     map.setView([3.139, 101.6869], 11); // KL default; overridden below if points exist
 

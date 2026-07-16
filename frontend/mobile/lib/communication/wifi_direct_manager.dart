@@ -62,10 +62,21 @@ class WiFiDirectManager {
 
   void _ensureEventListener() {
     _eventSub ??= _events.receiveBroadcastStream().listen((event) {
-      final map = Map<String, dynamic>.from(event as Map);
+      if (event is! Map) {
+        _emit('Ignored malformed Wi-Fi Direct event');
+        return;
+      }
+      final map = Map<String, dynamic>.from(event);
       switch (map['event']) {
         case 'bundleReceived':
-          _bundleReceivedController.add(map['json'] as String);
+          final json = map['json'];
+          if (json is! String) {
+            _emit('Ignored malformed bundleReceived event');
+            return;
+          }
+          if (!_bundleReceivedController.isClosed) {
+            _bundleReceivedController.add(json);
+          }
           _emit('Bundle received over Wi-Fi Direct');
         case 'bundleDelivered':
           if (!_bundleDeliveredController.isClosed) {
@@ -73,10 +84,19 @@ class WiFiDirectManager {
           }
           _emit('A nearby device fetched the cached bundle');
         case 'connectionFormed':
-          _connectionFormedController.add(map);
+          if (!_connectionFormedController.isClosed) {
+            _connectionFormedController.add(map);
+          }
         case 'debugLog':
-          _emit(map['message'] as String);
+          final message = map['message'];
+          if (message is String) {
+            _emit(message);
+          } else {
+            _emit('Ignored malformed debugLog event');
+          }
       }
+    }, onError: (Object error) {
+      _emit('Wi-Fi Direct event stream failed: $error');
     });
   }
 

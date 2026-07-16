@@ -130,9 +130,14 @@ class DTNManager {
         continue;
       }
       if (peerHas.contains(bundle.bundleId)) continue;
-      bundle.hopCount += 1;
-      bundle.updatedAt = DateTime.now();
-      toSend.add(bundle);
+      // Relay metadata belongs only to the outgoing copy. The carrier's
+      // stored bundle keeps its original path depth and triage timestamp.
+      toSend.add(
+        DistressBundleModel.fromJson({
+          ...bundle.toJson(),
+          'hopCount': bundle.hopCount + 1,
+        }),
+      );
     }
     _syncManifest();
 
@@ -160,15 +165,6 @@ class DTNManager {
       );
     }
     if (response == null) {
-      // Sync failed entirely — undo the hop-count bump so a future retry
-      // doesn't double-count a hop that never actually happened.
-      for (final bundle in toSend) {
-        bundle.hopCount -= 1;
-      }
-      // The _syncManifest() above already pushed the bumped counts into the
-      // native relay cache — re-sync so a peer pulling from us before the
-      // next relay doesn't receive copies with a hop that never happened.
-      _syncManifest();
       _emit('Sync with $helperDeviceId failed');
       return const [];
     }
@@ -182,17 +178,23 @@ class DTNManager {
     List<DistressBundleModel> pulled;
     try {
       final decoded = jsonDecode(response) as List;
-      pulled = decoded
+      final candidates = decoded
           .cast<Map<String, dynamic>>()
           .map(DistressBundleModel.fromJson)
-          .where((bundle) => seenBundleIds.add(bundle.bundleId))
           .toList();
       // A pull is a device-to-device transfer exactly like a push, but the
       // peer serves its cached copies as-is (the native cache can't bump) —
       // count the hop on the receiving side, or pulled copies travel free
       // against dtnMaxHopCount.
-      for (final bundle in pulled) {
+      pulled = [];
+      for (final bundle in candidates) {
+        if (!seenBundleIds.add(bundle.bundleId)) continue;
         bundle.hopCount += 1;
+        if (bundle.hopCount >= dtnMaxHopCount) {
+          _emit('TTL exceeded after pull: ${bundle.bundleId}');
+          continue;
+        }
+        pulled.add(bundle);
       }
       _trimSeenBundleIds();
     } catch (e) {

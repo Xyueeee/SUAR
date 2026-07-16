@@ -233,9 +233,13 @@ class SQLiteRepository {
           where: 'DistressBundleId = ?',
           whereArgs: [bundle.bundleId],
         );
-        // Replace the readings snapshot with the newer one.
-        await txn.delete('SensorReading',
-            where: 'DistressBundleId = ?', whereArgs: [bundle.bundleId]);
+        // A cloud pull currently carries only the bundle row. Preserve any
+        // local sensor snapshot unless the incoming copy actually includes a
+        // replacement snapshot.
+        if (bundle.sensorReadings.isNotEmpty) {
+          await txn.delete('SensorReading',
+              where: 'DistressBundleId = ?', whereArgs: [bundle.bundleId]);
+        }
       }
       for (final raw in bundle.sensorReadings) {
         // Re-stamp the FK to this bundle in case the transported reading's
@@ -315,6 +319,7 @@ class SQLiteRepository {
   /// deletion regardless of whatever primary key (if any) the table declares.
   Future<List<Map<String, Object?>>> getTableRows(String table) async {
     final db = await _getDb();
+    await _validateDebugTable(db, table);
     return db.rawQuery(
       'SELECT rowid AS _rowid, * FROM "$table" ORDER BY rowid DESC',
     );
@@ -322,11 +327,30 @@ class SQLiteRepository {
 
   Future<void> deleteTableRow(String table, int rowid) async {
     final db = await _getDb();
+    await _validateDebugTable(db, table);
     await db.delete(table, where: 'rowid = ?', whereArgs: [rowid]);
   }
 
   Future<void> clearTable(String table) async {
     final db = await _getDb();
+    await _validateDebugTable(db, table);
     await db.delete(table);
+  }
+
+  Future<void> _validateDebugTable(Database db, String table) async {
+    if (!RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$').hasMatch(table)) {
+      throw ArgumentError.value(table, 'table', 'Invalid table name');
+    }
+    final rows = await db.query(
+      'sqlite_master',
+      columns: ['name'],
+      where:
+          "type = 'table' AND name = ? AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'android_%'",
+      whereArgs: [table],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      throw ArgumentError.value(table, 'table', 'Unknown table');
+    }
   }
 }

@@ -49,11 +49,26 @@ class BLEManager {
       _peripheralEventSub ??= _peripheralEvents.receiveBroadcastStream().listen((
         event,
       ) {
-        final ack = Map<String, dynamic>.from(event as Map);
+        if (event is! Map) {
+          _emit('Ignored malformed BLE peripheral event');
+          return;
+        }
+        final ack = Map<String, dynamic>.from(event);
+        final helperDeviceId = ack['helperDeviceId'];
+        final rssi = ack['rssi'];
+        if (helperDeviceId is! String ||
+            helperDeviceId.isEmpty ||
+            rssi is! num) {
+          _emit('Ignored malformed GATT ACK event');
+          return;
+        }
+        ack['rssi'] = rssi.toInt();
         if (!_helperAckController.isClosed) _helperAckController.add(ack);
         _emit(
-          'GATT ACK received from ${ack['helperDeviceId']} rssi=${ack['rssi']}',
+          'GATT ACK received from $helperDeviceId rssi=${ack['rssi']}',
         );
+      }, onError: (Object error) {
+        _emit('BLE peripheral event stream failed: $error');
       });
       await _peripheralChannel.invokeMethod('startAdvertising', {
         'deviceId': deviceId,
@@ -181,6 +196,14 @@ class BLEManager {
       );
       _emit('BLE scanning started');
     } catch (e) {
+      final sub = _scanSub;
+      _scanSub = null;
+      try {
+        await sub?.cancel();
+      } catch (_) {
+        // The scan startup error is the useful failure to report.
+      }
+      _loggedDetections.clear();
       _emit('BLE scan failed: $e');
     }
   }
@@ -196,14 +219,24 @@ class BLEManager {
   }
 
   Future<void> stopScanning() async {
+    Object? stopError;
     try {
       await FlutterBluePlus.stopScan();
-      await _scanSub?.cancel();
-      _scanSub = null;
-      _loggedDetections.clear();
-      _emit('BLE scanning stopped');
     } catch (e) {
-      _emit('Stop scan failed: $e');
+      stopError = e;
+    }
+    final sub = _scanSub;
+    _scanSub = null;
+    try {
+      await sub?.cancel();
+    } catch (e) {
+      stopError ??= e;
+    }
+    _loggedDetections.clear();
+    if (stopError == null) {
+      _emit('BLE scanning stopped');
+    } else {
+      _emit('Stop scan failed: $stopError');
     }
   }
 

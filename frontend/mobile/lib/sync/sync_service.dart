@@ -48,7 +48,8 @@ class SyncService {
         'relayLogs': const [],
       };
 
-  /// POSTs bundles to /sync. Returns true on HTTP 200. Swallows offline errors.
+  /// POSTs bundles to /sync. Returns true only when every bundle was accepted.
+  /// Swallows offline and malformed-response errors so callers can retry later.
   Future<bool> pushBundles(String deviceId, String mode, List<DistressBundleModel> bundles) async {
     final base = await _baseUrl();
     if (base == null || bundles.isEmpty) return false;
@@ -69,8 +70,12 @@ class SyncService {
       req.headers.set('ngrok-skip-browser-warning', 'true');
       req.add(utf8.encode(jsonEncode(payload)));
       final resp = await req.close().timeout(const Duration(seconds: 15));
-      await resp.drain();
-      return resp.statusCode == 200;
+      final body = await resp.transform(utf8.decoder).join();
+      if (resp.statusCode != 200) return false;
+      final decoded = jsonDecode(body);
+      return decoded is Map &&
+          decoded['errors'] is num &&
+          (decoded['errors'] as num).toInt() == 0;
     } catch (_) {
       return false;
     } finally {
@@ -143,18 +148,32 @@ class SyncService {
     return unsynced.length;
   }
 
-  DistressBundleModel _fromBackend(Map r) => DistressBundleModel(
-        bundleId: (r['distress_bundle_id'] ?? '').toString(),
-        deviceId: (r['device_id'] ?? '').toString(),
-        priorityScore: (r['priority_score'] as num?)?.toDouble() ?? 0,
-        priorityTier: (r['priority_tier'] ?? 'None').toString(),
-        estimatedLat: (r['estimated_lat'] as num?)?.toDouble(),
-        estimatedLng: (r['estimated_lng'] as num?)?.toDouble(),
-        accuracyMeters: (r['accuracy_meters'] as num?)?.toDouble(),
-        estimatedAltitude: (r['estimated_altitude'] as num?)?.toDouble(),
-        hopCount: (r['hop_count'] as num?)?.toInt() ?? 0,
-        isSynced: true,
-        createdAt: DateTime.tryParse((r['created_at'] ?? '').toString()) ?? DateTime.now().toUtc(),
-        updatedAt: DateTime.tryParse((r['updated_at'] ?? '').toString()) ?? DateTime.now().toUtc(),
+  DistressBundleModel _fromBackend(Map r) {
+    final bundleId = (r['distress_bundle_id'] ?? '').toString().trim();
+    final deviceId = (r['device_id'] ?? '').toString().trim();
+    final createdAt = DateTime.tryParse((r['created_at'] ?? '').toString());
+    final updatedAt = DateTime.tryParse((r['updated_at'] ?? '').toString());
+    if (bundleId.isEmpty ||
+        deviceId.isEmpty ||
+        createdAt == null ||
+        updatedAt == null) {
+      throw const FormatException(
+        'Backend bundle is missing an ID or valid timestamp',
       );
+    }
+    return DistressBundleModel(
+      bundleId: bundleId,
+      deviceId: deviceId,
+      priorityScore: (r['priority_score'] as num?)?.toDouble() ?? 0,
+      priorityTier: (r['priority_tier'] ?? 'None').toString(),
+      estimatedLat: (r['estimated_lat'] as num?)?.toDouble(),
+      estimatedLng: (r['estimated_lng'] as num?)?.toDouble(),
+      accuracyMeters: (r['accuracy_meters'] as num?)?.toDouble(),
+      estimatedAltitude: (r['estimated_altitude'] as num?)?.toDouble(),
+      hopCount: (r['hop_count'] as num?)?.toInt() ?? 0,
+      isSynced: true,
+      createdAt: createdAt,
+      updatedAt: updatedAt,
+    );
+  }
 }

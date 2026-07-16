@@ -2,6 +2,7 @@ package com.example.suar_mobile
 
 import android.content.Intent
 import android.net.wifi.p2p.WifiP2pManager
+import android.os.Build
 import android.provider.Settings
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -279,7 +280,7 @@ class MainActivity : FlutterFragmentActivity() {
             .putExtra(MeshForegroundService.EXTRA_STATUS_TEXT, statusText)
             .putExtra(MeshForegroundService.EXTRA_DETAIL_TEXT, detailText)
             .putExtra(MeshForegroundService.EXTRA_WIFI_ACTION, wifiAction)
-        startForegroundService(intent)
+        startMeshServiceCompat(intent)
     }
 
     /// Notification-text refresh only (the updateMeshStatus channel call).
@@ -303,12 +304,22 @@ class MainActivity : FlutterFragmentActivity() {
         val intent = Intent(this, MeshForegroundService::class.java)
             .putExtra(MeshForegroundService.EXTRA_STOP, true)
         try {
-            startForegroundService(intent)
+            startMeshServiceCompat(intent)
         } catch (e: Exception) {
             // e.g. background FGS-start restriction during a swipe-away
             // teardown (onDestroy). No pending start can exist in that state,
             // so the plain stop is safe here.
             stopService(Intent(this, MeshForegroundService::class.java))
+        }
+    }
+
+    private fun startMeshServiceCompat(intent: Intent) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            // startForegroundService() was added in API 26. minSdk is 24, so
+            // Nougat devices must use the normal service start path.
+            startService(intent)
         }
     }
 

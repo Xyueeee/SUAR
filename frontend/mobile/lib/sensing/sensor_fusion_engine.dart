@@ -20,10 +20,13 @@ import 'triage_config.dart';
 /// Subscriptions exist only between [start] and [stop] — Victim Mode keeps
 /// radio duty low, so sensing is session-scoped, not always-on.
 class SensorFusionEngine {
-  SensorFusionEngine({DeviceSensorProbe? probe})
-      : _probe = probe ?? DeviceSensorProbe();
+  SensorFusionEngine({
+    DeviceSensorProbe? probe,
+    this.microphoneOwner = MicrophoneSessionOwner.victimTriage,
+  }) : _probe = probe ?? DeviceSensorProbe();
 
   final DeviceSensorProbe _probe;
+  final MicrophoneSessionOwner microphoneOwner;
   final Battery _battery = Battery();
 
   // --- Tunables (calibration knobs) ---------------------------------------
@@ -71,72 +74,100 @@ class SensorFusionEngine {
   DateTime? _lastMotionAt;
 
   bool _running = false;
+  int _session = 0;
+  int? _pollInFlightSession;
+
+  bool get microphoneActive => _micSub != null;
 
   /// Starts all sensor subscriptions. [withMic] should reflect whether the
   /// RECORD_AUDIO permission is granted — mic is skipped (and its triage term
-  /// renormalises away) when false or if the stream errors.
+  /// is omitted) when false or if the stream errors.
   Future<void> start({bool withMic = true}) async {
     if (_running) return;
     _running = true;
+    final session = ++_session;
 
-    // Pick up any saved triage tuning (editor changes apply on next recompute
-    // because evaluate() reads TriageConfig.active each time).
-    await TriageConfig.load();
+    try {
+      // Pick up any saved triage tuning (editor changes apply on next
+      // recompute because evaluate() reads TriageConfig.active each time).
+      await TriageConfig.load();
+      if (!_isCurrentSession(session)) return;
 
-    _accelSub = accelerometerEventStream().listen((e) {
-      final mag = math.sqrt(e.x * e.x + e.y * e.y + e.z * e.z);
-      final now = DateTime.now();
-      _accelMags.add(_Sample(mag, now));
-      _accelMags.removeWhere((s) => now.difference(s.time) > _accelWindow);
-      // Fall = free-fall dip followed shortly by an impact spike.
-      if (mag < _freeFallG) _freeFallAt = now;
-      if (mag > _impactHighG &&
-          _freeFallAt != null &&
-          now.difference(_freeFallAt!) < _fallLinkWindow) {
-        _lastImpactAt = now;
+      _accelSub = accelerometerEventStream().listen((e) {
+        if (!_isCurrentSession(session)) return;
+        final mag = math.sqrt(e.x * e.x + e.y * e.y + e.z * e.z);
+        final now = DateTime.now();
+        _accelMags.add(_Sample(mag, now));
+        _accelMags.removeWhere((s) => now.difference(s.time) > _accelWindow);
+        // Fall = free-fall dip followed shortly by an impact spike.
+        if (mag < _freeFallG) _freeFallAt = now;
+        if (mag > _impactHighG &&
+            _freeFallAt != null &&
+            now.difference(_freeFallAt!) < _fallLinkWindow) {
+          _lastImpactAt = now;
+        }
+        // Genuine movement (resets the "still since the fall" clock).
+        if ((mag - 9.81).abs() > _moveDeltaG) _lastMotionAt = now;
+      }, onError: (_) {});
+
+      _gyroSub = gyroscopeEventStream().listen((e) {
+        if (!_isCurrentSession(session)) return;
+        _gyroMag = math.sqrt(e.x * e.x + e.y * e.y + e.z * e.z);
+      }, onError: (_) {});
+
+      _baroSub = barometerEventStream().listen((e) {
+        if (!_isCurrentSession(session)) return;
+        _baroCurrent = e.pressure;
+        _baroBaseline ??= e.pressure; // first reading is the session baseline
+      }, onError: (_) {});
+
+      if (withMic) {
+        try {
+          // guardedNoiseStream (not NoiseMeter().noise directly): spaces mic
+          // sessions out so a quick Victim-mode exit → re-entry can't overlap
+          // audio_streamer's shared native recorder — see mic_guard.dart.
+          _micSub = guardedNoiseStream(owner: microphoneOwner).listen(
+            (r) {
+              if (_isCurrentSession(session)) _micDb = r.meanDecibel;
+            },
+            onError: (_) {
+              if (_isCurrentSession(session)) _micDb = null;
+            },
+            cancelOnError: true,
+          );
+        } catch (_) {
+          _micDb = null;
+        }
       }
-      // Genuine movement (resets the "still since the fall" clock).
-      if ((mag - 9.81).abs() > _moveDeltaG) _lastMotionAt = now;
-    }, onError: (_) {});
 
-    _gyroSub = gyroscopeEventStream().listen((e) {
-      _gyroMag = math.sqrt(e.x * e.x + e.y * e.y + e.z * e.z);
-    }, onError: (_) {});
-
-    _baroSub = barometerEventStream().listen((e) {
-      _baroCurrent = e.pressure;
-      _baroBaseline ??= e.pressure; // first reading is the session baseline
-    }, onError: (_) {});
-
-    if (withMic) {
-      try {
-        // guardedNoiseStream (not NoiseMeter().noise directly): spaces mic
-        // sessions out so a quick Victim-mode exit → re-entry can't overlap
-        // audio_streamer's shared native recorder — see mic_guard.dart.
-        _micSub = guardedNoiseStream().listen(
-          (r) => _micDb = r.meanDecibel,
-          onError: (_) => _micDb = null,
-          cancelOnError: true,
-        );
-      } catch (_) {
-        _micDb = null;
-      }
+      await _poll(session); // prime battery/light/proximity immediately
+      if (!_isCurrentSession(session)) return;
+      _pollTimer = Timer.periodic(
+        _pollInterval,
+        (_) => unawaited(_poll(session)),
+      );
+    } catch (_) {
+      if (_isCurrentSession(session)) await stop();
+      rethrow;
     }
-
-    await _poll(); // prime battery/light/proximity immediately
-    _pollTimer = Timer.periodic(_pollInterval, (_) => _poll());
   }
 
   Future<void> stop() async {
     _running = false;
-    _pollTimer?.cancel();
-    await _accelSub?.cancel();
-    await _gyroSub?.cancel();
-    await _baroSub?.cancel();
-    await _micSub?.cancel();
-    _accelSub = _gyroSub = null;
+    _session++;
+
+    final pollTimer = _pollTimer;
+    final accelSub = _accelSub;
+    final gyroSub = _gyroSub;
+    final baroSub = _baroSub;
+    final micSub = _micSub;
+    _pollTimer = null;
+    _accelSub = null;
+    _gyroSub = null;
     _baroSub = null;
     _micSub = null;
+
+    pollTimer?.cancel();
     _accelMags.clear();
     _baroBaseline = _baroCurrent = null;
     _micDb = _lux = _proxNear = null;
@@ -148,28 +179,64 @@ class SensorFusionEngine {
     _batteryLevel = _drainPerMin = _lastBatteryLevel = null;
     _lastBatteryAt = null;
     _charging = false;
+
+    await Future.wait([
+      _cancelSubscription(accelSub),
+      _cancelSubscription(gyroSub),
+      _cancelSubscription(baroSub),
+      _cancelSubscription(micSub),
+    ]);
   }
 
-  Future<void> _poll() async {
-    try {
-      final level = (await _battery.batteryLevel).toDouble();
-      final state = await _battery.batteryState;
-      _charging = state == BatteryState.charging || state == BatteryState.full;
-      final now = DateTime.now();
-      if (_lastBatteryLevel != null && _lastBatteryAt != null) {
-        final dropped = _lastBatteryLevel! - level; // positive = draining
-        final mins = now.difference(_lastBatteryAt!).inMilliseconds / 60000.0;
-        if (mins > 0) _drainPerMin = math.max(0.0, dropped / mins);
-      }
-      _lastBatteryLevel = level;
-      _lastBatteryAt = now;
-      _batteryLevel = level;
-    } catch (_) {/* battery unavailable — term renormalises out */}
+  bool _isCurrentSession(int session) => _running && _session == session;
 
-    final lux = await _probe.readOnce('light');
-    if (lux != null) _lux = lux;
-    final prox = await _probe.readOnce('proximity');
-    if (prox != null) _proxNear = prox < _proximityNearCm;
+  Future<void> _cancelSubscription(StreamSubscription<dynamic>? sub) async {
+    try {
+      await sub?.cancel();
+    } catch (_) {
+      // Best-effort cleanup: one plugin cancellation must not leak the rest.
+    }
+  }
+
+  Future<void> _poll(int session) async {
+    if (!_isCurrentSession(session) || _pollInFlightSession == session) return;
+    _pollInFlightSession = session;
+    try {
+      try {
+        final level = (await _battery.batteryLevel).toDouble();
+        final state = await _battery.batteryState;
+        if (!_isCurrentSession(session)) return;
+        _charging = state == BatteryState.charging || state == BatteryState.full;
+        final now = DateTime.now();
+        if (_lastBatteryLevel != null && _lastBatteryAt != null) {
+          final dropped = _lastBatteryLevel! - level; // positive = draining
+          final mins = now.difference(_lastBatteryAt!).inMilliseconds / 60000.0;
+          if (mins > 0) _drainPerMin = math.max(0.0, dropped / mins);
+        }
+        _lastBatteryLevel = level;
+        _lastBatteryAt = now;
+        _batteryLevel = level;
+      } catch (_) {
+        // Battery unavailable: omit its triage term.
+      }
+
+      try {
+        final lux = await _probe.readOnce('light');
+        if (_isCurrentSession(session) && lux != null) _lux = lux;
+      } catch (_) {
+        // Optional sensor unavailable.
+      }
+      try {
+        final prox = await _probe.readOnce('proximity');
+        if (_isCurrentSession(session) && prox != null) {
+          _proxNear = prox < _proximityNearCm;
+        }
+      } catch (_) {
+        // Optional sensor unavailable.
+      }
+    } finally {
+      if (_pollInFlightSession == session) _pollInFlightSession = null;
+    }
   }
 
   /// Snapshot of the current fused state for the [TriageCalculator]. Reads
@@ -258,7 +325,14 @@ class SensorFusionEngine {
   }
 
   void dispose() {
-    if (_running) unawaited(stop());
+    if (_running ||
+        _pollTimer != null ||
+        _accelSub != null ||
+        _gyroSub != null ||
+        _baroSub != null ||
+        _micSub != null) {
+      unawaited(stop());
+    }
   }
 }
 

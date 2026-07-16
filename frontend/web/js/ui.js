@@ -32,7 +32,9 @@ SUAR.ui = (function () {
 
   function fmtCoord(lat, lng) {
     if (lat === null || lat === undefined || lng === null || lng === undefined) return "—";
-    return lat.toFixed(5) + ", " + lng.toFixed(5);
+    const latNum = Number(lat), lngNum = Number(lng);
+    if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) return "—";
+    return latNum.toFixed(5) + ", " + lngNum.toFixed(5);
   }
 
   function truncId(id, n) {

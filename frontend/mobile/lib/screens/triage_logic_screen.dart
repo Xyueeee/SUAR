@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../sensing/sensor_fusion_engine.dart';
+import '../sensing/mic_guard.dart';
 import '../sensing/triage_calculator.dart';
 import '../sensing/triage_config.dart';
 import '../widgets/back_chevron.dart';
@@ -26,7 +27,9 @@ const Color _accent = Color(0xFFA7C7E7);
 const Color _accentInk = Color(0xFF3E6FA8); // darker shade for small text/contrast
 
 class _TriageLogicScreenState extends State<TriageLogicScreen> {
-  final SensorFusionEngine _engine = SensorFusionEngine();
+  final SensorFusionEngine _engine = SensorFusionEngine(
+    microphoneOwner: MicrophoneSessionOwner.triageLogic,
+  );
   TriageConfig _cfg = TriageConfig.active;
   // What every "Reset" button on this page reverts to: the freshest
   // reachable admin default, else the last one this device ever saw, else

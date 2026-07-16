@@ -42,9 +42,16 @@ _http_client = httpx.Client(
     transport=httpx.HTTPTransport(retries=3),  # 4 attempts total, ~0/0.5/1s backoff
 )
 
+_supabase_url = os.getenv("SUPABASE_URL")
+_supabase_secret_key = os.getenv("SUPABASE_SECRET_KEY")
+if not _supabase_url or not _supabase_secret_key:
+    raise RuntimeError(
+        "SUPABASE_URL and SUPABASE_SECRET_KEY must be configured"
+    )
+
 supabase: Client = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SECRET_KEY"),
+    _supabase_url,
+    _supabase_secret_key,
     options=ClientOptions(httpx_client=_http_client),
 )
 
@@ -158,33 +165,33 @@ def ensure_device(
     touch_lastseen: bool = True,
     hardware_id: str | None = None,
 ) -> None:
-    existing = supabase.table("device").select("device_id").eq("device_id", device_id).execute()
-    if existing.data:
-        if touch_lastseen:
-            # touch_lastseen=True only on the device's OWN /sync call (not the
-            # relay-driven "register this bundle's owning victim" call below) —
-            # mode/version can legitimately change after first registration (the
-            # same device switches Victim<->Helper mode, or the app updates).
-            # Without this the row stayed frozen at whatever mode it FIRST
-            # registered with, so a device that started as Victim looked
-            # permanently "victim" in the admin console even once it moved to
-            # Helper mode and was syncing fine.
-            update = {"last_seen_at": _now_iso(), "application_mode": mode}
-            if version is not None:
-                update["application_version"] = version
-            if hardware_id is not None:
-                update["hardware_id"] = hardware_id
-            supabase.table("device").update(update).eq("device_id", device_id).execute()
+    row = {
+        "device_id": device_id,
+        "application_mode": mode,
+        "application_version": version or "unknown",
+    }
+    if hardware_id is not None:
+        row["hardware_id"] = hardware_id
+
+    if touch_lastseen:
+        # The device's own sync refreshes mutable registration details. Omitted
+        # fields retain their existing values, and database defaults populate
+        # registration timestamps on the first insert.
+        row["last_seen_at"] = _now_iso()
+        supabase.table("device").upsert(
+            row,
+            on_conflict="device_id",
+            default_to_null=False,
+        ).execute()
     else:
-        supabase.table("device").insert(
-            {
-                "device_id": device_id,
-                "application_mode": mode,
-                "application_version": version,
-                "hardware_id": hardware_id,
-                "registered_at": _now_iso(),
-                "last_seen_at": _now_iso(),
-            }
+        # Relay-driven registration only ensures the owning victim exists.
+        # ignore_duplicates makes the insert race-safe without overwriting a
+        # real device's current mode/version/last-seen metadata.
+        supabase.table("device").upsert(
+            row,
+            on_conflict="device_id",
+            ignore_duplicates=True,
+            default_to_null=False,
         ).execute()
 
 
@@ -629,7 +636,9 @@ _MAX_IMG_BYTES = 5 * 1024 * 1024
 
 @app.post("/admin/upload")
 async def admin_upload(file: UploadFile = File(...), _=Depends(require_admin)):
-    data = await file.read()
+    # Read at most one byte beyond the limit so an oversized upload cannot be
+    # buffered in full before it is rejected.
+    data = await file.read(_MAX_IMG_BYTES + 1)
     if not data:
         raise HTTPException(status_code=400, detail="Empty file")
     if len(data) > _MAX_IMG_BYTES:

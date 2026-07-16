@@ -10,6 +10,7 @@ import '../communication/ble_manager.dart';
 import '../communication/dtn_manager.dart';
 import '../communication/wifi_direct_manager.dart';
 import '../constants.dart';
+import '../map/map_constants.dart' show bundleInactiveThreshold;
 import '../models/distress_bundle_model.dart';
 import '../storage/sqlite_repository.dart';
 import '../sync/sync_service.dart';
@@ -78,10 +79,13 @@ class HelperController {
   final SyncService _sync = SyncService();
   Timer? _syncTimer;
   static const _syncInterval = Duration(seconds: 45);
+  bool _syncInFlight = false;
 
   Future<void> _syncNow() async {
+    if (_syncInFlight) return;
     final id = deviceId;
     if (id == null) return;
+    _syncInFlight = true;
     try {
       final synced = await _sync.syncLocalBundles(repository, id, 'helper');
       if (synced > 0) {
@@ -91,7 +95,11 @@ class HelperController {
       if (pulled > 0) {
         _emit('Pulled $pulled recent bundle(s) from backend');
       }
-    } catch (_) {/* offline — try again next tick */}
+    } catch (_) {
+      /* offline — try again next tick */
+    } finally {
+      _syncInFlight = false;
+    }
   }
 
   final _statusController = StreamController<String>.broadcast();
@@ -194,8 +202,10 @@ class HelperController {
   static const int _attemptBackoffCapSeconds = 240;
   Duration _effectiveAttemptCooldown(String peerId) {
     final streak = (_attemptFailStreak[peerId] ?? 0).clamp(0, 5);
-    final secs = (_attemptCooldown.inSeconds << streak)
-        .clamp(_attemptCooldown.inSeconds, _attemptBackoffCapSeconds);
+    final secs = (_attemptCooldown.inSeconds << streak).clamp(
+      _attemptCooldown.inSeconds,
+      _attemptBackoffCapSeconds,
+    );
     return Duration(seconds: secs);
   }
 
@@ -338,10 +348,18 @@ class HelperController {
       // DTNManager's relay queue is in-memory only — it starts empty on every
       // fresh HelperController (a new mode-screen instance, e.g. after
       // switching Victim->Helper->Victim->Helper in one app run). Without
-      // this, a bundle this device already carries (confirmed safely in
-      // SQLite, just not yet synced to the backend) would be invisible to
-      // the relay path even though it's still genuinely worth forwarding.
-      final candidates = await repository.getUnsyncedBundles();
+      // this, locally held active bundles would be invisible to the relay
+      // path after a cold restart. Cloud-sync status does not make an active
+      // bundle any less useful to nearby Helpers.
+      final all = await repository.getAllBundles();
+      final now = DateTime.now().toUtc();
+      final candidates = all
+          .where(
+            (bundle) =>
+                now.difference(bundle.createdAt.toUtc()) <=
+                bundleInactiveThreshold,
+          )
+          .toList();
       for (final bundle in candidates) {
         dtnManager.onBundleReceived(bundle);
       }
@@ -352,7 +370,6 @@ class HelperController {
       // bundleStream otherwise only emits when a NEW bundle arrives this
       // session, leaving the screen blank on a fresh Helper restart even
       // though this device is still carrying bundles from before.
-      final all = await repository.getAllBundles();
       if (!_bundleController.isClosed) _bundleController.add(all);
 
       // Counterpart to VictimController's own reactive listener: a Victim's
@@ -373,11 +390,22 @@ class HelperController {
         if (isGroupOwner) return;
         final groupOwnerAddress = info['groupOwnerAddress'] as String?;
         if (groupOwnerAddress == null) return;
-        _emit(
-          'Connection formed unexpectedly. Pulling from $groupOwnerAddress.',
-        );
-        final json = await wifiDirectManager.requestBundle(groupOwnerAddress);
-        await wifiDirectManager.disconnect();
+        _explicitWifiDirectInFlight = true;
+        String? json;
+        try {
+          _emit(
+            'Connection formed unexpectedly. Pulling from $groupOwnerAddress.',
+          );
+          json = await wifiDirectManager.requestBundle(groupOwnerAddress);
+        } catch (e) {
+          _emit('Unexpected-connection pull failed: $e');
+        } finally {
+          await _teardownStep(
+            'Wi-Fi Direct disconnect',
+            wifiDirectManager.disconnect,
+          );
+          _explicitWifiDirectInFlight = false;
+        }
         if (_stopped) return;
         if (json == null || json.isEmpty) {
           _emit('Unexpected-connection pull returned nothing');
@@ -436,11 +464,43 @@ class HelperController {
   }
 
   Future<void> _cancelSubs() async {
-    await _bleStatusSub?.cancel();
-    await _wifiStatusSub?.cancel();
-    await _dtnStatusSub?.cancel();
-    await _bundleReceivedSub?.cancel();
-    await _connectionFormedSub?.cancel();
+    final bleStatusSub = _bleStatusSub;
+    final wifiStatusSub = _wifiStatusSub;
+    final dtnStatusSub = _dtnStatusSub;
+    final bundleReceivedSub = _bundleReceivedSub;
+    final connectionFormedSub = _connectionFormedSub;
+    _bleStatusSub = null;
+    _wifiStatusSub = null;
+    _dtnStatusSub = null;
+    _bundleReceivedSub = null;
+    _connectionFormedSub = null;
+
+    await _teardownStep('BLE status subscription', () async {
+      await bleStatusSub?.cancel();
+    });
+    await _teardownStep('Wi-Fi Direct status subscription', () async {
+      await wifiStatusSub?.cancel();
+    });
+    await _teardownStep('DTN status subscription', () async {
+      await dtnStatusSub?.cancel();
+    });
+    await _teardownStep('Bundle receive subscription', () async {
+      await bundleReceivedSub?.cancel();
+    });
+    await _teardownStep('Connection subscription', () async {
+      await connectionFormedSub?.cancel();
+    });
+  }
+
+  Future<void> _teardownStep(
+    String label,
+    FutureOr<void> Function() step,
+  ) async {
+    try {
+      await step();
+    } catch (e) {
+      _emit('$label teardown failed: $e');
+    }
   }
 
   /// BLE scanning can't tell Victims and peer Helpers apart before
@@ -452,7 +512,8 @@ class HelperController {
     if (_stopped) return;
     _detectedVictims[peerDeviceId] = device;
     final ackedAt = _ackedAt[peerDeviceId];
-    if (ackedAt != null && DateTime.now().difference(ackedAt) < _ackedCooldown) {
+    if (ackedAt != null &&
+        DateTime.now().difference(ackedAt) < _ackedCooldown) {
       return;
     }
     unawaited(_attemptAck(peerDeviceId, device, rssi));
@@ -973,11 +1034,17 @@ class HelperController {
       }
       final groupOwnerAddress = connectionInfo['groupOwnerAddress'] as String;
       _setRadio('Receiving');
-      await _savePulledBundles(
-        await dtnManager.relayMissing(groupOwnerAddress, peerHelperDeviceId),
-      );
-      await wifiDirectManager.disconnect();
-      _setRadio('Searching');
+      try {
+        await _savePulledBundles(
+          await dtnManager.relayMissing(groupOwnerAddress, peerHelperDeviceId),
+        );
+      } finally {
+        await _teardownStep(
+          'Wi-Fi Direct disconnect',
+          wifiDirectManager.disconnect,
+        );
+        _setRadio('Searching');
+      }
     } finally {
       _explicitWifiDirectInFlight = false;
     }
@@ -995,8 +1062,14 @@ class HelperController {
   Future<void> _savePulledBundles(List<DistressBundleModel> bundles) async {
     if (bundles.isEmpty) return;
     for (final bundle in bundles) {
-      _emit('Bundle received: ${bundle.bundleId}');
-      await repository.saveBundle(bundle);
+      try {
+        _emit('Bundle received: ${bundle.bundleId}');
+        await repository.saveBundle(bundle);
+      } catch (e) {
+        // A single locally-unpersistable item must not suppress later valid
+        // bundles returned in the same Helper relay response.
+        _emit('Rejected bundle ${bundle.bundleId} during local save: $e');
+      }
     }
     final all = await repository.getAllBundles();
     if (!_bundleController.isClosed) _bundleController.add(all);
@@ -1009,14 +1082,28 @@ class HelperController {
       // a JSON array; a single Victim push/pull arrives as a JSON object —
       // the two paths share this same native transport and event, so the
       // shape of the decoded JSON is what tells them apart.
-      final bundleMaps = decoded is List
-          ? decoded.cast<Map<String, dynamic>>()
-          : [decoded as Map<String, dynamic>];
-      for (final map in bundleMaps) {
-        final bundle = DistressBundleModel.fromJson(map);
-        _emit('Bundle received: ${bundle.bundleId}');
-        await repository.saveBundle(bundle);
-        dtnManager.onBundleReceived(bundle);
+      final bundleValues = decoded is List ? decoded : [decoded];
+      for (final raw in bundleValues) {
+        try {
+          final bundle = tryParsePlausibleBundle(raw);
+          if (bundle == null) {
+            // Backend-bounds mirror (isPlausibleBundle): persisting this would
+            // poison the sync batch, relaying it would spread it further.
+            _emit(
+              'Rejected malformed/implausible bundle '
+              '${transportedBundleLabel(raw)}',
+            );
+            continue;
+          }
+          _emit('Bundle received: ${bundle.bundleId}');
+          await repository.saveBundle(bundle);
+          dtnManager.onBundleReceived(bundle);
+        } catch (e) {
+          _emit(
+            'Rejected bundle ${transportedBundleLabel(raw)} '
+            'during local processing: $e',
+          );
+        }
       }
       final all = await repository.getAllBundles();
       if (!_bundleController.isClosed) _bundleController.add(all);
@@ -1035,48 +1122,58 @@ class HelperController {
   }
 
   Future<void> stopHelperMode({bool quiet = false}) async {
+    _stopped = true;
     try {
-      _stopped = true;
-      _radioWatchdog?.cancel();
-      _syncTimer?.cancel();
-      for (final timer in _ackRetryTimers.values) {
-        timer.cancel();
-      }
-      _ackRetryTimers.clear();
-      for (final timer in _pullOwnerTeardownTimers.values) {
-        timer.cancel();
-      }
-      _pullOwnerTeardownTimers.clear();
-      // Ack bookkeeping must clear with the timers above: a retry that was
-      // pending when its timer was cancelled has already re-added its victim
-      // to _ackInFlight, and nothing else ever removes it — after a
-      // pause/resume that victim would be silently un-ackable for the rest
-      // of the session.
-      _ackInFlight.clear();
-      _ackAttempts.clear();
-      _ackedAt.clear();
-      _detectedVictims.clear();
-      _wifiStuckStreak = 0;
-      _pullEndedAsOwnerStreak.clear();
-      _pulledRecentlyAt.clear();
-      _relayedRecentlyAt.clear();
-      _attemptedRecentlyAt.clear();
-      _attemptFailStreak.clear();
-      _peerServicedAt.clear();
-      _explicitWifiDirectInFlight = false;
-      await bleManager.stopScanning();
-      await bleManager.stopAdvertising();
-      await wifiDirectManager.stopServer();
-      // Tear down any P2P group this Helper still owns (hosted for a Victim,
-      // or the relay election's autonomous GO) — mirrors stopVictimMode.
-      // Leaving it up kept the radio busy and this device discoverable after
-      // the user explicitly stopped Helper mode.
-      await wifiDirectManager.disconnect();
+      await _teardownStep('Radio watchdog timer', () {
+        _radioWatchdog?.cancel();
+        _radioWatchdog = null;
+      });
+      await _teardownStep('Sync timer', () {
+        _syncTimer?.cancel();
+        _syncTimer = null;
+      });
+      await _teardownStep('ACK retry timers', () {
+        for (final timer in _ackRetryTimers.values) {
+          timer.cancel();
+        }
+        _ackRetryTimers.clear();
+      });
+      await _teardownStep('Pull-owner teardown timers', () {
+        for (final timer in _pullOwnerTeardownTimers.values) {
+          timer.cancel();
+        }
+        _pullOwnerTeardownTimers.clear();
+      });
+      await _teardownStep('Helper session bookkeeping', () {
+        // Ack bookkeeping must clear with the timers above: a retry that was
+        // pending when its timer was cancelled has already re-added its victim
+        // to _ackInFlight, and nothing else ever removes it.
+        _ackInFlight.clear();
+        _ackAttempts.clear();
+        _ackedAt.clear();
+        _detectedVictims.clear();
+        _wifiStuckStreak = 0;
+        _pullEndedAsOwnerStreak.clear();
+        _pulledRecentlyAt.clear();
+        _relayedRecentlyAt.clear();
+        _attemptedRecentlyAt.clear();
+        _attemptFailStreak.clear();
+        _peerServicedAt.clear();
+        _explicitWifiDirectInFlight = false;
+      });
+      await _teardownStep('BLE scan', bleManager.stopScanning);
+      await _teardownStep('BLE advertising', bleManager.stopAdvertising);
+      await _teardownStep('Wi-Fi Direct server', wifiDirectManager.stopServer);
       await _cancelSubs();
-      if (!quiet) _emit('Helper mode stopped');
-    } catch (e) {
-      _emit('Helper mode stop failed: $e');
+    } finally {
+      // Always remove any P2P group this Helper still owns, even if another
+      // teardown step failed.
+      await _teardownStep(
+        'Wi-Fi Direct disconnect',
+        wifiDirectManager.disconnect,
+      );
     }
+    if (!quiet) _emit('Helper mode stopped');
   }
 
   void dispose() {

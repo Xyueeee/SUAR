@@ -88,7 +88,9 @@ Stream<String> liveSensorLabel(
       // guardedNoiseStream: collapsing + re-expanding this row is a rapid mic
       // stop→start, the exact pattern that crashes audio_streamer natively —
       // see mic_guard.dart.
-      return guardedNoiseStream().map((r) => '${r.meanDecibel.toStringAsFixed(1)} dB');
+      return guardedNoiseStream(
+        owner: MicrophoneSessionOwner.deviceTest,
+      ).map((r) => '${r.meanDecibel.toStringAsFixed(1)} dB');
     case DeviceSensor.proximity:
       // Emit only when the near/far state actually FLIPS. Some OEM proximity
       // sensors (e.g. Samsung exposes a continuous "palm" gesture sensor in

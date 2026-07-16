@@ -24,6 +24,7 @@ SUAR.views._docsEditor = (function () {
     const lvlLabel = (v) => v ? v.charAt(0).toUpperCase() + v.slice(1) : "";
     let active = categories[0];
     let allRows = [], search = "", sortKey = NOTICE ? "updated" : "order";
+    let page = 1, pageSize = 50, _pageRows = [];
     let catUsePercent = false;
     const selected = new Set();
 
@@ -39,7 +40,7 @@ SUAR.views._docsEditor = (function () {
         '<button class="btn btn--primary btn--sm" id="d-new">+ New ' + (NOTICE ? "notice" : (categories.length > 1 ? "guide" : "plan")) + "</button></div>" +
         tabs +
         '<div class="list-toolbar">' +
-          '<input class="input" id="d-search" placeholder="Search title…" value="' + SUAR.ui.esc(search) + '" style="max-width:240px">' +
+          '<input class="input input--search" id="d-search" placeholder="Search title…" value="' + SUAR.ui.esc(search) + '">' +
           '<select class="select" id="d-sort" style="max-width:175px">' +
             sortOpts.map((o) => { const p = o.split("|"); return '<option value="' + p[0] + '"' + (sortKey === p[0] ? " selected" : "") + ">" + p[1] + "</option>"; }).join("") +
           '</select>' + (!NOTICE ? '<label class="switch switch--inline" id="d-pct-label" title="Show overall % progress card in the app for this category" style="margin-left:8px"><input type="checkbox" id="d-pct-cat"><span class="switch__track"></span> Show % card</label>' : "") + '<span class="spacer"></span>' +
@@ -47,8 +48,8 @@ SUAR.views._docsEditor = (function () {
         "</div>" +
         '<div class="card"><div class="table-wrap" id="d-table">' + SUAR.ui.spinner() + "</div></div>";
       document.getElementById("d-new").addEventListener("click", () => openEditor(null, active));
-      container.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => { active = t.dataset.cat; selected.clear(); render(container); }));
-      document.getElementById("d-search").addEventListener("input", (e) => { search = e.target.value; renderTable(); });
+      container.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => { active = t.dataset.cat; selected.clear(); page = 1; render(container); }));
+      document.getElementById("d-search").addEventListener("input", (e) => { search = e.target.value; page = 1; renderTable(); });
       document.getElementById("d-sort").addEventListener("change", (e) => { sortKey = e.target.value; renderTable(); });
       document.querySelectorAll("[data-bulk]").forEach((b) => b.addEventListener("click", () => bulkAction(b.dataset.bulk)));
       const pctCatEl = document.getElementById("d-pct-cat");
@@ -85,8 +86,13 @@ SUAR.views._docsEditor = (function () {
     function renderTable() {
       const wrap = document.getElementById("d-table");
       if (!wrap) return;
-      const rows = visibleRows();
-      if (!rows.length) { wrap.innerHTML = SUAR.ui.empty(search ? "No matches" : "Nothing here yet", search ? "Try a different search." : (NOTICE ? "Create a notice." : "Create a " + CAT_LABELS[active] + " doc.")); return; }
+      const all = visibleRows();
+      if (!all.length) { wrap.innerHTML = SUAR.ui.empty(search ? "No matches" : "Nothing here yet", search ? "Try a different search." : (NOTICE ? "Create a notice." : "Create a " + CAT_LABELS[active] + " doc.")); return; }
+      const total = all.length;
+      page = SUAR.ui.pageClamp(page, total, pageSize);
+      _pageRows = all.slice((page - 1) * pageSize, page * pageSize);
+      const rows = _pageRows;
+      const canReorder = !NOTICE && sortKey === "order" && !search.trim();
       const head = NOTICE
         ? '<th style="width:34px"><input type="checkbox" id="d-selall"></th><th>Title</th><th>Level</th><th>Updated</th><th>Active</th><th></th>'
         : '<th style="width:34px"><input type="checkbox" id="d-selall"></th><th>Title</th><th>Structure</th><th>Updated</th><th>Published</th><th></th>';
@@ -100,7 +106,11 @@ SUAR.views._docsEditor = (function () {
             const s = parseStruct(d.structure); const c = countNodes(s.nodes);
             mid = '<td class="muted">' + c.sections + " sec / " + c.items + " items" + (d.use_percent ? " · %" : "") + "</td>";
           }
-          const acts = (NOTICE ? "" : '<button class="icon-btn" data-up title="Move up">↑</button><button class="icon-btn" data-down title="Move down">↓</button>') +
+          // Reorder renumbers order_index across the whole visible list, so it
+          // is only offered in unfiltered manual-order mode — under a search or
+          // another sort it would renumber just the matches and clobber the
+          // order of everything filtered out.
+          const acts = (canReorder ? '<button class="icon-btn" data-up title="Move up">↑</button><button class="icon-btn" data-down title="Move down">↓</button>' : "") +
             '<button class="btn btn--ghost btn--sm" data-edit>Edit</button><button class="btn btn--danger btn--sm" data-del>Delete</button>';
           return '<tr class="row-link" title="Click to view">' +
             '<td><input type="checkbox" class="d-sel"' + (selected.has(d[PK]) ? " checked" : "") + "></td>" +
@@ -109,7 +119,7 @@ SUAR.views._docsEditor = (function () {
             '<td class="muted">' + SUAR.ui.fmtRelative(d.updated_at) + "</td>" +
             '<td><label class="switch switch--sm"><input type="checkbox" class="d-pubsw"' + (d[STATUS] ? " checked" : "") + '><span class="switch__track"></span></label></td>' +
             '<td class="cell-actions">' + acts + "</td></tr>";
-        }).join("") + "</tbody></table>";
+        }).join("") + "</tbody></table>" + SUAR.ui.pagerControls(total, page, pageSize);
       const trs = wrap.querySelectorAll("tbody tr");
       rows.forEach((d, i) => {
         const tr = trs[i];
@@ -135,10 +145,11 @@ SUAR.views._docsEditor = (function () {
       });
       const selall = wrap.querySelector("#d-selall");
       selall.addEventListener("change", (e) => { rows.forEach((d) => e.target.checked ? selected.add(d[PK]) : selected.delete(d[PK])); updateBulkBar(); renderTable(); });
+      SUAR.ui.bindPager(wrap, total, page, pageSize, (p, s) => { page = p; pageSize = s; renderTable(); });
       syncSelAll();
     }
 
-    function syncSelAll() { const el = document.getElementById("d-selall"); if (!el) return; const rows = visibleRows(); el.checked = rows.length > 0 && rows.every((d) => selected.has(d[PK])); }
+    function syncSelAll() { const el = document.getElementById("d-selall"); if (!el) return; el.checked = _pageRows.length > 0 && _pageRows.every((d) => selected.has(d[PK])); }
     function updateBulkBar() { const bar = document.getElementById("d-bulk"); if (!bar) return; bar.style.display = selected.size ? "flex" : "none"; const c = document.getElementById("d-selcount"); if (c) c.textContent = selected.size + " selected"; }
 
     async function bulkAction(act) {
@@ -492,6 +503,7 @@ SUAR.views._docsEditor = (function () {
         const btn = e.target;
         const title = overlay.querySelector("#d-title").value.trim();
         if (!title) { SUAR.ui.toast("Title required", "err"); return; }
+        if (title.length > 120) { SUAR.ui.toast("Title is too long (max 120 characters)", "err"); return; }
         const structure = { nodes: clean(state.nodes) };
         const catSel = overlay.querySelector("#d-cat");
         const level = catSel ? catSel.value : state.category;

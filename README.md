@@ -56,7 +56,7 @@ ADMIN_EMAILS=your-admin-email@example.com
 ### 2.4 Run the backend
 
 ```bash
-venv/Scripts/python -m uvicorn main:app --port 8000
+cd backend; venv/Scripts/python -m uvicorn main:app --port 8000
 # or, with the venv activated: uvicorn main:app --port 8000
 ```
 
@@ -79,8 +79,7 @@ In the Supabase Dashboard: **Authentication → Users → Add user**, tick **Aut
 ### 3.2 Serve the console
 
 ```bash
-cd frontend/web
-python -m http.server 5500
+cd frontend/web; python -m http.server 5500
 ```
 
 Open <http://127.0.0.1:5500>. Click the **gear** icon (bottom-right), paste the backend URL (the ngrok URL, or `http://127.0.0.1:8000` if the backend runs on the same machine), then **Test & Save**. Sign in with the admin user created above.

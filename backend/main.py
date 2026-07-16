@@ -260,6 +260,25 @@ def sync(payload: SyncRequest):
                         "updated_at": bundle.updatedAt.isoformat(),
                     }
                 ).eq("distress_bundle_id", bundle.bundleId).execute()
+                if bundle.sensorReadings:
+                    # The refreshed copy carries the CURRENT readings snapshot —
+                    # replace the stored one (delete + insert, mirroring the
+                    # on-device SQLiteRepository.saveBundle), otherwise only the
+                    # very first push's readings ever land and re-inserting
+                    # would pile up duplicates (sensor_reading_id is generated).
+                    supabase.table("sensor_reading").delete().eq("distress_bundle_id", bundle.bundleId).execute()
+                    supabase.table("sensor_reading").insert(
+                        [
+                            {
+                                "distress_bundle_id": bundle.bundleId,
+                                "sensor_type": r.sensorType,
+                                "raw_value": r.rawValue,
+                                "normalised_value": r.normalisedValue,
+                                "recorded_at": r.recordedAt.isoformat(),
+                            }
+                            for r in bundle.sensorReadings
+                        ]
+                    ).execute()
                 supabase.table("sync_record").upsert(
                     {"distress_bundle_id": bundle.bundleId, "synced_at": _now_iso(), "server_status": "duplicate"},
                     on_conflict="distress_bundle_id",
@@ -727,6 +746,26 @@ _TRIAGE_BOOL_FIELDS = {
     "fall_enabled", "faint_enabled", "low_battery_enabled", "critical_battery_enabled",
 }
 
+# Upper/lower bounds per field, mirroring RANGES in frontend/web/js/views/system.js.
+# The console guards these too, but that is a convenience — this is the trust
+# boundary, and a partial PATCH straight to the API would otherwise happily
+# store a 500% battery threshold as the default for every device.
+_TRIAGE_RANGES = {
+    "w_motion": (0, 100), "w_battery": (0, 100), "w_mic": (0, 100),
+    "w_barometer": (0, 100), "w_light": (0, 100), "w_proximity": (0, 100),
+    "score_cap": (1, 1000),
+    "critical_threshold": (0, 1000), "high_threshold": (0, 1000), "moderate_threshold": (0, 1000),
+    "fall_boost": (0, 500), "fall_latch_seconds": (1, 3600),
+    "faint_boost": (0, 500), "faint_immobile_seconds": (1, 3600),
+    "low_battery_threshold": (0, 100), "low_battery_boost": (0, 500),
+    "critical_battery_threshold": (0, 100), "critical_battery_boost": (0, 500),
+    "battery_comfort_level": (0, 100),
+    "pressure_max_deviation_hpa": (0.1, 500),
+    "mic_min_db": (0, 200), "mic_max_db": (0, 200),
+    "dark_below_lux": (0, 200000), "bright_above_lux": (0, 200000),
+    "battery_fast_drain_per_min": (0.01, 100),
+}
+
 
 @app.get("/admin/triage-config")
 def admin_get_triage_config(_=Depends(require_admin)):
@@ -748,6 +787,10 @@ def admin_update_triage_config(payload: dict = Body(...), _=Depends(require_admi
         elif isinstance(v, bool) or not isinstance(v, (int, float)) \
                 or not math.isfinite(v) or v < 0:
             raise HTTPException(status_code=400, detail=f"{k} must be a non-negative number")
+        else:
+            lo, hi = _TRIAGE_RANGES.get(k, (None, None))
+            if lo is not None and not (lo <= v <= hi):
+                raise HTTPException(status_code=400, detail=f"{k} must be between {lo} and {hi} (got {v})")
         row[k] = v
     if not row:
         raise HTTPException(status_code=400, detail="No editable fields supplied")

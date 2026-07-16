@@ -23,6 +23,36 @@ SUAR.views.system = (function () {
     dark_below_lux: 40, bright_above_lux: 25000, battery_fast_drain_per_min: 2,
   };
 
+  // Per-field [min, max]. The backend already rejects non-finite/negative
+  // numbers; these add the bounds it can't know — percentages are 0-100, and
+  // the rest get a sane ceiling so a fat-fingered 500 (meant 50) can't ship a
+  // nonsense default to every device. Also drives the inputs' min/max attrs.
+  const RANGES = {
+    w_motion: [0, 100], w_battery: [0, 100], w_mic: [0, 100],
+    w_barometer: [0, 100], w_light: [0, 100], w_proximity: [0, 100],
+    score_cap: [1, 1000],
+    critical_threshold: [0, 1000], high_threshold: [0, 1000], moderate_threshold: [0, 1000],
+    fall_boost: [0, 500], fall_latch_seconds: [1, 3600],
+    faint_boost: [0, 500], faint_immobile_seconds: [1, 3600],
+    low_battery_threshold: [0, 100], low_battery_boost: [0, 500],
+    critical_battery_threshold: [0, 100], critical_battery_boost: [0, 500],
+    battery_comfort_level: [0, 100],
+    pressure_max_deviation_hpa: [0.1, 500],
+    mic_min_db: [0, 200], mic_max_db: [0, 200],
+    dark_below_lux: [0, 200000], bright_above_lux: [0, 200000],
+    battery_fast_drain_per_min: [0.01, 100],
+  };
+
+  // [greater, lesser, message] — each pair must strictly descend or the rule
+  // it feeds becomes unreachable / inverted on the device.
+  const ORDER_RULES = [
+    ["critical_threshold", "high_threshold", "Tier thresholds must descend: Critical at > High at"],
+    ["high_threshold", "moderate_threshold", "Tier thresholds must descend: High at > Moderate at"],
+    ["mic_max_db", "mic_min_db", "Mic loud ceiling must be above the quiet floor"],
+    ["bright_above_lux", "dark_below_lux", "Light: bright-above must be higher than dark-below"],
+    ["low_battery_threshold", "critical_battery_threshold", "Low battery % must be above critical battery %"],
+  ];
+
   const FIELD_GROUPS = [
     { title: "Sensor weights", fields: [
       ["w_motion", "Motion (accel + gyro)"], ["w_battery", "Battery"], ["w_mic", "Microphone"],
@@ -94,8 +124,11 @@ SUAR.views.system = (function () {
 
   function numField(key, label) {
     const v = cfg[key] ?? DEFAULTS[key];
+    const r = RANGES[key];
     return '<div class="field"><label>' + SUAR.ui.esc(label) + '</label>' +
-      '<input class="input" type="number" step="any" data-field="' + key + '" value="' + v + '"></div>';
+      '<input class="input" type="number" step="any"' +
+      (r ? ' min="' + r[0] + '" max="' + r[1] + '"' : "") +
+      ' data-field="' + key + '" value="' + v + '"></div>';
   }
 
   function toggleField(key, label) {
@@ -186,7 +219,7 @@ SUAR.views.system = (function () {
       '<label class="switch" style="margin-bottom:14px"><input type="checkbox" id="lock-enabled"' +
       (lock.enabled ? " checked" : "") + '><span class="switch__track"></span>Require password</label>' +
       '<div class="field"><label>Set new password</label>' +
-      '<input class="input" type="password" id="lock-password" placeholder="Leave blank to keep current password"></div>' +
+      '<input class="input" type="password" id="lock-password" minlength="4" autocomplete="new-password" placeholder="Leave blank to keep current password"></div>' +
       '<button class="btn btn--primary btn--sm" id="lock-save">Save lock settings</button>' +
       "</div></div>";
 
@@ -201,22 +234,39 @@ SUAR.views.system = (function () {
   // non-negative NOT NULL number server-side.
   function collectTriagePayload() {
     const payload = {};
-    let bad = null;
+    let bad = null, badMsg = "";
     document.querySelectorAll("[data-field]").forEach((el) => {
       if (el.type === "checkbox") { payload[el.dataset.field] = el.checked; return; }
+      const key = el.dataset.field;
       const v = Number(el.value);
-      if (el.value.trim() === "" || !Number.isFinite(v) || v < 0) bad = bad || el.dataset.field;
-      payload[el.dataset.field] = v;
+      if (el.value.trim() === "" || !Number.isFinite(v) || v < 0) {
+        if (!bad) { bad = key; badMsg = "needs a number of 0 or more"; }
+      } else {
+        const r = RANGES[key];
+        if (r && (v < r[0] || v > r[1]) && !bad) { bad = key; badMsg = "must be between " + r[0] + " and " + r[1]; }
+      }
+      payload[key] = v;
     });
     if (bad) {
-      SUAR.ui.toast('"' + (FIELD_LABELS[bad] || bad) + '" needs a number of 0 or more', "err");
+      SUAR.ui.toast('"' + (FIELD_LABELS[bad] || bad) + '" ' + badMsg, "err");
       return null;
     }
-    // Device-side tier classification is first-match-wins (critical, then
-    // high, then moderate), so out-of-order thresholds silently kill tiers.
-    if (!(payload.critical_threshold > payload.high_threshold &&
-          payload.high_threshold > payload.moderate_threshold)) {
-      SUAR.ui.toast("Tier thresholds must descend: Critical > High > Moderate", "err");
+    // Device-side tier classification is first-match-wins (critical, then high,
+    // then moderate) and the normalisation ranges divide by (max - min), so any
+    // inverted pair silently kills a tier or a sensor.
+    for (const [hi, lo, msg] of ORDER_RULES) {
+      if (!(payload[hi] > payload[lo])) { SUAR.ui.toast(msg, "err"); return null; }
+    }
+    // A score is capped at score_cap, so a Critical threshold above the cap can
+    // never be reached — the tier would be dead on every device.
+    if (payload.critical_threshold > payload.score_cap) {
+      SUAR.ui.toast("Critical at (" + payload.critical_threshold + ") can never be reached above the score cap (" + payload.score_cap + ")", "err");
+      return null;
+    }
+    // All-zero weights means every bundle scores 0 and nothing ever triages.
+    const weightSum = SENSOR_METERS.reduce((a, [k]) => a + (payload[k] || 0), 0);
+    if (weightSum <= 0) {
+      SUAR.ui.toast("At least one sensor weight must be above 0", "err");
       return null;
     }
     return payload;
@@ -228,7 +278,7 @@ SUAR.views.system = (function () {
     const btn = document.getElementById("sys-save");
     btn.disabled = true;
     try {
-      cfg = await SUAR.api.patch("/admin/triage-config", collectTriagePayload());
+      cfg = await SUAR.api.patch("/admin/triage-config", payload);
       SUAR.ui.toast("Triage config saved", "ok");
     } catch (e) {
       SUAR.ui.toast(e.message, "err");
@@ -256,6 +306,11 @@ SUAR.views.system = (function () {
     const btn = document.getElementById("lock-save");
     const enabled = document.getElementById("lock-enabled").checked;
     const password = document.getElementById("lock-password").value.trim();
+    // Mirrors the backend's >= 4 rule so it fails here instead of round-tripping.
+    if (password && password.length < 4) {
+      SUAR.ui.toast("Password must be at least 4 characters", "err");
+      return;
+    }
     btn.disabled = true;
     try {
       const payload = { enabled };

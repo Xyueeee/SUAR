@@ -399,6 +399,18 @@ body.authed .login-screen { display: none; }
 .chip--off { color: var(--muted); }
 .chip--victim { color: #b23b3b; background: #fbeaea; border-color: #f0c9c9; }
 
+/* Duplicate-device marker: same hardware_id as another row. Outlined (not
+ * filled) so it reads as a quiet hint, consistent with the rest of the UI. */
+.dup-ico {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; border-radius: 50%;
+  background: transparent; color: var(--moderate);
+  border: 1.5px solid var(--moderate);
+  font-size: 10px; font-weight: 700; line-height: 1;
+  font-family: var(--font-body); cursor: help;
+  vertical-align: 1px; margin-left: 3px;
+}
+
 /* --------------------------------------------------------------------------- */
 /* Tables                                                                      */
 /* --------------------------------------------------------------------------- */
@@ -423,8 +435,6 @@ table.data tbody tr.clickable { cursor: pointer; }
 .mono-cell { font-family: var(--font-mono); font-size: 12px; color: var(--ink); }
 .id-trunc { font-family: var(--font-mono); font-size: 12px; }
 
-.toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 16px; }
-.toolbar .select, .toolbar .input { width: auto; min-width: 140px; padding: 7px 11px; }
 
 /* --------------------------------------------------------------------------- */
 /* Empty / loading                                                             */
@@ -854,9 +864,31 @@ table.data tbody tr.clickable { cursor: pointer; }
 .field-err { color: #c0564e; font-size: 12px; margin-top: 4px; }
 
 /* list toolbar + bulk bar + compact switch + raw editor */
+/* One toolbar layout for every list page (bundles, devices, docs, zones) so
+ * filters/search/sort/bulk always sit in the same order and alignment. */
 .list-toolbar { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; flex-wrap: wrap; }
+.list-toolbar .select, .list-toolbar .input { width: auto; min-width: 140px; padding: 7px 11px; }
+/* Search is the most-used control on every list page — give it real room
+ * instead of a token width. Fixed basis (not flex-grow) so the .spacer still
+ * pushes the bulk bar to the right edge. */
+.list-toolbar .input--search { flex: 0 1 360px; min-width: 200px; }
+.list-toolbar .spacer { flex: 1; }
 .bulkbar { display: flex; align-items: center; gap: 8px; }
 .bulkbar .muted { font-size: 13px; }
+
+/* Click-to-copy cells (IDs, coordinates) */
+.copyable { cursor: pointer; border-radius: 4px; padding: 1px 3px; margin: -1px -3px; transition: background 0.12s; }
+.copyable:hover { background: var(--surface-2); box-shadow: 0 0 0 1px var(--line); }
+
+/* Shared list pager (sits at the foot of a table card). ponytail: lives inside
+ * the .table-wrap scroll box; fine unless a table gets wide enough to scroll
+ * horizontally, then lift it out into its own card footer. */
+.pager { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-top: 1px solid var(--line); font-size: 13px; }
+.pager__info { color: var(--muted); }
+.pager__spacer { flex: 1; }
+.pager__page { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 46px; text-align: center; }
+.pager__size { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+.pager__size .select { width: auto; min-width: 68px; padding: 5px 8px; }
 .switch--sm { transform: scale(0.82); transform-origin: left center; }
 .raw-editor { width: 100%; height: calc(100% - 40px); min-height: 360px; resize: none; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.5; border: 1px solid var(--line-strong); border-radius: var(--r-sm); padding: 12px; background: #0f141b; color: #d7e0ea; }
 .docset { gap: 12px; }

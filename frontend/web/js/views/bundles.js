@@ -7,7 +7,9 @@ SUAR.views.bundles = (function () {
   const TIERS = ["Critical", "High", "Moderate", "Low", "None"];
   let filters = { tier: "" };
   let search = "", sortKey = "created";
+  let page = 1, pageSize = 50;
   let allRows = [];
+  let _pageRows = [];
   const selected = new Set();
 
   function query() {
@@ -18,22 +20,22 @@ SUAR.views.bundles = (function () {
 
   async function render(container) {
     container.innerHTML =
-      '<div class="toolbar">' +
+      '<div class="list-toolbar">' +
         '<select class="select" id="f-tier"><option value="">All tiers</option>' +
           TIERS.map((t) => '<option' + (filters.tier === t ? " selected" : "") + ">" + t + "</option>").join("") + "</select>" +
-        '<input class="input" id="b-search" placeholder="Search device or bundle ID…" value="' + SUAR.ui.esc(search) + '" style="max-width:240px">' +
+        '<input class="input input--search" id="b-search" placeholder="Search device ID, bundle ID or location…" value="' + SUAR.ui.esc(search) + '">' +
         '<select class="select" id="b-sort" style="max-width:175px">' +
           [["created", "Newest first"], ["updated", "Recently updated"], ["score", "Score high–low"], ["tier", "Tier"]]
             .map((o) => '<option value="' + o[0] + '"' + (sortKey === o[0] ? " selected" : "") + ">" + o[1] + "</option>").join("") +
         "</select>" +
+        '<span class="spacer"></span>' +
         '<div class="bulkbar" id="b-bulk" style="display:none"><span class="muted" id="b-selcount"></span><button class="btn btn--danger btn--sm" data-bulk="del">Delete</button></div>' +
-        '<span style="flex:1"></span>' +
         '<button class="btn btn--ghost btn--sm" id="f-refresh">Refresh</button>' +
       "</div>" +
       '<div class="card"><div class="table-wrap" id="b-table">' + SUAR.ui.spinner() + "</div></div>";
 
-    document.getElementById("f-tier").addEventListener("change", (e) => { filters.tier = e.target.value; load(); });
-    document.getElementById("b-search").addEventListener("input", (e) => { search = e.target.value; renderTable(); });
+    document.getElementById("f-tier").addEventListener("change", (e) => { filters.tier = e.target.value; page = 1; load(); });
+    document.getElementById("b-search").addEventListener("input", (e) => { search = e.target.value; page = 1; renderTable(); });
     document.getElementById("b-sort").addEventListener("change", (e) => { sortKey = e.target.value; renderTable(); });
     document.getElementById("f-refresh").addEventListener("click", load);
     document.querySelectorAll("[data-bulk]").forEach((b) => b.addEventListener("click", () => bulkDelete()));
@@ -59,8 +61,7 @@ SUAR.views.bundles = (function () {
   function syncSelAll() {
     const el = document.getElementById("b-selall");
     if (!el) return;
-    const rows = visibleRows();
-    el.checked = rows.length > 0 && rows.every((b) => selected.has(b.distress_bundle_id));
+    el.checked = _pageRows.length > 0 && _pageRows.every((b) => selected.has(b.distress_bundle_id));
   }
 
   async function bulkDelete() {
@@ -77,7 +78,12 @@ SUAR.views.bundles = (function () {
   function visibleRows() {
     let rows = allRows.slice();
     const q = search.trim().toLowerCase();
-    if (q) rows = rows.filter((b) => (b.device_id || "").toLowerCase().includes(q) || (b.distress_bundle_id || "").toLowerCase().includes(q));
+    // Location is matched against the same "lat, lng" string the table shows,
+    // so typing a prefix like "3.13" or a pasted coordinate pair both hit.
+    if (q) rows = rows.filter((b) =>
+      (b.device_id || "").toLowerCase().includes(q) ||
+      (b.distress_bundle_id || "").toLowerCase().includes(q) ||
+      SUAR.ui.fmtCoord(b.estimated_lat, b.estimated_lng).toLowerCase().includes(q));
     rows.sort((a, b) => {
       if (sortKey === "updated") return new Date(b.updated_at || 0) - new Date(a.updated_at || 0);
       if (sortKey === "score") return (b.priority_score ?? -1) - (a.priority_score ?? -1);
@@ -90,22 +96,26 @@ SUAR.views.bundles = (function () {
   function renderTable() {
     const wrap = document.getElementById("b-table");
     if (!wrap) return;
-    const rows = visibleRows();
-    if (!rows.length) { wrap.innerHTML = SUAR.ui.empty(search ? "No matches" : "No bundles match", search ? "Try a different search." : "Adjust the filters or wait for a sync."); return; }
+    const all = visibleRows();
+    if (!all.length) { wrap.innerHTML = SUAR.ui.empty(search ? "No matches" : "No bundles match", search ? "Try a different search." : "Adjust the filters or wait for a sync."); return; }
+    const total = all.length;
+    page = SUAR.ui.pageClamp(page, total, pageSize);
+    _pageRows = all.slice((page - 1) * pageSize, page * pageSize);
     wrap.innerHTML =
-      '<table class="data"><thead><tr><th style="width:34px"><input type="checkbox" id="b-selall"></th><th>Tier</th><th>Score</th><th>Device</th><th>Hops</th><th>Location</th><th>Activity</th><th>Created</th></tr></thead><tbody>' +
-      rows.map((b) =>
+      '<table class="data"><thead><tr><th style="width:34px"><input type="checkbox" id="b-selall"></th><th>Tier</th><th>Score</th><th>Device ID</th><th>Hops</th><th>Location</th><th>Activity</th><th>Created</th></tr></thead><tbody>' +
+      _pageRows.map((b) =>
         '<tr class="clickable row-accent" data-id="' + SUAR.ui.esc(b.distress_bundle_id) + '" style="border-left-color:' + tierColor(b.priority_tier) + '">' +
         '<td><input type="checkbox" class="b-sel"' + (selected.has(b.distress_bundle_id) ? " checked" : "") + "></td>" +
         "<td>" + SUAR.ui.tierBadge(b.priority_tier) + "</td>" +
         '<td class="mono-cell">' + (b.priority_score != null ? b.priority_score.toFixed(3) : "—") + "</td>" +
-        '<td class="id-trunc">' + SUAR.ui.truncId(b.device_id, 12) + "</td>" +
+        '<td class="id-trunc">' + SUAR.ui.copyable(b.device_id, SUAR.ui.truncId(b.device_id, 12)) + "</td>" +
         '<td class="mono-cell">' + (b.hop_count ?? 0) + "</td>" +
-        '<td class="mono-cell">' + SUAR.ui.fmtCoord(b.estimated_lat, b.estimated_lng) + "</td>" +
+        '<td class="mono-cell">' + (b.estimated_lat != null && b.estimated_lng != null ? SUAR.ui.copyable(SUAR.ui.fmtCoord(b.estimated_lat, b.estimated_lng)) : SUAR.ui.fmtCoord(b.estimated_lat, b.estimated_lng)) + "</td>" +
         "<td>" + activityChip(b.updated_at) + "</td>" +
         '<td class="muted">' + SUAR.ui.fmtRelative(b.created_at) + "</td>" +
         "</tr>"
-      ).join("") + "</tbody></table>";
+      ).join("") + "</tbody></table>" +
+      SUAR.ui.pagerControls(total, page, pageSize);
 
     wrap.querySelectorAll("tr[data-id]").forEach((tr) => {
       tr.addEventListener("click", () => openDetail(tr.dataset.id));
@@ -119,9 +129,10 @@ SUAR.views.bundles = (function () {
     const selall = wrap.querySelector("#b-selall");
     selall.addEventListener("click", (e) => e.stopPropagation());
     selall.addEventListener("change", (e) => {
-      rows.forEach((b) => e.target.checked ? selected.add(b.distress_bundle_id) : selected.delete(b.distress_bundle_id));
+      _pageRows.forEach((b) => e.target.checked ? selected.add(b.distress_bundle_id) : selected.delete(b.distress_bundle_id));
       updateBulkBar(); renderTable();
     });
+    SUAR.ui.bindPager(wrap, total, page, pageSize, (p, s) => { page = p; pageSize = s; renderTable(); });
     syncSelAll();
   }
 
@@ -155,12 +166,13 @@ SUAR.views.bundles = (function () {
     const readings = d.sensorReadings || [];
     const relays = d.relayLogs || [];
 
+    const locStr = SUAR.ui.fmtCoord(b.estimated_lat, b.estimated_lng);
     const kv = [
-      former("Bundle ID", '<span class="mono">' + SUAR.ui.esc(b.distress_bundle_id) + "</span>"),
-      former("Device", '<span class="mono">' + SUAR.ui.esc(b.device_id) + "</span>"),
+      former("Bundle ID", '<span class="mono">' + SUAR.ui.copyable(b.distress_bundle_id) + "</span>"),
+      former("Device ID", '<span class="mono">' + SUAR.ui.copyable(b.device_id) + "</span>"),
       former("Tier", SUAR.ui.tierBadge(b.priority_tier)),
       former("Score", '<span class="mono">' + (b.priority_score != null ? b.priority_score.toFixed(4) : "—") + "</span>"),
-      former("Location", '<span class="mono">' + SUAR.ui.fmtCoord(b.estimated_lat, b.estimated_lng) + "</span>"),
+      former("Location", '<span class="mono">' + (b.estimated_lat != null && b.estimated_lng != null ? SUAR.ui.copyable(locStr) : locStr) + "</span>"),
       former("Accuracy", b.accuracy_meters != null ? '<span class="mono">±' + Math.round(b.accuracy_meters) + " m</span>" : "—"),
       former("Hops", '<span class="mono">' + (b.hop_count ?? 0) + "</span>"),
       former("Activity", activityChip(b.updated_at)),
@@ -224,10 +236,18 @@ SUAR.views.bundles = (function () {
         { label: "Save", className: "btn--primary", onClick: async (close, btn) => {
             const score = parseFloat(document.getElementById("e-score").value);
             if (isNaN(score) || score < 0 || score > 1) { SUAR.ui.toast("Score must be between 0 and 1", "err"); return; }
-            const lat = numOrNull(document.getElementById("e-lat").value);
-            const lng = numOrNull(document.getElementById("e-lng").value);
+            const latRaw = document.getElementById("e-lat").value.trim();
+            const lngRaw = document.getElementById("e-lng").value.trim();
+            const lat = numOrNull(latRaw);
+            const lng = numOrNull(lngRaw);
+            // Non-empty-but-unparseable would otherwise fall through as null and
+            // silently WIPE the bundle's location instead of reporting a typo.
+            if (latRaw !== "" && lat === null) { SUAR.ui.toast("Latitude must be a number", "err"); return; }
+            if (lngRaw !== "" && lng === null) { SUAR.ui.toast("Longitude must be a number", "err"); return; }
             if (lat !== null && Math.abs(lat) > 90) { SUAR.ui.toast("Latitude must be between -90 and 90", "err"); return; }
             if (lng !== null && Math.abs(lng) > 180) { SUAR.ui.toast("Longitude must be between -180 and 180", "err"); return; }
+            // A half-set coordinate maps to nowhere — require both or neither.
+            if ((lat === null) !== (lng === null)) { SUAR.ui.toast("Set both latitude and longitude, or clear both", "err"); return; }
             const patch = {
               priority_tier: document.getElementById("e-tier").value,
               priority_score: score,

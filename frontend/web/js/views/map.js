@@ -16,6 +16,8 @@ SUAR.views.map = (function () {
   let map = null;
   let zonesLayer = null;
   let victimsLayer = null;
+  let allZones = [], zSearch = "", zSev = "", zActive = "";
+  let zPage = 1, zPageSize = 50, _zPageRows = [];
 
   async function render(container) {
     if (map) { map.remove(); map = null; }
@@ -25,6 +27,13 @@ SUAR.views.map = (function () {
         '<p class="muted" style="font-size:12.5px;margin:10px 4px 0">Use the draw tools (top-left) to add a hazard zone — polygon, rectangle or circle. Victim markers are coloured by triage tier; the faint ring is GPS accuracy.</p>' +
       "</div></div>" +
       '<div class="card"><div class="card__head"><h3>Hazard zones</h3><span class="spacer"></span><span class="eyebrow" id="zone-count"></span></div>' +
+        '<div class="card__body" style="padding-bottom:0">' +
+          '<div class="list-toolbar">' +
+            '<select class="select" id="z-sev" style="max-width:150px"><option value="">All severities</option>' +
+              ["info", "warning", "danger"].map((s) => '<option value="' + s + '"' + (zSev === s ? " selected" : "") + ">" + s + "</option>").join("") + "</select>" +
+            '<select class="select" id="z-active" style="max-width:140px"><option value="">All</option><option value="active"' + (zActive === "active" ? " selected" : "") + ">Active</option><option value=\"inactive\"" + (zActive === "inactive" ? " selected" : "") + ">Inactive</option></select>" +
+            '<input class="input input--search" id="z-search" placeholder="Search name or hazard…" value="' + SUAR.ui.esc(zSearch) + '">' +
+          "</div></div>" +
         '<div class="table-wrap" id="zone-list">' + SUAR.ui.spinner() + "</div></div>";
 
     // minZoom/maxZoom bound the camera: without minZoom the user can pinch out
@@ -49,6 +58,10 @@ SUAR.views.map = (function () {
     });
     map.addControl(drawControl);
     map.on(L.Draw.Event.CREATED, (e) => onDrawn(e.layer, drawn));
+
+    document.getElementById("z-sev").addEventListener("change", (e) => { zSev = e.target.value; zPage = 1; renderList(); });
+    document.getElementById("z-active").addEventListener("change", (e) => { zActive = e.target.value; zPage = 1; renderList(); });
+    document.getElementById("z-search").addEventListener("input", (e) => { zSearch = e.target.value; zPage = 1; renderList(); });
 
     addLegend();
     await Promise.all([loadVictims(), loadZones()]);
@@ -89,10 +102,10 @@ SUAR.views.map = (function () {
 
   async function loadZones() {
     zonesLayer.clearLayers();
-    const zones = await SUAR.api.get("/admin/geofences");
-    document.getElementById("zone-count").textContent = zones.length + " zone(s)";
-    zones.forEach((z) => drawZone(z));
-    renderList(zones);
+    allZones = await SUAR.api.get("/admin/geofences");
+    document.getElementById("zone-count").textContent = allZones.length + " zone(s)";
+    allZones.forEach((z) => drawZone(z));
+    renderList();
   }
 
   function drawZone(z) {
@@ -114,12 +127,22 @@ SUAR.views.map = (function () {
     layer.addTo(zonesLayer);
   }
 
-  function renderList(zones) {
+  function renderList() {
     const wrap = document.getElementById("zone-list");
-    if (!zones.length) { wrap.innerHTML = SUAR.ui.empty("No hazard zones yet", "Use the draw tools on the map (polygon, rectangle or circle) to add one."); return; }
+    if (!wrap) return;
+    let rows = allZones.slice();
+    if (zSev) rows = rows.filter((z) => z.severity === zSev);
+    if (zActive) rows = rows.filter((z) => zActive === "active" ? z.is_active !== false : z.is_active === false);
+    const q = zSearch.trim().toLowerCase();
+    if (q) rows = rows.filter((z) => (z.name || "").toLowerCase().includes(q) || (z.hazard_type || "").toLowerCase().includes(q));
+    const filtering = zSearch || zSev || zActive;
+    if (!rows.length) { wrap.innerHTML = SUAR.ui.empty(filtering ? "No matches" : "No hazard zones yet", filtering ? "Try a different search or filter." : "Use the draw tools on the map (polygon, rectangle or circle) to add one."); return; }
+    const total = rows.length;
+    zPage = SUAR.ui.pageClamp(zPage, total, zPageSize);
+    _zPageRows = rows.slice((zPage - 1) * zPageSize, zPage * zPageSize);
     wrap.innerHTML =
       '<table class="data"><thead><tr><th>Name</th><th>Hazard</th><th>Severity</th><th>Shape</th><th>Active</th><th>Created</th><th></th></tr></thead><tbody>' +
-      zones.map((z) =>
+      _zPageRows.map((z) =>
         "<tr>" +
         "<td><b>" + SUAR.ui.esc(z.name) + "</b></td>" +
         '<td><span class="chip">' + SUAR.ui.esc(z.hazard_type) + "</span></td>" +
@@ -129,12 +152,13 @@ SUAR.views.map = (function () {
         '<td class="muted">' + SUAR.ui.fmtRelative(z.created_at) + "</td>" +
         '<td class="cell-actions"><button class="btn btn--ghost btn--sm" data-edit>Edit</button><button class="btn btn--danger btn--sm" data-del>Delete</button></td>' +
         "</tr>"
-      ).join("") + "</tbody></table>";
-    zones.forEach((z, i) => {
+      ).join("") + "</tbody></table>" + SUAR.ui.pagerControls(total, zPage, zPageSize);
+    _zPageRows.forEach((z, i) => {
       const tr = wrap.querySelectorAll("tbody tr")[i];
       tr.querySelector("[data-edit]").addEventListener("click", () => openEditMeta(z));
       tr.querySelector("[data-del]").addEventListener("click", () => del(z));
     });
+    SUAR.ui.bindPager(wrap, total, zPage, zPageSize, (p, s) => { zPage = p; zPageSize = s; renderList(); });
   }
 
   // New shape drawn → capture geometry, ask for metadata, POST.
@@ -156,11 +180,11 @@ SUAR.views.map = (function () {
     const isCustom = z.hazard_type && !HAZARDS.includes(z.hazard_type);
     const sel = isCustom ? "other" : (z.hazard_type || HAZARDS[0]);
     return (
-      '<div class="field"><label>Name</label><input class="input" id="z-name" placeholder="e.g. Riverside flood area" value="' + SUAR.ui.esc(z.name || "") + '"></div>' +
+      '<div class="field"><label>Name</label><input class="input" id="z-name" maxlength="80" placeholder="e.g. Riverside flood area" value="' + SUAR.ui.esc(z.name || "") + '"></div>' +
       '<div class="form-row">' +
         '<div class="field"><label>Hazard type</label><select class="select" id="z-hazard">' +
           HAZARDS.map((h) => '<option' + (sel === h ? " selected" : "") + ">" + h + "</option>").join("") + "</select>" +
-          '<input class="input" id="z-hazard-custom" placeholder="Custom hazard type" style="margin-top:6px;' + (sel === "other" ? "" : "display:none") + '" value="' + SUAR.ui.esc(isCustom ? z.hazard_type : "") + '"></div>' +
+          '<input class="input" id="z-hazard-custom" maxlength="40" placeholder="Custom hazard type" style="margin-top:6px;' + (sel === "other" ? "" : "display:none") + '" value="' + SUAR.ui.esc(isCustom ? z.hazard_type : "") + '"></div>' +
         '<div class="field"><label>Severity</label><select class="select" id="z-sev">' +
           ["info", "warning", "danger"].map((sv) => '<option' + (z.severity === sv ? " selected" : "") + ">" + sv + "</option>").join("") + "</select></div>" +
       "</div>" +

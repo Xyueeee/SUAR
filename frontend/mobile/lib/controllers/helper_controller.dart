@@ -90,6 +90,11 @@ class HelperController {
       final pulled = await _sync.pullRecent(repository);
       if (pulled > 0) {
         _emit('Pulled $pulled recent bundle(s) from backend');
+        // pullRecent persists directly to SQLite. Publish the refreshed store
+        // now so an already-open Helper map does not wait for a later mesh
+        // event or mode restart before showing cloud-downloaded victims.
+        final all = await repository.getAllBundles();
+        if (!_bundleController.isClosed) _bundleController.add(all);
       }
     } catch (_) {/* offline — try again next tick */}
   }

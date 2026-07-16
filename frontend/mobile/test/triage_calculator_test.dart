@@ -51,7 +51,7 @@ void main() {
       expect(r.breakdown.map((p) => p.label), contains('Fall'));
     });
 
-    test('fall + sustained immobility (faint) → Critical', () {
+    test('fall + suspected faint → Critical', () {
       final r = TriageCalculator.evaluate(
         const TriageInputs(
           motionLevel: 0.0,

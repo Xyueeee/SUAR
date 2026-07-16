@@ -42,6 +42,7 @@ class SuarApp extends StatelessWidget {
     return ValueListenableBuilder<ThemeMode>(
       valueListenable: appThemeMode,
       builder: (context, mode, _) => MaterialApp(
+        debugShowCheckedModeBanner: false,
         title: 'SUAR',
         theme: buildTheme(Brightness.light),
         darkTheme: buildTheme(Brightness.dark),

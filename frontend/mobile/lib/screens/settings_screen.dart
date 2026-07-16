@@ -136,7 +136,11 @@ class SettingsScreen extends StatelessWidget {
             onTap: () async {
               final locked = await DebugLockService.isEnabled();
               if (!context.mounted) return;
-              if (locked && !await _unlockDebug(context)) return;
+              if (locked &&
+                  !DebugLockService.isUnlockedForSession &&
+                  !await _unlockDebug(context)) {
+                return;
+              }
               if (!context.mounted) return;
               Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const DebugOptionsScreen()),

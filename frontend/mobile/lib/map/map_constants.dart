@@ -20,19 +20,13 @@ const double maxDownloadZoom = 17.0;
 const double minMapZoom = 3.0;
 const double maxMapZoom = 19.0;
 
-// A victim's last-known position/status is only as good as how recently it
-// was actually observed. Past this age, a pin showing on the Helper's map
-// risks sending someone to a spot the victim (or the situation) has already
-// moved on from — DTN relay keeps carrying the bundle regardless (other
-// Helpers may still usefully forward it), this only governs whether THIS
-// device still shows it as an actionable map pin.
-const Duration staleBundleMapThreshold = Duration(hours: 1);
-
-// Admin's "Active (24h)" convention (web ACTIVE_WINDOW_MS, backend's
-// active-bundle-reuse window) — a bundle whose original event is older than
-// this is presumed resolved. Reads createdAt, not updatedAt: updatedAt gets
-// bumped by every relay re-save and every Victim triage refresh, so an old
-// event relayed helper-to-helper (or a Victim's app just still running) would
-// otherwise keep looking "fresh" on the map forever. This only governs map
-// display — the bundle stays in local storage and keeps relaying either way.
+// Shared with the admin console's "Active (24h)" rule: a bundle remains active
+// while the Victim has supplied an update in the last 24 hours. This governs
+// cloud pulls, local cleanup, and Helper-map visibility.
 const Duration bundleInactiveThreshold = Duration(hours: 24);
+
+bool isBundleActive(DateTime updatedAt, {DateTime? now}) {
+  final cutoff =
+      (now ?? DateTime.now()).toUtc().subtract(bundleInactiveThreshold);
+  return updatedAt.toUtc().isAfter(cutoff);
+}

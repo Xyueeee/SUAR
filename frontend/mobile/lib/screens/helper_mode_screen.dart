@@ -151,12 +151,9 @@ class _HelperModeScreenState extends State<HelperModeScreen>
     _controller.startHelperMode();
     _centerOnUserLocation();
     unawaited(_loadGeofences());
-    // _victimPins re-filters by age on every build, but a quiet Helper (no
-    // nearby BLE/Wi-Fi activity) might not rebuild for a long time on its
-    // own — without this, a pin could sit on the map well past
-    // staleBundleMapThreshold simply because nothing else triggered a
-    // repaint. A minute is frequent enough against an hour-scale threshold
-    // without doing meaningful extra work.
+    // _victimPins re-filters by the shared 24-hour activity window on every
+    // build. Repaint periodically so a quiet Helper still removes a pin when
+    // it crosses that boundary without waiting for another radio event.
     _staleCheckTimer = Timer.periodic(const Duration(minutes: 1), (_) {
       if (mounted) setState(() {});
     });
@@ -561,24 +558,10 @@ class _HelperModeScreenState extends State<HelperModeScreen>
   List<_PinPlacement> get _victimPins {
     final seenDevices = <String>{};
     final pins = <_PinPlacement>[];
-    for (final bundle in _bundles) {
-      // Stale data is worse than no data — an hour-old pin on the map looks
-      // exactly as "live" as one from 10 seconds ago, but the victim may
-      // have already moved or been found. DTN relay (HelperController/
-      // DTNManager) is untouched by this — only this device's own map
-      // display hides it.
-      if (DateTime.now().difference(bundle.updatedAt) >
-          staleBundleMapThreshold) {
-        continue;
-      }
-      // Separate from the updatedAt check above: a helper-to-helper relay of
-      // an old bundle, or a Victim's app just left running, keeps bumping
-      // updatedAt without the underlying event actually being recent. Gate on
-      // createdAt too so a genuinely stale event can't reappear on the map.
-      if (DateTime.now().difference(bundle.createdAt) >
-          bundleInactiveThreshold) {
-        continue;
-      }
+    final newestFirst = List<DistressBundleModel>.from(_bundles)
+      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    for (final bundle in newestFirst) {
+      if (!isBundleActive(bundle.updatedAt)) continue;
       if (!seenDevices.add(bundle.deviceId)) continue;
       final hasGps = bundle.estimatedLat != null && bundle.estimatedLng != null;
       final point = hasGps

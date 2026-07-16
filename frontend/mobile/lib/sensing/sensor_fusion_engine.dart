@@ -42,6 +42,10 @@ class SensorFusionEngine {
   // — not feeble twitching) and is what cancels a suspected faint. Set high so
   // slow/weak movement after a fall still reads as possibly fainted.
   static const double _moveDeltaG = 4.0;
+  // A faint does not require perfectly zero movement: during the post-fall
+  // observation window, low movement must cover this fraction of the window.
+  // With the default 20-second window that is 15 seconds.
+  static const double _faintLowMovementFraction = 0.75;
   // Cap how long one old impact can keep asserting a faint, so a fall hours ago
   // doesn't pin the score forever.
   static const Duration _faintMaxWindow = Duration(minutes: 30);
@@ -69,6 +73,7 @@ class SensorFusionEngine {
   DateTime? _freeFallAt;
   DateTime? _lastImpactAt;
   DateTime? _lastMotionAt;
+  final List<_MotionSample> _postFallMotion = [];
 
   bool _running = false;
 
@@ -90,13 +95,30 @@ class SensorFusionEngine {
       _accelMags.removeWhere((s) => now.difference(s.time) > _accelWindow);
       // Fall = free-fall dip followed shortly by an impact spike.
       if (mag < _freeFallG) _freeFallAt = now;
-      if (mag > _impactHighG &&
+      final fallDetected = mag > _impactHighG &&
           _freeFallAt != null &&
-          now.difference(_freeFallAt!) < _fallLinkWindow) {
+          now.difference(_freeFallAt!) < _fallLinkWindow;
+      if (fallDetected) {
         _lastImpactAt = now;
+        _lastMotionAt = null;
+        // Do not count the impact spike itself as recovery movement. Start the
+        // faint observation as low movement and classify later samples instead.
+        _postFallMotion
+          ..clear()
+          ..add(_MotionSample(now, purposeful: false));
       }
-      // Genuine movement (resets the "still since the fall" clock).
-      if ((mag - 9.81).abs() > _moveDeltaG) _lastMotionAt = now;
+      final purposefulMovement = (mag - 9.81).abs() > _moveDeltaG;
+      // Only samples inside the configurable observation window affect the
+      // 75%-low-movement decision. Later purposeful movement clears a faint.
+      if (!fallDetected && _lastImpactAt != null) {
+        final observationWindow = _faintObservationWindow(TriageConfig.active);
+        if (now.difference(_lastImpactAt!) <= observationWindow) {
+          _postFallMotion.add(
+            _MotionSample(now, purposeful: purposefulMovement),
+          );
+        }
+      }
+      if (purposefulMovement && !fallDetected) _lastMotionAt = now;
     }, onError: (_) {});
 
     _gyroSub = gyroscopeEventStream().listen((e) {
@@ -141,6 +163,7 @@ class SensorFusionEngine {
     _baroBaseline = _baroCurrent = null;
     _micDb = _lux = _proxNear = null;
     _freeFallAt = _lastImpactAt = _lastMotionAt = null;
+    _postFallMotion.clear();
     // Session-scoped like everything above: a stale gyro magnitude fed the
     // next session's motionLevel until the first new event, and stale battery
     // bookkeeping computed a drain rate across the stopped gap.
@@ -191,13 +214,18 @@ class SensorFusionEngine {
     final impactLatched = _lastImpactAt != null &&
         now.difference(_lastImpactAt!).inMilliseconds <
             (cfg.fallLatchSeconds * 1000).round();
-    // Faint = impact, then no movement since, for an extended period.
-    final immobileSinceImpact = _lastImpactAt != null &&
-        (_lastMotionAt == null || _lastMotionAt!.isBefore(_lastImpactAt!));
+    // After a fall, observe for the configured period (20 seconds by default).
+    // Faint requires low movement for 75% of that window (15 seconds by
+    // default), rather than absolute stillness. Once fainted, a later strong
+    // movement clears the flag so recovery is reflected in the next triage run.
+    final observationWindow = _faintObservationWindow(cfg);
     final fainted = _lastImpactAt != null &&
-        immobileSinceImpact &&
-        now.difference(_lastImpactAt!).inSeconds >= cfg.faintImmobileSeconds &&
-        now.difference(_lastImpactAt!) < _faintMaxWindow;
+        now.difference(_lastImpactAt!) >= observationWindow &&
+        now.difference(_lastImpactAt!) < _faintMaxWindow &&
+        (_lastMotionAt == null ||
+            _lastMotionAt!.isBefore(_lastImpactAt!.add(observationWindow))) &&
+        _lowMovementDuration(_lastImpactAt!, observationWindow) >=
+            _requiredLowMovement(observationWindow);
 
     final pressureDeviation = (_baroBaseline != null && _baroCurrent != null)
         ? (_baroCurrent! - _baroBaseline!).abs()
@@ -257,6 +285,36 @@ class SensorFusionEngine {
     return math.sqrt(variance);
   }
 
+  static Duration _faintObservationWindow(TriageConfig config) {
+    final milliseconds = (config.faintImmobileSeconds * 1000).round();
+    return Duration(milliseconds: math.max(1, milliseconds));
+  }
+
+  static Duration _requiredLowMovement(Duration observationWindow) => Duration(
+        milliseconds:
+            (observationWindow.inMilliseconds * _faintLowMovementFraction)
+                .round(),
+      );
+
+  Duration _lowMovementDuration(DateTime startedAt, Duration observationWindow) {
+    if (_postFallMotion.isEmpty) return Duration.zero;
+
+    final endsAt = startedAt.add(observationWindow);
+    var lowMilliseconds = 0;
+    for (var index = 0; index < _postFallMotion.length; index++) {
+      final sample = _postFallMotion[index];
+      final intervalStart = sample.time.isBefore(startedAt) ? startedAt : sample.time;
+      final nextTime = index + 1 < _postFallMotion.length
+          ? _postFallMotion[index + 1].time
+          : endsAt;
+      final intervalEnd = nextTime.isAfter(endsAt) ? endsAt : nextTime;
+      if (!sample.purposeful && intervalEnd.isAfter(intervalStart)) {
+        lowMilliseconds += intervalEnd.difference(intervalStart).inMilliseconds;
+      }
+    }
+    return Duration(milliseconds: lowMilliseconds);
+  }
+
   void dispose() {
     if (_running) unawaited(stop());
   }
@@ -266,4 +324,11 @@ class _Sample {
   _Sample(this.mag, this.time);
   final double mag;
   final DateTime time;
+}
+
+class _MotionSample {
+  const _MotionSample(this.time, {required this.purposeful});
+
+  final DateTime time;
+  final bool purposeful;
 }

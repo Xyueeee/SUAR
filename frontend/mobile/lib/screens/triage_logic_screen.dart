@@ -210,7 +210,7 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
                   ],
                 ),
                 _overrideCard(
-                  title: 'Faint (immobile after a fall)',
+                  title: 'Faint (mostly still after a fall)',
                   triggered: _inputs?.faintedSuspected ?? false,
                   simulated: _cfg.forceFaint,
                   onSimulate: (v) => _cfg.forceFaint = v,
@@ -227,7 +227,7 @@ class _TriageLogicScreenState extends State<TriageLogicScreen> {
                   sliders: [
                     _tune('Adds', _cfg.faintBoost, 0, 100,
                         (v) => _cfg.faintBoost = v),
-                    _tune('No movement for', _cfg.faintImmobileSeconds, 5, 120,
+                    _tune('Observe (75% low)', _cfg.faintImmobileSeconds, 5, 120,
                         (v) => _cfg.faintImmobileSeconds = v, suffix: ' s'),
                   ],
                 ),

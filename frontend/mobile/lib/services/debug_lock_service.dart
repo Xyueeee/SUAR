@@ -23,6 +23,7 @@ class DebugLockService {
   static const String _enabledKey = 'suar_debug_lock_enabled';
   static const String _hashKey = 'suar_debug_lock_hash';
   static const String _defaultPassword = 'SUARadmin123.';
+  static bool _unlockedForSession = false;
 
   static String _hash(String password) =>
       sha256.convert(utf8.encode(password)).toString();
@@ -71,9 +72,15 @@ class DebugLockService {
     return prefs.getBool(_enabledKey) ?? true;
   }
 
+  /// A successful password entry unlocks the developer tools only for this
+  /// process. Nothing is written to disk, so a full app restart asks again.
+  static bool get isUnlockedForSession => _unlockedForSession;
+
   static Future<bool> checkPassword(String entered) async {
     final prefs = await SharedPreferences.getInstance();
     final storedHash = prefs.getString(_hashKey) ?? _hash(_defaultPassword);
-    return _hash(entered) == storedHash;
+    final valid = _hash(entered) == storedHash;
+    if (valid) _unlockedForSession = true;
+    return valid;
   }
 }

@@ -79,8 +79,8 @@ class TriageConfig {
   double fallBoost;
   double fallLatchSeconds;
 
-  // Faint rule: an impact followed by no movement for an extended period
-  // (suspected unconscious) — the stronger escalation.
+  // Faint rule: a fall followed by mostly low movement during this observation
+  // window (suspected unconscious) — the stronger escalation.
   bool faintEnabled;
   double faintBoost;
   double faintImmobileSeconds;

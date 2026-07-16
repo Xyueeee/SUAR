@@ -195,7 +195,7 @@ class TriageCalculator {
     }
     if (c.faintEnabled && (i.faintedSuspected || c.forceFaint)) {
       add('Faint', c.faintBoost,
-          i.faintedSuspected ? 'immobile after fall' : 'simulated');
+          i.faintedSuspected ? 'mostly still after fall' : 'simulated');
       flags.add(TriageFlag.faint);
     }
     // Battery rules are mutually exclusive — critical supersedes low so the two

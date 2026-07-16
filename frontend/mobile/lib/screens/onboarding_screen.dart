@@ -327,11 +327,13 @@ class _GatedScrollPage extends StatefulWidget {
     required this.onCanProceedChanged,
     required this.padding,
     required this.children,
+    this.scrollRequest,
   });
 
   final ValueChanged<bool> onCanProceedChanged;
   final EdgeInsets padding;
   final List<Widget> children;
+  final ValueNotifier<int>? scrollRequest;
 
   @override
   State<_GatedScrollPage> createState() => _GatedScrollPageState();
@@ -345,6 +347,7 @@ class _GatedScrollPageState extends State<_GatedScrollPage> {
   void initState() {
     super.initState();
     _controller.addListener(_check);
+    widget.scrollRequest?.addListener(_scrollToBottom);
     WidgetsBinding.instance.addPostFrameCallback((_) => _check());
   }
 
@@ -354,7 +357,28 @@ class _GatedScrollPageState extends State<_GatedScrollPage> {
     // Content (children) may have grown or shrunk — e.g. Grant Permissions
     // appending a status line at the bottom — so re-check after the new
     // layout settles instead of trusting the last-known scroll position.
+    if (oldWidget.scrollRequest != widget.scrollRequest) {
+      oldWidget.scrollRequest?.removeListener(_scrollToBottom);
+      widget.scrollRequest?.addListener(_scrollToBottom);
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) => _check());
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // The permission result appends its status line in the same rebuild.
+      // Wait one extra rendered frame so maxScrollExtent includes that line.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!_controller.hasClients) return;
+        final target = _controller.position.maxScrollExtent;
+        if (_controller.offset >= target) return;
+        _controller.animateTo(
+          target,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOut,
+        );
+      });
+    });
   }
 
   void _check() {
@@ -369,6 +393,7 @@ class _GatedScrollPageState extends State<_GatedScrollPage> {
 
   @override
   void dispose() {
+    widget.scrollRequest?.removeListener(_scrollToBottom);
     _controller.dispose();
     super.dispose();
   }
@@ -395,6 +420,7 @@ class _PermissionsPage extends StatefulWidget {
 }
 
 class _PermissionsPageState extends State<_PermissionsPage> {
+  final ValueNotifier<int> _scrollRequest = ValueNotifier(0);
   bool _requested = false;
   bool _requesting = false;
   ({bool bluetooth, bool nearbyWifi, bool location}) _mesh =
@@ -417,6 +443,15 @@ class _PermissionsPageState extends State<_PermissionsPage> {
       _micGranted = mic;
       _notifGranted = notif;
     });
+    if (mesh.bluetooth && mesh.nearbyWifi && mesh.location && mic && notif) {
+      _scrollRequest.value++;
+    }
+  }
+
+  @override
+  void dispose() {
+    _scrollRequest.dispose();
+    super.dispose();
   }
 
   @override
@@ -430,6 +465,7 @@ class _PermissionsPageState extends State<_PermissionsPage> {
     return _GatedScrollPage(
       onCanProceedChanged: widget.onCanProceedChanged,
       padding: const EdgeInsets.fromLTRB(24, 32, 24, 24),
+      scrollRequest: _scrollRequest,
       children: [
         Text('Permissions SUAR needs',
             style: TextStyle(

@@ -64,7 +64,7 @@ SUAR.views.system = (function () {
     ] },
     { title: "Fall / faint rules", fields: [
       ["fall_boost", "Fall: adds"], ["fall_latch_seconds", "Fall: stays on for (s)"],
-      ["faint_boost", "Faint: adds"], ["faint_immobile_seconds", "Faint: no movement for (s)"],
+      ["faint_boost", "Faint: adds"], ["faint_immobile_seconds", "Faint: observe (75% low) (s)"],
     ] },
     { title: "Battery rules", fields: [
       ["low_battery_threshold", "Low battery at (%)"], ["low_battery_boost", "Low battery: adds"],

@@ -195,13 +195,19 @@ def health():
 
 @app.get("/bundles")
 def get_bundles():
-    """Legacy public listing kept for backward compat (RLS already exposes
-    these read-only). The admin web uses /admin/bundles instead."""
+    """Public mobile pull of bundles still active under the admin's 24h rule.
+
+    The admin web uses /admin/bundles. Helpers only need the current operational
+    picture, ordered by the latest victim update so the most useful rows are
+    returned first if the safety limit is reached.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
     result = (
         supabase.table("distress_bundle")
         .select("*")
-        .order("created_at", desc=True)
-        .limit(100)
+        .gt("updated_at", cutoff)
+        .order("updated_at", desc=True)
+        .limit(5000)
         .execute()
     )
     return result.data

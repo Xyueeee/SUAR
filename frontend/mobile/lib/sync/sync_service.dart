@@ -14,7 +14,7 @@ import 'dart:io';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../constants.dart';
-import '../map/map_constants.dart' show bundleInactiveThreshold;
+import '../map/map_constants.dart' show isBundleActive;
 import '../models/distress_bundle_model.dart';
 import '../services/device_identity.dart';
 import '../storage/sqlite_repository.dart';
@@ -78,7 +78,7 @@ class SyncService {
     }
   }
 
-  /// Helper pull: stores bundles created within the last 24 hours. Returns
+  /// Helper pull: stores bundles updated within the last 24 hours. Returns
   /// count stored. Backend rows use lowercase keys (Supabase), mapped here.
   Future<int> pullRecent(SQLiteRepository repo) async {
     final base = await _baseUrl();
@@ -99,14 +99,15 @@ class SyncService {
     } finally {
       client.close(force: true);
     }
-    final cutoff = DateTime.now().toUtc().subtract(const Duration(hours: 24));
     var n = 0;
     for (final r in rows) {
       if (r is! Map) continue;
-      final created = DateTime.tryParse((r['created_at'] ?? '').toString());
-      if (created == null || created.toUtc().isBefore(cutoff)) continue;
       try {
-        await repo.saveBundle(_fromBackend(r));
+        final bundle = _fromBackend(r);
+        // Defense in depth if an older backend deployment still returns rows
+        // outside the server-side updated_at filter.
+        if (!isBundleActive(bundle.updatedAt)) continue;
+        await repo.saveBundle(bundle);
         n++;
       } catch (_) {/* skip malformed row */}
     }
@@ -133,8 +134,7 @@ class SyncService {
     }
     if (!await pushBundles(deviceId, mode, unsynced)) return 0;
     for (final b in unsynced) {
-      if (DateTime.now().toUtc().difference(b.createdAt.toUtc()) >
-          bundleInactiveThreshold) {
+      if (!isBundleActive(b.updatedAt)) {
         await repo.deleteBundle(b.bundleId);
       } else {
         await repo.markAsSynced(b.bundleId);
@@ -143,9 +143,22 @@ class SyncService {
     return unsynced.length;
   }
 
-  DistressBundleModel _fromBackend(Map r) => DistressBundleModel(
-        bundleId: (r['distress_bundle_id'] ?? '').toString(),
-        deviceId: (r['device_id'] ?? '').toString(),
+  DistressBundleModel _fromBackend(Map r) {
+    final bundleId = (r['distress_bundle_id'] ?? '').toString().trim();
+    final deviceId = (r['device_id'] ?? '').toString().trim();
+    final createdAt = DateTime.tryParse((r['created_at'] ?? '').toString());
+    final updatedAt = DateTime.tryParse((r['updated_at'] ?? '').toString());
+    if (bundleId.isEmpty ||
+        deviceId.isEmpty ||
+        createdAt == null ||
+        updatedAt == null) {
+      throw const FormatException(
+        'Backend bundle is missing an ID or valid timestamp',
+      );
+    }
+    return DistressBundleModel(
+        bundleId: bundleId,
+        deviceId: deviceId,
         priorityScore: (r['priority_score'] as num?)?.toDouble() ?? 0,
         priorityTier: (r['priority_tier'] ?? 'None').toString(),
         estimatedLat: (r['estimated_lat'] as num?)?.toDouble(),
@@ -154,7 +167,8 @@ class SyncService {
         estimatedAltitude: (r['estimated_altitude'] as num?)?.toDouble(),
         hopCount: (r['hop_count'] as num?)?.toInt() ?? 0,
         isSynced: true,
-        createdAt: DateTime.tryParse((r['created_at'] ?? '').toString()) ?? DateTime.now().toUtc(),
-        updatedAt: DateTime.tryParse((r['updated_at'] ?? '').toString()) ?? DateTime.now().toUtc(),
+        createdAt: createdAt,
+        updatedAt: updatedAt,
       );
+  }
 }

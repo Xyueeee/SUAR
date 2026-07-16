@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class DeviceModel(BaseModel):
@@ -15,7 +15,20 @@ class DeviceModel(BaseModel):
     # non-Android platforms, never send it.
     hardwareId: Optional[str] = Field(default=None, max_length=512)
 
+    @field_validator("deviceId", "applicationVersion", "hardwareId")
+    @classmethod
+    def reject_nul(cls, value):
+        if value is not None and "\x00" in value:
+            raise ValueError("NUL characters are not supported")
+        return value
 
+
+# NOTE: the field bounds on SensorReadingModel and BundleModel are mirrored
+# client-side by isPlausibleBundle() in
+# frontend/mobile/lib/models/distress_bundle_model.dart — the app filters at
+# mesh receipt and before every push using the SAME limits, because a single
+# out-of-range bundle 422s the whole /sync request. Change a bound here and
+# the Dart mirror must change with it (and vice versa).
 class SensorReadingModel(BaseModel):
     sensorType: Literal["accelerometer", "barometer", "microphone", "battery"]
     rawValue: float = Field(ge=-1e15, le=1e15, allow_inf_nan=False)
@@ -57,6 +70,13 @@ class BundleModel(BaseModel):
     relayLogs: List[RelayLogModel] = Field(
         default_factory=list, max_length=1024
     )
+
+    @field_validator("bundleId", "deviceId")
+    @classmethod
+    def reject_nul(cls, value):
+        if "\x00" in value:
+            raise ValueError("NUL characters are not supported")
+        return value
 
 
 class SyncRequest(BaseModel):

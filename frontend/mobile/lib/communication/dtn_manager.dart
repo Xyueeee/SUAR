@@ -44,6 +44,12 @@ class DTNManager {
   }
 
   void onBundleReceived(DistressBundleModel bundle) {
+    if (!isPlausibleBundle(bundle)) {
+      // Out-of-backend-bounds bundle (see isPlausibleBundle): storing or
+      // relaying it would propagate data every /sync in the mesh rejects.
+      _emit('Rejected implausible bundle ${bundle.bundleId}');
+      return;
+    }
     if (seenBundleIds.contains(bundle.bundleId)) {
       // The same bundleId can legitimately arrive again carrying REFRESHED
       // triage — a victim updates score/tier/location under one id every few
@@ -177,18 +183,28 @@ class DTNManager {
 
     List<DistressBundleModel> pulled;
     try {
-      final decoded = jsonDecode(response) as List;
-      final candidates = decoded
-          .cast<Map<String, dynamic>>()
-          .map(DistressBundleModel.fromJson)
-          .toList();
+      final decoded = jsonDecode(response);
+      if (decoded is! List) {
+        throw const FormatException('Relay response is not a bundle list');
+      }
       // A pull is a device-to-device transfer exactly like a push, but the
       // peer serves its cached copies as-is (the native cache can't bump) —
       // count the hop on the receiving side, or pulled copies travel free
       // against dtnMaxHopCount.
       pulled = [];
-      for (final bundle in candidates) {
-        if (!seenBundleIds.add(bundle.bundleId)) continue;
+      for (final raw in decoded) {
+        final bundle = tryParsePlausibleBundle(raw);
+        if (bundle == null) {
+          // Not marked seen: a well-formed copy of the same id from another
+          // peer should still be accepted later.
+          _emit(
+            'Rejected malformed/implausible pulled bundle '
+            '${transportedBundleLabel(raw)}',
+          );
+          continue;
+        }
+        if (seenBundleIds.contains(bundle.bundleId)) continue;
+        _markSeen(bundle.bundleId);
         bundle.hopCount += 1;
         if (bundle.hopCount >= dtnMaxHopCount) {
           _emit('TTL exceeded after pull: ${bundle.bundleId}');
@@ -196,21 +212,16 @@ class DTNManager {
         }
         pulled.add(bundle);
       }
-      _trimSeenBundleIds();
     } catch (e) {
       // A corrupt/truncated response shouldn't crash the relay attempt —
       // the push half above already succeeded; just treat the pull half as
       // "nothing came back" and let the next contact retry it.
-      _emit(
-        'Sync response from $helperDeviceId was malformed: $e',
-      );
+      _emit('Sync response from $helperDeviceId was malformed: $e');
       return const [];
     }
     if (pulled.isEmpty) {
       if (toSend.isEmpty) {
-        _emit(
-          '$helperDeviceId and this device already have the same bundles',
-        );
+        _emit('$helperDeviceId and this device already have the same bundles');
       }
       return const [];
     }
@@ -218,9 +229,7 @@ class DTNManager {
       storedBundles.add(bundle);
     }
     _syncManifest();
-    _emit(
-      'Pulled ${pulled.length} bundle(s) from $helperDeviceId',
-    );
+    _emit('Pulled ${pulled.length} bundle(s) from $helperDeviceId');
     return pulled;
   }
 

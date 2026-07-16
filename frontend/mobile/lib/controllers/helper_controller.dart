@@ -95,8 +95,9 @@ class HelperController {
       if (pulled > 0) {
         _emit('Pulled $pulled recent bundle(s) from backend');
       }
-    } catch (_) {/* offline — try again next tick */}
-    finally {
+    } catch (_) {
+      /* offline — try again next tick */
+    } finally {
       _syncInFlight = false;
     }
   }
@@ -201,8 +202,10 @@ class HelperController {
   static const int _attemptBackoffCapSeconds = 240;
   Duration _effectiveAttemptCooldown(String peerId) {
     final streak = (_attemptFailStreak[peerId] ?? 0).clamp(0, 5);
-    final secs = (_attemptCooldown.inSeconds << streak)
-        .clamp(_attemptCooldown.inSeconds, _attemptBackoffCapSeconds);
+    final secs = (_attemptCooldown.inSeconds << streak).clamp(
+      _attemptCooldown.inSeconds,
+      _attemptBackoffCapSeconds,
+    );
     return Duration(seconds: secs);
   }
 
@@ -509,7 +512,8 @@ class HelperController {
     if (_stopped) return;
     _detectedVictims[peerDeviceId] = device;
     final ackedAt = _ackedAt[peerDeviceId];
-    if (ackedAt != null && DateTime.now().difference(ackedAt) < _ackedCooldown) {
+    if (ackedAt != null &&
+        DateTime.now().difference(ackedAt) < _ackedCooldown) {
       return;
     }
     unawaited(_attemptAck(peerDeviceId, device, rssi));
@@ -1058,8 +1062,14 @@ class HelperController {
   Future<void> _savePulledBundles(List<DistressBundleModel> bundles) async {
     if (bundles.isEmpty) return;
     for (final bundle in bundles) {
-      _emit('Bundle received: ${bundle.bundleId}');
-      await repository.saveBundle(bundle);
+      try {
+        _emit('Bundle received: ${bundle.bundleId}');
+        await repository.saveBundle(bundle);
+      } catch (e) {
+        // A single locally-unpersistable item must not suppress later valid
+        // bundles returned in the same Helper relay response.
+        _emit('Rejected bundle ${bundle.bundleId} during local save: $e');
+      }
     }
     final all = await repository.getAllBundles();
     if (!_bundleController.isClosed) _bundleController.add(all);
@@ -1072,14 +1082,28 @@ class HelperController {
       // a JSON array; a single Victim push/pull arrives as a JSON object —
       // the two paths share this same native transport and event, so the
       // shape of the decoded JSON is what tells them apart.
-      final bundleMaps = decoded is List
-          ? decoded.cast<Map<String, dynamic>>()
-          : [decoded as Map<String, dynamic>];
-      for (final map in bundleMaps) {
-        final bundle = DistressBundleModel.fromJson(map);
-        _emit('Bundle received: ${bundle.bundleId}');
-        await repository.saveBundle(bundle);
-        dtnManager.onBundleReceived(bundle);
+      final bundleValues = decoded is List ? decoded : [decoded];
+      for (final raw in bundleValues) {
+        try {
+          final bundle = tryParsePlausibleBundle(raw);
+          if (bundle == null) {
+            // Backend-bounds mirror (isPlausibleBundle): persisting this would
+            // poison the sync batch, relaying it would spread it further.
+            _emit(
+              'Rejected malformed/implausible bundle '
+              '${transportedBundleLabel(raw)}',
+            );
+            continue;
+          }
+          _emit('Bundle received: ${bundle.bundleId}');
+          await repository.saveBundle(bundle);
+          dtnManager.onBundleReceived(bundle);
+        } catch (e) {
+          _emit(
+            'Rejected bundle ${transportedBundleLabel(raw)} '
+            'during local processing: $e',
+          );
+        }
       }
       final all = await repository.getAllBundles();
       if (!_bundleController.isClosed) _bundleController.add(all);
@@ -1139,10 +1163,7 @@ class HelperController {
       });
       await _teardownStep('BLE scan', bleManager.stopScanning);
       await _teardownStep('BLE advertising', bleManager.stopAdvertising);
-      await _teardownStep(
-        'Wi-Fi Direct server',
-        wifiDirectManager.stopServer,
-      );
+      await _teardownStep('Wi-Fi Direct server', wifiDirectManager.stopServer);
       await _cancelSubs();
     } finally {
       // Always remove any P2P group this Helper still owns, even if another

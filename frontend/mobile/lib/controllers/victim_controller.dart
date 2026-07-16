@@ -264,6 +264,7 @@ class VictimController {
   Timer? _syncTimer;
   static const Duration _syncInterval = Duration(seconds: 45);
   bool _syncInFlight = false;
+  bool _warnedImplausibleBundle = false;
 
   Future<void> _syncNow() async {
     if (_syncInFlight) return;
@@ -275,6 +276,17 @@ class VictimController {
     final id = deviceId;
     final b = _bundle;
     if (id == null || b == null) return;
+    // Backend-bounds mirror (isPlausibleBundle): the backend would 422 this,
+    // so a silent 45s retry loop can never succeed. Log once (the next triage
+    // recompute may repair the values) instead of pushing at all.
+    if (!isPlausibleBundle(b)) {
+      if (!_warnedImplausibleBundle) {
+        _warnedImplausibleBundle = true;
+        _emit('Own bundle failed sync validation. Not pushing to backend.');
+      }
+      return;
+    }
+    _warnedImplausibleBundle = false;
     _syncInFlight = true;
     try {
       if (await _sync.pushBundles(id, 'victim', [b])) {

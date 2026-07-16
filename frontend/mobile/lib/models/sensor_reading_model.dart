@@ -50,7 +50,10 @@ class SensorReadingModel {
         'sensorType': sensorType,
         'rawValue': rawValue,
         'normalisedValue': normalisedValue,
-        'recordedAt': recordedAt.toIso8601String(),
+        // UTC on the wire, same policy as DistressBundleModel.toJson — the
+        // backend treats an offset-less timestamp as UTC, so a local one
+        // would be stored shifted.
+        'recordedAt': recordedAt.toUtc().toIso8601String(),
       };
 
   factory SensorReadingModel.fromJson(Map<String, dynamic> json) =>
@@ -72,7 +75,9 @@ class SensorReadingModel {
         'SensorType': sensorType,
         'RawValue': rawValue,
         'NormalisedValue': normalisedValue,
-        'RecordedAt': recordedAt.toIso8601String(),
+        // UTC in SQLite, same mixed-format reasoning as
+        // DistressBundleModel.toMap.
+        'RecordedAt': recordedAt.toUtc().toIso8601String(),
       };
 
   factory SensorReadingModel.fromMap(Map<String, dynamic> map) =>

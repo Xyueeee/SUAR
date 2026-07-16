@@ -27,9 +27,11 @@ class SyncService {
     return u.endsWith('/') ? u.substring(0, u.length - 1) : u;
   }
 
-  // Sensor readings are omitted from v1 sync to avoid request-shape drift — the
-  // bundle's triage score + location are what the dashboard needs; readings can
-  // follow in a later increment.
+  // sensorReadings is whatever the bundle is carrying: the Victim's own live
+  // bundle keeps the latest snapshot in memory (rebuilt every triage cycle),
+  // and syncLocalBundles re-attaches a stored bundle's readings from SQLite
+  // before pushing. Extra keys inside each reading map (readingId, bundleId)
+  // are ignored by the backend's Pydantic model.
   Map<String, dynamic> _bundleJson(DistressBundleModel b) => {
         'bundleId': b.bundleId,
         'deviceId': b.deviceId,
@@ -42,7 +44,7 @@ class SyncService {
         'hopCount': b.hopCount,
         'createdAt': b.createdAt.toUtc().toIso8601String(),
         'updatedAt': b.updatedAt.toUtc().toIso8601String(),
-        'sensorReadings': const [],
+        'sensorReadings': b.sensorReadings,
         'relayLogs': const [],
       };
 
@@ -121,6 +123,14 @@ class SyncService {
       SQLiteRepository repo, String deviceId, String mode) async {
     final unsynced = await repo.getUnsyncedBundles();
     if (unsynced.isEmpty) return 0;
+    // Bundles loaded from SQLite carry no readings (fromMap doesn't join the
+    // SensorReading table) — re-attach each bundle's stored snapshot so the
+    // cloud sensor_reading table actually gets populated.
+    for (final b in unsynced) {
+      b.sensorReadings = (await repo.getReadingsForBundle(b.bundleId))
+          .map((r) => r.toJson())
+          .toList();
+    }
     if (!await pushBundles(deviceId, mode, unsynced)) return 0;
     for (final b in unsynced) {
       if (DateTime.now().toUtc().difference(b.createdAt.toUtc()) >

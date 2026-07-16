@@ -393,7 +393,7 @@ class WifiDirectHelper(
     /// and the client→GO socket is the only direction confirmed to work on
     /// this hardware. The existing accept-loop ServerSocket already binds all
     /// interfaces on port 8988, so it serves the GO subnet with no change.
-    fun createGroup(result: MethodChannel.Result) {
+    fun createGroup(result: MethodChannel.Result, attempt: Int = 1) {
         try {
             // If a group already exists (e.g. this is a re-entry, or a stale
             // group from a previous attempt), reuse it instead of failing —
@@ -402,6 +402,15 @@ class WifiDirectHelper(
                 if (group != null && group.isGroupOwner) {
                     Log.d(TAG, "createGroup: group already exists, reusing")
                     mainHandler.post { result.success(null) }
+                } else if (group != null && attempt >= 4) {
+                    // Bounded: removeGroup below kept failing (BUSY loop) while
+                    // the framework still reports this device as a CLIENT of a
+                    // foreign group. Without a cap the removeGroup->createGroup
+                    // mutual recursion spins forever and the Dart await never
+                    // resolves. Fail cleanly; the caller's retry paths (radio
+                    // watchdog / next contact cycle) get a fresh shot later.
+                    Log.e(TAG, "createGroup: still a client of a foreign group after $attempt attempts — giving up")
+                    mainHandler.post { result.error("CREATE_GROUP_FAILED", "stuck as client of another group", null) }
                 } else if (group != null) {
                     // A group exists but THIS device is a CLIENT in it, not the
                     // owner — WifiP2pGroup is returned to every member, GO or
@@ -418,10 +427,15 @@ class WifiDirectHelper(
                     // function already fixed. Leave the wrong-role group first,
                     // then fall through to a fresh createGroup() as the actual
                     // owner.
-                    Log.d(TAG, "createGroup: existing group is NOT owned by this device — leaving before recreating")
+                    Log.d(TAG, "createGroup: existing group is NOT owned by this device — leaving before recreating (attempt $attempt)")
                     manager.removeGroup(channel, object : WifiP2pManager.ActionListener {
-                        override fun onSuccess() = createGroup(result)
-                        override fun onFailure(reason: Int) = createGroup(result)
+                        override fun onSuccess() = createGroup(result, attempt + 1)
+                        // Give the single-threaded P2P framework a beat to
+                        // settle before re-checking — an immediate retry on a
+                        // BUSY failure was a tight recursion loop.
+                        override fun onFailure(reason: Int) {
+                            mainHandler.postDelayed({ createGroup(result, attempt + 1) }, 500)
+                        }
                     })
                 } else {
                     val listener = object : WifiP2pManager.ActionListener {
@@ -693,7 +707,13 @@ class WifiDirectHelper(
     fun startServer(result: MethodChannel.Result) {
         try {
             stopServerInternal()
-            val socket = ServerSocket(WIFI_DIRECT_PORT)
+            // SO_REUSEADDR before bind: the accept loop closes each client
+            // socket first, so port 8988 accumulates server-side TIME_WAIT
+            // entries — a quick stop/start (mode switch, watchdog restart)
+            // otherwise risks "Address already in use".
+            val socket = ServerSocket()
+            socket.reuseAddress = true
+            socket.bind(InetSocketAddress(WIFI_DIRECT_PORT))
             serverSocket = socket
             serverThread = Thread {
                 Log.d(TAG, "ServerSocket listening on port $WIFI_DIRECT_PORT")

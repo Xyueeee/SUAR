@@ -51,8 +51,11 @@ class DistressBundleModel {
       'estimatedAltitude': estimatedAltitude,
       'hopCount': hopCount,
       'isSynced': isSynced,
-      'createdAt': createdAt.toIso8601String(),
-      'updatedAt': updatedAt.toIso8601String(),
+      // Always UTC on the wire — a local-time string with no offset would be
+      // re-interpreted in the RECEIVING device's timezone, skewing the
+      // timestamp-based conflict resolution across zones.
+      'createdAt': createdAt.toUtc().toIso8601String(),
+      'updatedAt': updatedAt.toUtc().toIso8601String(),
       'sensorReadings': sensorReadings,
       'flags': flags,
     };
@@ -92,8 +95,11 @@ class DistressBundleModel {
       'EstimatedAltitude': estimatedAltitude,
       'HopCount': hopCount,
       'IsSynced': isSynced ? 1 : 0,
-      'CreatedAt': createdAt.toIso8601String(),
-      'UpdatedAt': updatedAt.toIso8601String(),
+      // UTC in SQLite too: mesh-received bundles parse as UTC DateTimes while
+      // own bundles are local — serialising each as-is would mix "…Z" and
+      // offset-less strings in one column and break CreatedAt string ordering.
+      'CreatedAt': createdAt.toUtc().toIso8601String(),
+      'UpdatedAt': updatedAt.toUtc().toIso8601String(),
       'Flags': flags.join(','),
     };
   }

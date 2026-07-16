@@ -141,6 +141,13 @@ class SensorFusionEngine {
     _baroBaseline = _baroCurrent = null;
     _micDb = _lux = _proxNear = null;
     _freeFallAt = _lastImpactAt = _lastMotionAt = null;
+    // Session-scoped like everything above: a stale gyro magnitude fed the
+    // next session's motionLevel until the first new event, and stale battery
+    // bookkeeping computed a drain rate across the stopped gap.
+    _gyroMag = 0.0;
+    _batteryLevel = _drainPerMin = _lastBatteryLevel = null;
+    _lastBatteryAt = null;
+    _charging = false;
   }
 
   Future<void> _poll() async {

@@ -1047,6 +1047,16 @@ class HelperController {
         timer.cancel();
       }
       _pullOwnerTeardownTimers.clear();
+      // Ack bookkeeping must clear with the timers above: a retry that was
+      // pending when its timer was cancelled has already re-added its victim
+      // to _ackInFlight, and nothing else ever removes it — after a
+      // pause/resume that victim would be silently un-ackable for the rest
+      // of the session.
+      _ackInFlight.clear();
+      _ackAttempts.clear();
+      _ackedAt.clear();
+      _detectedVictims.clear();
+      _wifiStuckStreak = 0;
       _pullEndedAsOwnerStreak.clear();
       _pulledRecentlyAt.clear();
       _relayedRecentlyAt.clear();

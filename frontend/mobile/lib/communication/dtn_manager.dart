@@ -45,7 +45,22 @@ class DTNManager {
 
   void onBundleReceived(DistressBundleModel bundle) {
     if (seenBundleIds.contains(bundle.bundleId)) {
-      _emit('Bundle ${bundle.bundleId} already seen, skipping');
+      // The same bundleId can legitimately arrive again carrying REFRESHED
+      // triage — a victim updates score/tier/location under one id every few
+      // seconds, and re-pulls exist precisely to fetch that (see
+      // HelperController._pullCooldown). SQLite and the backend already take
+      // the newer copy (timestamp upsert); the relay queue must too, or every
+      // further hop keeps forwarding the first-seen snapshot forever.
+      final idx = storedBundles.indexWhere(
+        (b) => b.bundleId == bundle.bundleId,
+      );
+      if (idx >= 0 && bundle.updatedAt.isAfter(storedBundles[idx].updatedAt)) {
+        storedBundles[idx] = bundle;
+        _syncManifest();
+        _emit('Bundle ${bundle.bundleId} refreshed with newer data for relay');
+      } else {
+        _emit('Bundle ${bundle.bundleId} already seen, skipping');
+      }
       return;
     }
     if (bundle.hopCount >= dtnMaxHopCount) {
@@ -150,6 +165,10 @@ class DTNManager {
       for (final bundle in toSend) {
         bundle.hopCount -= 1;
       }
+      // The _syncManifest() above already pushed the bumped counts into the
+      // native relay cache — re-sync so a peer pulling from us before the
+      // next relay doesn't receive copies with a hop that never happened.
+      _syncManifest();
       _emit('Sync with $helperDeviceId failed');
       return const [];
     }
@@ -168,6 +187,13 @@ class DTNManager {
           .map(DistressBundleModel.fromJson)
           .where((bundle) => seenBundleIds.add(bundle.bundleId))
           .toList();
+      // A pull is a device-to-device transfer exactly like a push, but the
+      // peer serves its cached copies as-is (the native cache can't bump) —
+      // count the hop on the receiving side, or pulled copies travel free
+      // against dtnMaxHopCount.
+      for (final bundle in pulled) {
+        bundle.hopCount += 1;
+      }
       _trimSeenBundleIds();
     } catch (e) {
       // A corrupt/truncated response shouldn't crash the relay attempt —

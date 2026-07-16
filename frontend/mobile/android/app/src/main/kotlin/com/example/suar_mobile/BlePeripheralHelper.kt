@@ -276,11 +276,19 @@ class BlePeripheralHelper(private val context: Context) {
     }
 
     fun stopAdvertising() {
+        // Two separate trys: a SecurityException from stopAdvertising() used to
+        // skip gattServer.close() below it, leaking the still-registered GATT
+        // server (its field was nulled regardless, so nothing could close it
+        // later either).
         try {
             advertiser?.stopAdvertising(advertiseCallback)
-            gattServer?.close()
         } catch (e: SecurityException) {
             Log.e(TAG, "stopAdvertising denied: $e")
+        }
+        try {
+            gattServer?.close()
+        } catch (e: Exception) {
+            Log.e(TAG, "gattServer.close failed: $e")
         }
         gattServer = null
         advertiser = null

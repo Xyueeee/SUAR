@@ -225,6 +225,9 @@ class VictimController {
   DistressBundleModel? _bundle;
   final Map<String, int> _helperRssiMap = {};
   Timer? _rssiWindowTimer;
+  int _rssiWindowGeneration = 0;
+  bool _rssiWindowOpen = false;
+  int _triageStartGeneration = 0;
   bool _stopped = false;
   StreamSubscription? _ackSub;
   StreamSubscription? _bleStatusSub;
@@ -260,7 +263,11 @@ class VictimController {
   final SyncService _sync = SyncService();
   Timer? _syncTimer;
   static const Duration _syncInterval = Duration(seconds: 45);
+  bool _syncInFlight = false;
+  bool _warnedImplausibleBundle = false;
+
   Future<void> _syncNow() async {
+    if (_syncInFlight) return;
     // Same reasoning as the WiFi Direct gates below — before the first triage
     // cycle runs, _bundle is still the placeholder (score 0/None, no
     // location). Pushing that to the backend put a no-priority, no-location
@@ -269,11 +276,26 @@ class VictimController {
     final id = deviceId;
     final b = _bundle;
     if (id == null || b == null) return;
+    // Backend-bounds mirror (isPlausibleBundle): the backend would 422 this,
+    // so a silent 45s retry loop can never succeed. Log once (the next triage
+    // recompute may repair the values) instead of pushing at all.
+    if (!isPlausibleBundle(b)) {
+      if (!_warnedImplausibleBundle) {
+        _warnedImplausibleBundle = true;
+        _emit('Own bundle failed sync validation. Not pushing to backend.');
+      }
+      return;
+    }
+    _warnedImplausibleBundle = false;
+    _syncInFlight = true;
     try {
       if (await _sync.pushBundles(id, 'victim', [b])) {
         _emit('Pushed your bundle to the backend');
       }
     } catch (_) {/* offline — retry next tick */}
+    finally {
+      _syncInFlight = false;
+    }
   }
 
   // The RSSI-window retry loop and BLE ops keep running after stopVictimMode
@@ -350,7 +372,9 @@ class VictimController {
     });
     // Push promptly instead of waiting out the current RSSI window.
     _rssiWindowTimer?.cancel();
-    unawaited(_onRssiWindowClosed());
+    if (_rssiWindowOpen) {
+      unawaited(_onRssiWindowClosed(_rssiWindowGeneration));
+    }
   }
 
   /// Undoes [_enterHostYield] — recreates the autonomous group and returns to
@@ -411,6 +435,7 @@ class VictimController {
       // subscriptions and left every event handled twice.
       await _cancelSubs();
       _stopped = false;
+      final triageGeneration = ++_triageStartGeneration;
       _deliveredAtLeastOnce = false;
       _yieldingToHost = false;
       _sensorsReady = false;
@@ -467,7 +492,7 @@ class VictimController {
       // finished, adding its own delay on top of theirs. Not awaited here —
       // requesting mic permission pops a dialog, and the SOS broadcast must
       // never wait behind it.
-      unawaited(_startTriage());
+      unawaited(_startTriage(triageGeneration));
 
       await _loadInitiatorCapability();
       // Always run the server + keep the bundle cached natively, regardless
@@ -568,15 +593,19 @@ class VictimController {
           if (sent) {
             _emit('Bundle ${_bundle!.bundleId} transmitted (pull mode)');
           }
-          await wifiDirectManager.disconnect();
-          _setRadio('Broadcasting');
         } finally {
+          await _teardownStep(
+            'Wi-Fi Direct disconnect',
+            wifiDirectManager.disconnect,
+          );
+          _setRadio('Broadcasting');
           _pushInFlight = false;
         }
       });
 
       _helperRssiMap.clear();
       _ackSub = bleManager.helperAckStream.listen((ack) {
+        if (_stopped || !_rssiWindowOpen) return;
         final helperDeviceId = ack['helperDeviceId'] as String;
         final rssi = ack['rssi'] as int;
         _helperRssiMap[helperDeviceId] = rssi;
@@ -603,11 +632,7 @@ class VictimController {
       await bleManager.startAdvertising(deviceId!);
       _setRadio('Broadcasting');
 
-      _rssiWindowTimer?.cancel();
-      _rssiWindowTimer = Timer(
-        const Duration(milliseconds: bleRssiCollectionWindowMs),
-        _onRssiWindowClosed,
-      );
+      _startRssiWindow();
 
       _radioWatchdog?.cancel();
       _radioWatchdog = Timer.periodic(_radioWatchdogInterval, (_) async {
@@ -655,34 +680,44 @@ class VictimController {
   /// Requests the (optional) mic permission, starts the sensor engine, and
   /// begins recomputing triage on a fixed cadence. Best-effort throughout —
   /// a denied mic just drops that term; a failure here never breaks the mesh.
-  Future<void> _startTriage() async {
+  Future<void> _startTriage(int generation) async {
     try {
       final micGranted = await requestMicPermission();
-      if (_stopped) return;
+      if (!_isCurrentTriageStart(generation)) return;
       await _sensorEngine.start(withMic: micGranted);
-      if (_stopped) return;
+      if (!_isCurrentTriageStart(generation)) return;
       // Best-effort GPS — denial/no-service just leaves the bundle without a
       // fix (the Helper map then places it approximately near itself), never
       // blocks triage or the mesh.
       final located = await _locationEstimator.start();
-      if (_stopped) return;
+      if (!_isCurrentTriageStart(generation)) return;
+      final micActive = micGranted && _sensorEngine.microphoneActive;
       _emit(
         located
             ? 'Location tracking started'
             : 'Location unavailable. Bundle will be placed approximately.',
       );
       _emit(
-        micGranted
+        micActive
             ? 'Sensor triage started (microphone enabled)'
             : 'Sensor triage started (microphone unavailable, using other sensors)',
       );
       _triageTimer?.cancel();
-      _triageTimer = Timer.periodic(_triageInterval, (_) => _recomputeTriage());
+      _triageTimer = Timer.periodic(_triageInterval, (_) {
+        if (_isCurrentTriageStart(generation)) {
+          unawaited(_recomputeTriage());
+        }
+      });
       await _recomputeTriage();
     } catch (e) {
-      _emit('Sensor triage failed to start: $e');
+      if (_isCurrentTriageStart(generation)) {
+        _emit('Sensor triage failed to start: $e');
+      }
     }
   }
+
+  bool _isCurrentTriageStart(int generation) =>
+      !_stopped && generation == _triageStartGeneration;
 
   /// Re-scores the bundle from the latest sensor state and re-caches it so the
   /// next Helper pull carries the current triage. Updates the live bundle in
@@ -734,30 +769,41 @@ class VictimController {
     );
   }
 
-  Future<void> _onRssiWindowClosed() async {
+  Future<void> _onRssiWindowClosed(int generation) async {
+    if (_stopped ||
+        !_rssiWindowOpen ||
+        generation != _rssiWindowGeneration) {
+      return;
+    }
+    _rssiWindowOpen = false;
+    _rssiWindowTimer = null;
+    final samples = Map<String, int>.from(_helperRssiMap);
+    _helperRssiMap.clear();
+
     try {
       final now = DateTime.now();
-      _helperRssiMap.removeWhere((helperId, _) {
+      samples.removeWhere((helperId, _) {
         final last = _deliveredTo[helperId];
         return last != null && now.difference(last) < _helperCooldown;
       });
 
-      if (_helperRssiMap.isEmpty) {
-        if (_stopped) return;
+      if (samples.isEmpty) {
+        if (!_isCurrentRssiCallback(generation)) return;
         // Keep listening — a single failed/empty window used to give up
         // permanently, leaving the Victim stuck broadcasting with nothing
         // ever acting on a late-arriving ACK. Re-arm and keep trying for as
         // long as Victim mode stays active.
         _emit('No Helper ACKs received in RSSI window. Still listening…');
-        _rearm();
+        _rearm(generation);
         return;
       }
-      final bestHelper = _helperRssiMap.entries.reduce(
+      final bestHelper = samples.entries.reduce(
         (a, b) => a.value > b.value ? a : b,
       );
       _emit('Selected Helper ${bestHelper.key} (rssi=${bestHelper.value})');
 
       final sent = await _tryDeliverBundle(bestHelper.key);
+      if (!_isCurrentRssiCallback(generation)) return;
       // Catch-all: active-push paths that enter discoverPeers but then fail
       // (no peers, became-GO) set 'BT Link' inside _tryDeliverBundle and may
       // not reset it. GO-passive / pull-mode / cooldown paths never touch the
@@ -765,7 +811,6 @@ class VictimController {
       if (!sent) _setRadio('Broadcasting');
       if (sent) {
         _deliveredTo[bestHelper.key] = DateTime.now();
-        _helperRssiMap.remove(bestHelper.key);
         // Pushed to an AP-joined host while yielding — return to the normal
         // discoverable group-owner state so other (free) Helpers can still pull.
         if (_yieldingToHost) {
@@ -778,7 +823,6 @@ class VictimController {
         // actually reachable over Wi-Fi Direct — drop it so the next window
         // doesn't immediately retry against stale data, but don't put it on
         // the success cooldown either.
-        _helperRssiMap.remove(bestHelper.key);
         // A passive group-owner Victim ALWAYS returns false here — it never
         // "sends", it waits to be pulled — so saying "will retry the handoff"
         // every cycle read like a repeated failure when nothing had failed.
@@ -787,18 +831,32 @@ class VictimController {
           _emit('Will retry Wi-Fi Direct handoff…');
         }
       }
-      if (!_stopped) _rearm();
+      _rearm(generation);
     } catch (e) {
+      if (!_isCurrentRssiCallback(generation)) return;
       _emit('Bundle transmission failed: $e');
-      if (!_stopped) _rearm();
+      _rearm(generation);
     }
   }
 
-  void _rearm() {
+  bool _isCurrentRssiCallback(int generation) =>
+      !_stopped && generation == _rssiWindowGeneration;
+
+  void _startRssiWindow() {
+    if (_stopped) return;
+    _rssiWindowTimer?.cancel();
+    _helperRssiMap.clear();
+    final generation = ++_rssiWindowGeneration;
+    _rssiWindowOpen = true;
     _rssiWindowTimer = Timer(
       const Duration(milliseconds: bleRssiCollectionWindowMs),
-      _onRssiWindowClosed,
+      () => unawaited(_onRssiWindowClosed(generation)),
     );
+  }
+
+  void _rearm(int completedGeneration) {
+    if (!_isCurrentRssiCallback(completedGeneration)) return;
+    _startRssiWindow();
   }
 
   /// Discover the Wi-Fi Direct peer, connect, and send the bundle. Returns
@@ -1055,39 +1113,106 @@ class VictimController {
   }
 
   Future<void> _cancelSubs() async {
-    await _ackSub?.cancel();
-    await _bleStatusSub?.cancel();
-    await _wifiStatusSub?.cancel();
-    await _connectionFormedSub?.cancel();
-    await _bundleDeliveredSub?.cancel();
+    final ackSub = _ackSub;
+    final bleStatusSub = _bleStatusSub;
+    final wifiStatusSub = _wifiStatusSub;
+    final connectionFormedSub = _connectionFormedSub;
+    final bundleDeliveredSub = _bundleDeliveredSub;
+    _ackSub = null;
+    _bleStatusSub = null;
+    _wifiStatusSub = null;
+    _connectionFormedSub = null;
+    _bundleDeliveredSub = null;
+
+    await _teardownStep('Helper ACK subscription', () async {
+      await ackSub?.cancel();
+    });
+    await _teardownStep('BLE status subscription', () async {
+      await bleStatusSub?.cancel();
+    });
+    await _teardownStep('Wi-Fi Direct status subscription', () async {
+      await wifiStatusSub?.cancel();
+    });
+    await _teardownStep('Connection subscription', () async {
+      await connectionFormedSub?.cancel();
+    });
+    await _teardownStep('Bundle delivery subscription', () async {
+      await bundleDeliveredSub?.cancel();
+    });
   }
 
-  Future<void> stopVictimMode({bool quiet = false}) async {
+  Future<void> _teardownStep(
+    String label,
+    FutureOr<void> Function() step,
+  ) async {
     try {
-      _stopped = true;
-      _rssiWindowTimer?.cancel();
-      _radioWatchdog?.cancel();
-      _yieldFallbackTimer?.cancel();
-      _triageTimer?.cancel();
-      _syncTimer?.cancel();
-      await _sensorEngine.stop();
-      await _locationEstimator.stop();
-      await _cancelSubs();
-      await bleManager.stopAdvertising();
-      await bleManager.setNeedsPull(false);
-      await wifiDirectManager.setLocalBundle(null);
-      await wifiDirectManager.stopServer();
-      await wifiDirectManager.disconnect();
-      // Label is NOT reset here: a real stop is followed by screen disposal,
-      // and a pause (quiet) sets 'Paused' right after; startVictimMode sets
-      // 'Broadcasting' again on any (re)start.
-      if (!quiet) _emit('Victim mode stopped');
+      await step();
     } catch (e) {
-      _emit('Victim mode stop failed: $e');
+      _emit('$label teardown failed: $e');
     }
   }
 
+  Future<void> stopVictimMode({bool quiet = false}) async {
+    _stopped = true;
+    _triageStartGeneration++;
+    _rssiWindowGeneration++;
+    _rssiWindowOpen = false;
+    _helperRssiMap.clear();
+    try {
+      await _teardownStep('RSSI window timer', () {
+        _rssiWindowTimer?.cancel();
+        _rssiWindowTimer = null;
+      });
+      await _teardownStep('Radio watchdog timer', () {
+        _radioWatchdog?.cancel();
+        _radioWatchdog = null;
+      });
+      await _teardownStep('Host-yield fallback timer', () {
+        _yieldFallbackTimer?.cancel();
+        _yieldFallbackTimer = null;
+      });
+      await _teardownStep('Triage timer', () {
+        _triageTimer?.cancel();
+        _triageTimer = null;
+      });
+      await _teardownStep('Sync timer', () {
+        _syncTimer?.cancel();
+        _syncTimer = null;
+      });
+      await _teardownStep('Sensor engine', _sensorEngine.stop);
+      await _teardownStep('Location tracking', _locationEstimator.stop);
+      await _cancelSubs();
+      await _teardownStep('BLE advertising', bleManager.stopAdvertising);
+      await _teardownStep(
+        'BLE pull-status reset',
+        () => bleManager.setNeedsPull(false),
+      );
+      await _teardownStep(
+        'Wi-Fi Direct bundle cache',
+        () => wifiDirectManager.setLocalBundle(null),
+      );
+      await _teardownStep(
+        'Wi-Fi Direct server',
+        wifiDirectManager.stopServer,
+      );
+    } finally {
+      // Always remove any P2P group this Victim still owns, even if another
+      // teardown step failed.
+      await _teardownStep(
+        'Wi-Fi Direct disconnect',
+        wifiDirectManager.disconnect,
+      );
+    }
+    // Label is not reset here: a real stop is followed by screen disposal,
+    // and a pause sets "Paused" immediately afterwards.
+    if (!quiet) _emit('Victim mode stopped');
+  }
+
   void dispose() {
+    _stopped = true;
+    _triageStartGeneration++;
+    _rssiWindowGeneration++;
+    _rssiWindowOpen = false;
     _rssiWindowTimer?.cancel();
     _radioWatchdog?.cancel();
     _yieldFallbackTimer?.cancel();

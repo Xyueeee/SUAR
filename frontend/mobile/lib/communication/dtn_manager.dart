@@ -44,6 +44,12 @@ class DTNManager {
   }
 
   void onBundleReceived(DistressBundleModel bundle) {
+    if (!isPlausibleBundle(bundle)) {
+      // Out-of-backend-bounds bundle (see isPlausibleBundle): storing or
+      // relaying it would propagate data every /sync in the mesh rejects.
+      _emit('Rejected implausible bundle ${bundle.bundleId}');
+      return;
+    }
     if (seenBundleIds.contains(bundle.bundleId)) {
       // The same bundleId can legitimately arrive again carrying REFRESHED
       // triage — a victim updates score/tier/location under one id every few
@@ -130,9 +136,14 @@ class DTNManager {
         continue;
       }
       if (peerHas.contains(bundle.bundleId)) continue;
-      bundle.hopCount += 1;
-      bundle.updatedAt = DateTime.now();
-      toSend.add(bundle);
+      // Relay metadata belongs only to the outgoing copy. The carrier's
+      // stored bundle keeps its original path depth and triage timestamp.
+      toSend.add(
+        DistressBundleModel.fromJson({
+          ...bundle.toJson(),
+          'hopCount': bundle.hopCount + 1,
+        }),
+      );
     }
     _syncManifest();
 
@@ -160,15 +171,6 @@ class DTNManager {
       );
     }
     if (response == null) {
-      // Sync failed entirely — undo the hop-count bump so a future retry
-      // doesn't double-count a hop that never actually happened.
-      for (final bundle in toSend) {
-        bundle.hopCount -= 1;
-      }
-      // The _syncManifest() above already pushed the bumped counts into the
-      // native relay cache — re-sync so a peer pulling from us before the
-      // next relay doesn't receive copies with a hop that never happened.
-      _syncManifest();
       _emit('Sync with $helperDeviceId failed');
       return const [];
     }
@@ -181,34 +183,45 @@ class DTNManager {
 
     List<DistressBundleModel> pulled;
     try {
-      final decoded = jsonDecode(response) as List;
-      pulled = decoded
-          .cast<Map<String, dynamic>>()
-          .map(DistressBundleModel.fromJson)
-          .where((bundle) => seenBundleIds.add(bundle.bundleId))
-          .toList();
+      final decoded = jsonDecode(response);
+      if (decoded is! List) {
+        throw const FormatException('Relay response is not a bundle list');
+      }
       // A pull is a device-to-device transfer exactly like a push, but the
       // peer serves its cached copies as-is (the native cache can't bump) —
       // count the hop on the receiving side, or pulled copies travel free
       // against dtnMaxHopCount.
-      for (final bundle in pulled) {
+      pulled = [];
+      for (final raw in decoded) {
+        final bundle = tryParsePlausibleBundle(raw);
+        if (bundle == null) {
+          // Not marked seen: a well-formed copy of the same id from another
+          // peer should still be accepted later.
+          _emit(
+            'Rejected malformed/implausible pulled bundle '
+            '${transportedBundleLabel(raw)}',
+          );
+          continue;
+        }
+        if (seenBundleIds.contains(bundle.bundleId)) continue;
+        _markSeen(bundle.bundleId);
         bundle.hopCount += 1;
+        if (bundle.hopCount >= dtnMaxHopCount) {
+          _emit('TTL exceeded after pull: ${bundle.bundleId}');
+          continue;
+        }
+        pulled.add(bundle);
       }
-      _trimSeenBundleIds();
     } catch (e) {
       // A corrupt/truncated response shouldn't crash the relay attempt —
       // the push half above already succeeded; just treat the pull half as
       // "nothing came back" and let the next contact retry it.
-      _emit(
-        'Sync response from $helperDeviceId was malformed: $e',
-      );
+      _emit('Sync response from $helperDeviceId was malformed: $e');
       return const [];
     }
     if (pulled.isEmpty) {
       if (toSend.isEmpty) {
-        _emit(
-          '$helperDeviceId and this device already have the same bundles',
-        );
+        _emit('$helperDeviceId and this device already have the same bundles');
       }
       return const [];
     }
@@ -216,9 +229,7 @@ class DTNManager {
       storedBundles.add(bundle);
     }
     _syncManifest();
-    _emit(
-      'Pulled ${pulled.length} bundle(s) from $helperDeviceId',
-    );
+    _emit('Pulled ${pulled.length} bundle(s) from $helperDeviceId');
     return pulled;
   }
 

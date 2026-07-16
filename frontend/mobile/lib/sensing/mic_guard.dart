@@ -3,56 +3,113 @@
 /// audio_streamer (the plugin under noise_meter) keeps ONE shared native
 /// AudioRecord field and ONE `recording` flag across all sessions, but every
 /// listen() spawns a fresh reader thread that overwrites that shared field.
-/// If a new listen() overlaps the previous session's still-exiting thread,
-/// the old thread ends up calling stop()/release() on the NEW thread's
-/// recorder while it is blocked in AudioRecord.read() — a native SIGABRT
-/// ('releaseBuffer: mUnreleased out of range') that kills the whole app and
-/// cannot be caught from Dart. Confirmed on the S926B (Android 16) during a
-/// quick Victim-mode exit → re-entry.
-///
-/// Fix: every mic subscription in the app goes through [guardedNoiseStream],
-/// which waits out a spacing gap from the previous session's cancel before
-/// subscribing. The gap only bites on rapid stop→start; a first start is
-/// instant.
-///
-/// ponytail: sequential restarts only — two SIMULTANEOUS listeners (Victim
-/// triage running while the Device Test mic row is open) still share the
-/// plugin's single flag and would collide on cancel. Rare debug-only overlap;
-/// add a session-owner lock here if it ever shows up in a crash log.
+/// Overlapping readers can therefore release each other's recorder and crash
+/// the process in native code.
 library;
 
 import 'dart:async';
 
 import 'package:noise_meter/noise_meter.dart';
 
+enum MicrophoneSessionOwner {
+  victimTriage,
+  deviceTest,
+  triageLogic,
+}
+
+String microphoneOwnerLabel(MicrophoneSessionOwner owner) => switch (owner) {
+      MicrophoneSessionOwner.victimTriage => 'Victim triage',
+      MicrophoneSessionOwner.deviceTest => 'Device Test',
+      MicrophoneSessionOwner.triageLogic => 'Triage Logic',
+    };
+
+class MicrophoneBusyException implements Exception {
+  const MicrophoneBusyException(this.activeOwner);
+
+  final MicrophoneSessionOwner activeOwner;
+
+  String get message =>
+      'Microphone is already in use by ${microphoneOwnerLabel(activeOwner)}.';
+
+  @override
+  String toString() => message;
+}
+
 DateTime _lastMicStop = DateTime.fromMillisecondsSinceEpoch(0);
 const Duration _micRestartGap = Duration(milliseconds: 1500);
+MicrophoneSessionOwner? _activeOwner;
 
-/// The noise_meter stream wrapped in the session guard: delays the subscribe
-/// until the previous session's native thread must be gone, and stamps the
-/// stop time on cancel/error so the NEXT session knows how long to wait.
-Stream<NoiseReading> guardedNoiseStream() {
+MicrophoneSessionOwner? get activeMicrophoneOwner => _activeOwner;
+
+String? microphoneBusyMessageFor(MicrophoneSessionOwner requester) {
+  final owner = _activeOwner;
+  if (owner == null) return null;
+  return owner == requester
+      ? '${microphoneOwnerLabel(requester)} is already using the microphone.'
+      : 'Microphone is in use by ${microphoneOwnerLabel(owner)}. '
+          'Stop that session before running this test.';
+}
+
+/// The noise_meter stream wrapped in both an exclusive owner lease and the
+/// existing restart-spacing guard. Ownership is claimed synchronously so two
+/// callers cannot both begin native AudioRecord sessions.
+Stream<NoiseReading> guardedNoiseStream({
+  required MicrophoneSessionOwner owner,
+}) {
+  final currentOwner = _activeOwner;
+  if (currentOwner != null) {
+    throw MicrophoneBusyException(currentOwner);
+  }
+  _activeOwner = owner;
+
   StreamSubscription<NoiseReading>? sub;
   var cancelled = false;
+  var released = false;
+
+  void release() {
+    if (released) return;
+    released = true;
+    if (_activeOwner == owner) _activeOwner = null;
+    _lastMicStop = DateTime.now();
+  }
+
   late final StreamController<NoiseReading> controller;
   controller = StreamController<NoiseReading>(
     onListen: () async {
-      final wait = _micRestartGap - DateTime.now().difference(_lastMicStop);
-      if (wait > Duration.zero) await Future.delayed(wait);
-      if (cancelled) return;
-      sub = NoiseMeter().noise.listen(
-        controller.add,
-        onError: (Object e, StackTrace s) {
-          _lastMicStop = DateTime.now();
+      try {
+        final wait = _micRestartGap - DateTime.now().difference(_lastMicStop);
+        if (wait > Duration.zero) await Future.delayed(wait);
+        if (cancelled) {
+          release();
+          return;
+        }
+        sub = NoiseMeter().noise.listen(
+          controller.add,
+          onError: (Object e, StackTrace s) {
+            release();
+            if (!controller.isClosed) controller.addError(e, s);
+          },
+          onDone: () {
+            release();
+            if (!controller.isClosed) unawaited(controller.close());
+          },
+          cancelOnError: true,
+        );
+      } catch (e, s) {
+        release();
+        if (!controller.isClosed) {
           controller.addError(e, s);
-        },
-        cancelOnError: true,
-      );
+          await controller.close();
+        }
+      }
     },
     onCancel: () async {
       cancelled = true;
-      await sub?.cancel();
-      _lastMicStop = DateTime.now();
+      try {
+        await sub?.cancel();
+      } finally {
+        release();
+      }
     },
   );
   return controller.stream;

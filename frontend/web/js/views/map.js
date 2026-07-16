@@ -12,6 +12,9 @@ SUAR.views.map = (function () {
   const TIER_COLORS = { Critical: "#d64545", High: "#ec7a1c", Moderate: "#e0a500", Low: "#3fb836", None: "#9aa4b2" };
   const SEV_COLORS = { info: "#3e6fa8", warning: "#ec7a1c", danger: "#d64545" };
   const HAZARDS = ["flood", "fire", "landslide", "collapse", "other"];
+  // Matches mobile bundleInactiveThreshold: an event older than 24 hours is
+  // retained in storage/history but is no longer shown as a current victim.
+  const BUNDLE_INACTIVE_MS = 24 * 60 * 60 * 1000;
 
   let map = null;
   let zonesLayer = null;
@@ -83,19 +86,30 @@ SUAR.views.map = (function () {
     victimsLayer.clearLayers();
     let rows = [];
     try { rows = await SUAR.api.get("/admin/bundles?limit=500"); } catch (_) { return; }
-    rows.filter((b) => b.estimated_lat != null && b.estimated_lng != null).forEach((b) => {
+    rows.forEach((b) => {
+      const createdAt = b.created_at ? new Date(b.created_at).getTime() : NaN;
+      if (!Number.isFinite(createdAt) ||
+          (Date.now() - createdAt) > BUNDLE_INACTIVE_MS) return;
+      if (b.estimated_lat === null || b.estimated_lat === undefined ||
+          b.estimated_lng === null || b.estimated_lng === undefined) return;
+      const lat = Number(b.estimated_lat), lng = Number(b.estimated_lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) ||
+          lat < -90 || lat > 90 || lng < -180 || lng > 180) return;
       const color = TIER_COLORS[b.priority_tier] || "#9aa4b2";
-      if (b.accuracy_meters) {
-        L.circle([b.estimated_lat, b.estimated_lng], {
-          radius: b.accuracy_meters, color, weight: 1, fillColor: color, fillOpacity: 0.08,
+      const accuracy = Number(b.accuracy_meters);
+      if (Number.isFinite(accuracy) && accuracy > 0) {
+        L.circle([lat, lng], {
+          radius: accuracy, color, weight: 1, fillColor: color, fillOpacity: 0.08,
         }).addTo(victimsLayer);
       }
-      L.circleMarker([b.estimated_lat, b.estimated_lng], {
+      const hasScore = b.priority_score !== null && b.priority_score !== undefined;
+      const score = Number(b.priority_score);
+      L.circleMarker([lat, lng], {
         radius: 7, color: "#fff", weight: 2, fillColor: color, fillOpacity: 0.95,
       }).bindPopup(
-        "<b>" + SUAR.ui.esc(b.priority_tier) + "</b> · score " + (b.priority_score != null ? b.priority_score.toFixed(2) : "—") +
+        "<b>" + SUAR.ui.esc(b.priority_tier) + "</b> · score " + (hasScore && Number.isFinite(score) ? score.toFixed(2) : "—") +
         "<br><span class='mono' style='font-size:11px'>" + SUAR.ui.esc(b.device_id) + "</span>" +
-        "<br>" + SUAR.ui.fmtCoord(b.estimated_lat, b.estimated_lng)
+        "<br>" + SUAR.ui.fmtCoord(lat, lng)
       ).addTo(victimsLayer);
     });
   }
@@ -180,78 +194,80 @@ SUAR.views.map = (function () {
     const isCustom = z.hazard_type && !HAZARDS.includes(z.hazard_type);
     const sel = isCustom ? "other" : (z.hazard_type || HAZARDS[0]);
     return (
-      '<div class="field"><label>Name</label><input class="input" id="z-name" maxlength="80" placeholder="e.g. Riverside flood area" value="' + SUAR.ui.esc(z.name || "") + '"></div>' +
+      '<div class="field"><label>Name</label><input class="input" id="zf-name" maxlength="80" placeholder="e.g. Riverside flood area" value="' + SUAR.ui.esc(z.name || "") + '"></div>' +
       '<div class="form-row">' +
-        '<div class="field"><label>Hazard type</label><select class="select" id="z-hazard">' +
+        '<div class="field"><label>Hazard type</label><select class="select" id="zf-hazard">' +
           HAZARDS.map((h) => '<option' + (sel === h ? " selected" : "") + ">" + h + "</option>").join("") + "</select>" +
-          '<input class="input" id="z-hazard-custom" maxlength="40" placeholder="Custom hazard type" style="margin-top:6px;' + (sel === "other" ? "" : "display:none") + '" value="' + SUAR.ui.esc(isCustom ? z.hazard_type : "") + '"></div>' +
-        '<div class="field"><label>Severity</label><select class="select" id="z-sev">' +
+          '<input class="input" id="zf-hazard-custom" maxlength="40" placeholder="Custom hazard type" style="margin-top:6px;' + (sel === "other" ? "" : "display:none") + '" value="' + SUAR.ui.esc(isCustom ? z.hazard_type : "") + '"></div>' +
+        '<div class="field"><label>Severity</label><select class="select" id="zf-sev">' +
           ["info", "warning", "danger"].map((sv) => '<option' + (z.severity === sv ? " selected" : "") + ">" + sv + "</option>").join("") + "</select></div>" +
       "</div>" +
-      '<label class="switch"><input type="checkbox" id="z-active"' + (z.is_active === false ? "" : " checked") + '><span class="switch__track"></span> Active</label>'
+      '<label class="switch"><input type="checkbox" id="zf-active"' + (z.is_active === false ? "" : " checked") + '><span class="switch__track"></span> Active</label>'
     );
   }
 
   // Reveal the custom-hazard input only when "other" is chosen.
-  function bindHazardToggle() {
-    const sel = document.getElementById("z-hazard");
+  function bindHazardToggle(scope) {
+    const sel = scope.querySelector("#zf-hazard");
     if (!sel) return;
     sel.addEventListener("change", (e) => {
-      document.getElementById("z-hazard-custom").style.display = e.target.value === "other" ? "" : "none";
+      scope.querySelector("#zf-hazard-custom").style.display = e.target.value === "other" ? "" : "none";
     });
   }
 
-  function readZoneForm() {
-    let hazard_type = document.getElementById("z-hazard").value;
+  function readZoneForm(scope) {
+    let hazard_type = scope.querySelector("#zf-hazard").value;
     if (hazard_type === "other") {
-      const custom = document.getElementById("z-hazard-custom").value.trim();
+      const custom = scope.querySelector("#zf-hazard-custom").value.trim();
       if (custom) hazard_type = custom;
     }
     return {
-      name: document.getElementById("z-name").value.trim(),
+      name: scope.querySelector("#zf-name").value.trim(),
       hazard_type: hazard_type,
-      severity: document.getElementById("z-sev").value,
-      is_active: document.getElementById("z-active").checked,
+      severity: scope.querySelector("#zf-sev").value,
+      is_active: scope.querySelector("#zf-active").checked,
     };
   }
 
   // Create form (with geometry from the drawn layer).
   function openZoneForm(drawn, onCancel) {
-    const m = SUAR.ui.modal({
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      onCancel();
+    };
+    let m;
+    m = SUAR.ui.modal({
       title: "New hazard zone",
       body: zoneFormBody({ severity: "danger", is_active: true }),
+      onClose: cleanup,
       actions: [
-        { label: "Discard", className: "btn--ghost", onClick: (c) => { onCancel(); c(); } },
+        { label: "Discard", className: "btn--ghost", onClick: (c) => c() },
         { label: "Save zone", className: "btn--primary", onClick: async (close, btn) => {
-            const f = readZoneForm();
+            const f = readZoneForm(m.panel);
             if (!f.name) { SUAR.ui.toast("Name required", "err"); return; }
             btn.disabled = true;
             try {
               await SUAR.api.post("/admin/geofences", Object.assign(f, { shape: drawn.shape, geometry: drawn.geometry }));
-              onCancel(); // remove the temp preview; loadZones re-draws from server
               SUAR.ui.toast("Hazard zone saved", "ok"); close(); loadZones(); SUAR.app.refreshCounts();
             } catch (e) { SUAR.ui.toast(e.message, "err"); btn.disabled = false; }
           } },
       ],
     });
-    bindHazardToggle();
-    // Closing the form any way (X, Esc, backdrop) must remove the temp drawing,
-    // not leave an unsaved box on the map. onCancel is idempotent.
-    m.overlay.addEventListener("click", (e) => { if (e.target === m.overlay) onCancel(); });
-    m.panel.querySelector("[data-close]").addEventListener("click", onCancel);
-    const escCancel = (e) => { if (e.key === "Escape") { onCancel(); document.removeEventListener("keydown", escCancel); } };
-    document.addEventListener("keydown", escCancel);
+    bindHazardToggle(m.panel);
   }
 
   // Edit metadata only (not geometry).
   function openEditMeta(z) {
-    SUAR.ui.modal({
+    let m;
+    m = SUAR.ui.modal({
       title: "Edit hazard zone",
       body: zoneFormBody(z) + '<p class="muted" style="font-size:12px;margin-bottom:0">To change the shape, delete this zone and draw a new one.</p>',
       actions: [
         { label: "Cancel", className: "btn--ghost", onClick: (c) => c() },
         { label: "Save", className: "btn--primary", onClick: async (close, btn) => {
-            const f = readZoneForm();
+            const f = readZoneForm(m.panel);
             if (!f.name) { SUAR.ui.toast("Name required", "err"); return; }
             btn.disabled = true;
             try {
@@ -261,7 +277,7 @@ SUAR.views.map = (function () {
           } },
       ],
     });
-    bindHazardToggle();
+    bindHazardToggle(m.panel);
   }
 
   async function del(z) {

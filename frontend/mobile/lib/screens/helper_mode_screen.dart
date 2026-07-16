@@ -563,9 +563,18 @@ class _HelperModeScreenState extends State<HelperModeScreen>
     for (final bundle in newestFirst) {
       if (!isBundleActive(bundle.updatedAt)) continue;
       if (!seenDevices.add(bundle.deviceId)) continue;
-      final hasGps = bundle.estimatedLat != null && bundle.estimatedLng != null;
+      final lat = bundle.estimatedLat;
+      final lng = bundle.estimatedLng;
+      final hasGps = lat != null &&
+          lng != null &&
+          lat.isFinite &&
+          lng.isFinite &&
+          lat >= -90 &&
+          lat <= 90 &&
+          lng >= -180 &&
+          lng <= 180;
       final point = hasGps
-          ? LatLng(bundle.estimatedLat!, bundle.estimatedLng!)
+          ? LatLng(lat, lng)
           : _jitter(_userLocation ?? defaultMapCenter, bundle.deviceId);
       // Real GPS pin → draw the chip's reported ± accuracy as the ring (so a
       // tight fix is a small circle and a rough one a big circle), clamped so a
@@ -575,7 +584,9 @@ class _HelperModeScreenState extends State<HelperModeScreen>
       final double ringRadiusMeters;
       if (!hasGps) {
         ringRadiusMeters = _estimateZoneRadiusMeters;
-      } else if (bundle.accuracyMeters != null) {
+      } else if (bundle.accuracyMeters != null &&
+          bundle.accuracyMeters!.isFinite &&
+          bundle.accuracyMeters! > 0) {
         ringRadiusMeters = bundle.accuracyMeters!.clamp(
           _minAccuracyRingMeters,
           _maxAccuracyRingMeters,
@@ -739,7 +750,9 @@ class _HelperModeScreenState extends State<HelperModeScreen>
               Text(
                 pin.isApproximate
                     ? '${bundle.priorityTier} priority · approx. location'
-                    : bundle.accuracyMeters != null
+                    : bundle.accuracyMeters != null &&
+                            bundle.accuracyMeters!.isFinite &&
+                            bundle.accuracyMeters! > 0
                         ? '${bundle.priorityTier} priority · ±${bundle.accuracyMeters!.round()} m'
                         : '${bundle.priorityTier} priority',
                 style: const TextStyle(color: Colors.black54, fontSize: 12),
@@ -947,10 +960,17 @@ class _HelperModeScreenState extends State<HelperModeScreen>
             ),
             _DetailRow(
               'Location',
-              bundle.estimatedLat != null && bundle.estimatedLng != null
+              bundle.estimatedLat != null &&
+                      bundle.estimatedLng != null &&
+                      bundle.estimatedLat!.isFinite &&
+                      bundle.estimatedLng!.isFinite &&
+                      bundle.estimatedLat! >= -90 &&
+                      bundle.estimatedLat! <= 90 &&
+                      bundle.estimatedLng! >= -180 &&
+                      bundle.estimatedLng! <= 180
                   ? '${bundle.estimatedLat!.toStringAsFixed(5)}, '
                       '${bundle.estimatedLng!.toStringAsFixed(5)}'
-                      '${bundle.accuracyMeters != null ? ' (±${bundle.accuracyMeters!.round()} m)' : ''}'
+                      '${bundle.accuracyMeters != null && bundle.accuracyMeters!.isFinite && bundle.accuracyMeters! > 0 ? ' (±${bundle.accuracyMeters!.round()} m)' : ''}'
                   : 'Approximate (no GPS fix). Shown near this Helper.',
             ),
             if (bundle.estimatedAltitude != null)

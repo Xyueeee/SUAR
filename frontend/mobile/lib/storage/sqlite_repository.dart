@@ -1,5 +1,6 @@
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../models/distress_bundle_model.dart';
 import '../models/sensor_reading_model.dart';
@@ -121,13 +122,17 @@ class SQLiteRepository {
           await db.execute(_createDocProgress);
         }
         if (oldVersion >= 8 && oldVersion < 9) {
-          await db.execute('ALTER TABLE AppDoc ADD COLUMN OrderIndex INTEGER NOT NULL DEFAULT 0');
+          await db.execute(
+            'ALTER TABLE AppDoc ADD COLUMN OrderIndex INTEGER NOT NULL DEFAULT 0',
+          );
         }
         // Covers v8 too: a v8 device jumping straight to v10 never runs the
         // v9 step, so gate on the full range the column was absent for (v8+v9),
         // not just v9. OrderIndex above stays ==8 because v9 tables already have it.
         if (oldVersion >= 8 && oldVersion < 10) {
-          await db.execute('ALTER TABLE AppDoc ADD COLUMN UsePercent INTEGER NOT NULL DEFAULT 0');
+          await db.execute(
+            'ALTER TABLE AppDoc ADD COLUMN UsePercent INTEGER NOT NULL DEFAULT 0',
+          );
         }
         if (oldVersion < 11) {
           // Dead since v8's AppDoc/DocProgress unification — reclaim the space.
@@ -141,12 +146,18 @@ class SQLiteRepository {
           // that an EARLIER block in this same upgrade run just created
           // already have the new column names, so only rebuild the ones that
           // actually predate this run (the oldVersion gates).
-          Future<void> rebuild(String table, String createSql,
-              String newCols, String oldCols) async {
+          Future<void> rebuild(
+            String table,
+            String createSql,
+            String newCols,
+            String oldCols,
+          ) async {
             await db.execute('ALTER TABLE $table RENAME TO ${table}_v11');
             await db.execute(createSql);
-            await db.execute('INSERT INTO $table ($newCols) '
-                'SELECT $oldCols FROM ${table}_v11');
+            await db.execute(
+              'INSERT INTO $table ($newCols) '
+              'SELECT $oldCols FROM ${table}_v11',
+            );
             await db.execute('DROP TABLE ${table}_v11');
           }
 
@@ -221,8 +232,9 @@ class SQLiteRepository {
       if (existing.isEmpty) {
         await txn.insert('DistressBundle', bundle.toMap());
       } else {
-        final existingUpdated =
-            DateTime.tryParse(existing.first['UpdatedAt'] as String? ?? '');
+        final existingUpdated = DateTime.tryParse(
+          existing.first['UpdatedAt'] as String? ?? '',
+        );
         if (existingUpdated != null &&
             !bundle.updatedAt.isAfter(existingUpdated)) {
           return; // stale or identical — keep what we have
@@ -233,9 +245,16 @@ class SQLiteRepository {
           where: 'DistressBundleId = ?',
           whereArgs: [bundle.bundleId],
         );
-        // Replace the readings snapshot with the newer one.
-        await txn.delete('SensorReading',
-            where: 'DistressBundleId = ?', whereArgs: [bundle.bundleId]);
+        // A cloud pull currently carries only the bundle row. Preserve any
+        // local sensor snapshot unless the incoming copy actually includes a
+        // replacement snapshot.
+        if (bundle.sensorReadings.isNotEmpty) {
+          await txn.delete(
+            'SensorReading',
+            where: 'DistressBundleId = ?',
+            whereArgs: [bundle.bundleId],
+          );
+        }
       }
       for (final raw in bundle.sensorReadings) {
         // Re-stamp the FK to this bundle in case the transported reading's
@@ -261,19 +280,44 @@ class SQLiteRepository {
       whereArgs: [bundleId],
       orderBy: 'RecordedAt',
     );
-    return rows.map(SensorReadingModel.fromMap).toList();
+    final readings = <SensorReadingModel>[];
+    for (final row in rows) {
+      try {
+        readings.add(SensorReadingModel.fromMap(row));
+      } catch (e) {
+        debugPrint(
+          '[SQLite] Skipping malformed sensor reading for $bundleId: $e',
+        );
+      }
+    }
+    return readings;
   }
 
   Future<List<DistressBundleModel>> getAllBundles() async {
     final db = await _getDb();
     final rows = await db.query('DistressBundle', orderBy: 'CreatedAt DESC');
-    return rows.map(DistressBundleModel.fromMap).toList();
+    return _parseBundleRows(rows);
   }
 
   Future<List<DistressBundleModel>> getUnsyncedBundles() async {
     final db = await _getDb();
     final rows = await db.query('DistressBundle', where: 'IsSynced = 0');
-    return rows.map(DistressBundleModel.fromMap).toList();
+    return _parseBundleRows(rows);
+  }
+
+  List<DistressBundleModel> _parseBundleRows(List<Map<String, Object?>> rows) {
+    final bundles = <DistressBundleModel>[];
+    for (final row in rows) {
+      try {
+        bundles.add(DistressBundleModel.fromMap(row));
+      } catch (e) {
+        debugPrint(
+          '[SQLite] Skipping malformed bundle '
+          '${row['DistressBundleId'] ?? '<unknown>'}: $e',
+        );
+      }
+    }
+    return bundles;
   }
 
   Future<void> markAsSynced(String bundleId) async {
@@ -291,8 +335,16 @@ class SQLiteRepository {
   Future<void> deleteBundle(String bundleId) async {
     final db = await _getDb();
     await db.transaction((txn) async {
-      await txn.delete('SensorReading', where: 'DistressBundleId = ?', whereArgs: [bundleId]);
-      await txn.delete('DistressBundle', where: 'DistressBundleId = ?', whereArgs: [bundleId]);
+      await txn.delete(
+        'SensorReading',
+        where: 'DistressBundleId = ?',
+        whereArgs: [bundleId],
+      );
+      await txn.delete(
+        'DistressBundle',
+        where: 'DistressBundleId = ?',
+        whereArgs: [bundleId],
+      );
     });
   }
 
@@ -315,6 +367,7 @@ class SQLiteRepository {
   /// deletion regardless of whatever primary key (if any) the table declares.
   Future<List<Map<String, Object?>>> getTableRows(String table) async {
     final db = await _getDb();
+    await _validateDebugTable(db, table);
     return db.rawQuery(
       'SELECT rowid AS _rowid, * FROM "$table" ORDER BY rowid DESC',
     );
@@ -322,11 +375,30 @@ class SQLiteRepository {
 
   Future<void> deleteTableRow(String table, int rowid) async {
     final db = await _getDb();
+    await _validateDebugTable(db, table);
     await db.delete(table, where: 'rowid = ?', whereArgs: [rowid]);
   }
 
   Future<void> clearTable(String table) async {
     final db = await _getDb();
+    await _validateDebugTable(db, table);
     await db.delete(table);
+  }
+
+  Future<void> _validateDebugTable(Database db, String table) async {
+    if (!RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$').hasMatch(table)) {
+      throw ArgumentError.value(table, 'table', 'Invalid table name');
+    }
+    final rows = await db.query(
+      'sqlite_master',
+      columns: ['name'],
+      where:
+          "type = 'table' AND name = ? AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'android_%'",
+      whereArgs: [table],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      throw ArgumentError.value(table, 'table', 'Unknown table');
+    }
   }
 }

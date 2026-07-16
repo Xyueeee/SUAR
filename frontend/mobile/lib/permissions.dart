@@ -137,8 +137,8 @@ Future<bool> requestLocationPermission() async {
 /// Requests microphone access for ambient-sound triage / the Device Test page.
 ///
 /// Deliberately separate from [requestMeshPermissions]: the mic is OPTIONAL.
-/// Denial must never block the app — the triage engine simply drops the
-/// microphone term and renormalises the remaining sensor weights, and the
+/// Denial must never block the app — the triage engine simply omits the
+/// microphone term, and the
 /// Device Test page shows the microphone row as unavailable. Never throws
 /// (same stuck-native-lock guard as above).
 Future<bool> requestMicPermission() async {

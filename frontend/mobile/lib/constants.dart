@@ -47,6 +47,9 @@ const int bleManufacturerId = 0xFFFF;
 // belongs to a deliberate anti-flood tuning decision, not a default.
 const int dtnMaxHopCount = 12;
 
+/// Maximum age accepted for an OS-cached last-known location.
+const Duration lastKnownPositionMaxAge = Duration(minutes: 10);
+
 const String deviceIdPrefKey = "suar_device_id";
 
 /// Ensures a stable device UUID exists in prefs. Called once at startup so
@@ -56,6 +59,7 @@ Future<void> ensureDeviceId() async {
   if (prefs.getString(deviceIdPrefKey) != null) return;
   await prefs.setString(deviceIdPrefKey, const Uuid().v4());
 }
+
 const String appVersion = "1.0.0";
 
 // Single backend base URL for the whole app — Helper sync (future) AND the

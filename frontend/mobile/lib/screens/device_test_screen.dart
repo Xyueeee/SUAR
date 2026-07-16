@@ -13,6 +13,7 @@ import '../theme.dart' show kPanelDark;
 import '../map/map_constants.dart';
 import '../permissions.dart';
 import '../sensing/device_sensor_probe.dart';
+import '../sensing/mic_guard.dart';
 import '../sensing/sensor_live.dart';
 import '../sensing/sensor_types.dart';
 
@@ -129,6 +130,20 @@ class _DeviceTestScreenState extends State<DeviceTestScreen> {
       return;
     }
 
+    if (sensor == DeviceSensor.microphone) {
+      final busyMessage = microphoneBusyMessageFor(
+        MicrophoneSessionOwner.deviceTest,
+      );
+      if (busyMessage != null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(busyMessage)),
+          );
+        }
+        return;
+      }
+    }
+
     if (sensor == DeviceSensor.microphone && _status[sensor] != _Status.ok) {
       final granted = await requestMicPermission();
       if (!mounted) return;
@@ -151,14 +166,28 @@ class _DeviceTestScreenState extends State<DeviceTestScreen> {
       return;
     }
 
-    final sub = liveSensorLabel(sensor, _probe, proximity: _proximity).listen(
-      (label) {
-        if (!mounted) return;
-        setState(() => _live[sensor] = label);
-      },
-      onError: (_) {},
-    );
-    _subs[sensor] = sub;
+    try {
+      final sub = liveSensorLabel(sensor, _probe, proximity: _proximity).listen(
+        (label) {
+          if (!mounted) return;
+          setState(() => _live[sensor] = label);
+        },
+        onError: (Object error) {
+          if (!mounted || error is! MicrophoneBusyException) return;
+          setState(() => _live[sensor] = error.message);
+        },
+      );
+      _subs[sensor] = sub;
+    } on MicrophoneBusyException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _expanded.remove(sensor);
+        _live.remove(sensor);
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message)),
+      );
+    }
   }
 
   Future<void> _refreshConnectivity(DeviceSensor sensor) async {
